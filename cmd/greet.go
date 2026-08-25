@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"github.com/mtfuller/starterpack-go-cli/internal/color"
-	"github.com/mtfuller/starterpack-go-cli/internal/logger"
-	"github.com/mtfuller/starterpack-go-cli/pkg/example"
+	"github.com/mtfuller/tiny-llm-workbench/internal/color"
+	"github.com/mtfuller/tiny-llm-workbench/internal/logger"
+	"github.com/mtfuller/tiny-llm-workbench/pkg/example"
 	"github.com/spf13/cobra"
 )
 

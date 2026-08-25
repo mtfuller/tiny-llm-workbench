@@ -3,8 +3,8 @@ package cmd
 import (
 	"os"
 
-	"github.com/mtfuller/starterpack-go-cli/internal/color"
-	"github.com/mtfuller/starterpack-go-cli/internal/logger"
+	"github.com/mtfuller/tiny-llm-workbench/internal/color"
+	"github.com/mtfuller/tiny-llm-workbench/internal/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -15,19 +15,13 @@ var (
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "starterpack-go-cli",
-	Short: "A state-of-the-art Go CLI application template",
-	Long: color.Bold("starterpack-go-cli") + ` is a comprehensive Go CLI application template
-that includes many features out-of-the-box:
-  • Argument parsing with Cobra
-  • Structured logging
-  • Colored text output
-  • Spinner animations
-  • Version command
-  • Help command
-  • Unit and integration tests
+	Use:   "tlw",
+	Short: "Tiny LLM Workbench — train, run, and evaluate agents backed by tiny LLMs",
+	Long: color.Bold("tlw") + ` is the CLI for Tiny LLM Workbench (TLW), a local tool for training,
+running, and evaluating agents backed by tiny LLMs, via a local webserver and browser UI.
 
-This template helps developers quickly bootstrap a professional Go CLI application.`,
+The commands below (greet, calc, process, version) are scaffolding placeholders left over from the
+Go CLI template this project was bootstrapped from. See README.md and CLAUDE.md for the real roadmap.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Configure logger based on flags
 		if verbose {

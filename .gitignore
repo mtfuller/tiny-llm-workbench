@@ -9,7 +9,7 @@
 *.dylib
 
 # Built binary
-starterpack-go-cli
+tlw
 
 # Test binary, built with `go test -c`
 *.test

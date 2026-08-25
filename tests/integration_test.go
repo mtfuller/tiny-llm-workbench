@@ -20,8 +20,8 @@ func TestCLIVersion(t *testing.T) {
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "starterpack-go-cli") {
-		t.Errorf("Version output should contain 'starterpack-go-cli', got: %s", output)
+	if !strings.Contains(output, "tlw") {
+		t.Errorf("Version output should contain 'tlw', got: %s", output)
 	}
 	if !strings.Contains(output, "Version:") {
 		t.Errorf("Version output should contain 'Version:', got: %s", output)

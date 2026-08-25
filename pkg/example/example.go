@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mtfuller/starterpack-go-cli/internal/color"
-	"github.com/mtfuller/starterpack-go-cli/internal/logger"
-	"github.com/mtfuller/starterpack-go-cli/internal/spinner"
+	"github.com/mtfuller/tiny-llm-workbench/internal/color"
+	"github.com/mtfuller/tiny-llm-workbench/internal/logger"
+	"github.com/mtfuller/tiny-llm-workbench/internal/spinner"
 )
 
 // ProcessData is an example function that demonstrates spinner and logging

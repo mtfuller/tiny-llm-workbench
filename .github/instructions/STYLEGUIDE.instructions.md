@@ -2,7 +2,7 @@
 applyTo: "**/*.go"
 ---
 
-# Coding Standards — Starterpack Go CLI (Concise)
+# Coding Standards — Tiny LLM Workbench CLI (Concise)
 
 ## Style & Naming
 - Packages: lowercase, single word (logger, color, spinner, version).  
@@ -24,8 +24,8 @@ import (
     
     "github.com/spf13/cobra"
     
-    "github.com/mtfuller/starterpack-go-cli/internal/color"
-    "github.com/mtfuller/starterpack-go-cli/internal/logger"
+    "github.com/mtfuller/tiny-llm-workbench/internal/color"
+    "github.com/mtfuller/tiny-llm-workbench/internal/logger"
 )
 ```
 

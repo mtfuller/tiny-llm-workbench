@@ -1,4 +1,4 @@
-module github.com/mtfuller/starterpack-go-cli
+module github.com/mtfuller/tiny-llm-workbench
 
 go 1.21
 
