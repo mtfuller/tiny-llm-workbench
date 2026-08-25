@@ -19,7 +19,17 @@ cd "$repo_root" || exit 0
 gofmt -w "$file" 2>/dev/null
 
 pkg_dir="$(dirname "$file")"
-vet_output="$(go vet "./$pkg_dir" 2>&1)"
+case "$pkg_dir" in
+  "$repo_root") rel_dir="." ;;
+  "$repo_root"/*) rel_dir="${pkg_dir#"$repo_root"/}" ;;
+  /*) rel_dir="$pkg_dir" ;;
+  *) rel_dir="$pkg_dir" ;;
+esac
+if [[ "$rel_dir" = /* ]]; then
+  vet_output="$(go vet "$rel_dir" 2>&1)"
+else
+  vet_output="$(go vet "./$rel_dir" 2>&1)"
+fi
 vet_status=$?
 
 if [[ $vet_status -ne 0 ]]; then

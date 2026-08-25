@@ -1,0 +1,281 @@
+package agents
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
+	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
+	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
+)
+
+type fakeAgentReader struct {
+	agents map[string]registry.Agent
+	err    error
+}
+
+func (f *fakeAgentReader) GetAgent(name string) (registry.Agent, error) {
+	if f.err != nil {
+		return registry.Agent{}, f.err
+	}
+	agent, ok := f.agents[name]
+	if !ok {
+		return registry.Agent{}, errors.New("not found")
+	}
+	return agent, nil
+}
+
+type fakeEnvironmentRunner struct {
+	launchResult environments.Instance
+	launchErr    error
+	launched     []string
+
+	stopErr    error
+	stoppedIDs []string
+
+	toolOutput string
+	toolErr    error
+}
+
+func (f *fakeEnvironmentRunner) Launch(ctx context.Context, environmentName, instanceName string) (environments.Instance, error) {
+	f.launched = append(f.launched, environmentName)
+	return f.launchResult, f.launchErr
+}
+
+func (f *fakeEnvironmentRunner) Stop(ctx context.Context, instanceID string) error {
+	f.stoppedIDs = append(f.stoppedIDs, instanceID)
+	return f.stopErr
+}
+
+func (f *fakeEnvironmentRunner) RunToolSync(ctx context.Context, instanceID, command string) (string, error) {
+	return f.toolOutput, f.toolErr
+}
+
+func TestStartRunSuccess(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+
+	run, err := m.StartRun("greeter")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	if run.AgentName != "greeter" {
+		t.Errorf("run.AgentName = %q, want %q", run.AgentName, "greeter")
+	}
+	if run.Messages == nil {
+		t.Error("run.Messages = nil, want an initialized empty slice")
+	}
+	if run.InstanceID != "" {
+		t.Errorf("run.InstanceID = %q, want empty for an agent with no Environment", run.InstanceID)
+	}
+}
+
+func TestStartRunUnknownAgent(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{}}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+
+	if _, err := m.StartRun("does-not-exist"); err == nil {
+		t.Error("StartRun() error = nil, want an error for an unknown agent")
+	}
+}
+
+func TestStartRunLaunchesEnvironment(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{
+		"researcher": {Name: "researcher", Environment: "WebSearch", Graph: linearGraph()},
+	}}
+	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+
+	run, err := m.StartRun("researcher")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	if run.InstanceID != "container-1" {
+		t.Errorf("run.InstanceID = %q, want %q", run.InstanceID, "container-1")
+	}
+	if len(envs.launched) != 1 || envs.launched[0] != "WebSearch" {
+		t.Errorf("envs.launched = %v, want [WebSearch]", envs.launched)
+	}
+}
+
+func TestStartRunEnvironmentLaunchFailure(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{
+		"researcher": {Name: "researcher", Environment: "WebSearch", Graph: linearGraph()},
+	}}
+	envs := &fakeEnvironmentRunner{launchErr: errors.New("docker daemon unreachable")}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+
+	if _, err := m.StartRun("researcher"); err == nil {
+		t.Error("StartRun() error = nil, want the launch error to propagate")
+	}
+}
+
+func TestStopRunStopsEnvironment(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{
+		"researcher": {Name: "researcher", Environment: "WebSearch", Graph: linearGraph()},
+	}}
+	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+
+	run, err := m.StartRun("researcher")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	if err := m.StopRun(run.ID); err != nil {
+		t.Fatalf("StopRun() error = %v", err)
+	}
+	if len(envs.stoppedIDs) != 1 || envs.stoppedIDs[0] != "container-1" {
+		t.Errorf("envs.stoppedIDs = %v, want [container-1]", envs.stoppedIDs)
+	}
+
+	if _, ok := m.GetRun(run.ID); ok {
+		t.Error("GetRun() found a run after StopRun(), want it removed")
+	}
+}
+
+func TestStopRunWithoutEnvironmentDoesNothing(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
+	envs := &fakeEnvironmentRunner{}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+
+	run, err := m.StartRun("greeter")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	if err := m.StopRun(run.ID); err != nil {
+		t.Fatalf("StopRun() error = %v", err)
+	}
+	if len(envs.stoppedIDs) != 0 {
+		t.Errorf("envs.stoppedIDs = %v, want none stopped for a run with no Environment", envs.stoppedIDs)
+	}
+}
+
+func TestStopRunUnknownRunIsNotAnError(t *testing.T) {
+	m := NewManager(context.Background(), &fakeAgentReader{}, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+
+	if err := m.StopRun("does-not-exist"); err != nil {
+		t.Errorf("StopRun() error = %v, want nil for an unknown run (idempotent cleanup)", err)
+	}
+}
+
+func TestSendMessageSuccess(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
+	llm := &fakeLLM{responses: []string{"hello there!"}}
+	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, eventbus.New())
+
+	run, err := m.StartRun("greeter")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	reply, err := m.SendMessage(run.ID, "hi")
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if reply.Role != "assistant" || reply.Content != "hello there!" {
+		t.Errorf("SendMessage() = %+v, want assistant/%q", reply, "hello there!")
+	}
+
+	got, ok := m.GetRun(run.ID)
+	if !ok {
+		t.Fatal("GetRun() not found after SendMessage()")
+	}
+	if len(got.Messages) != 2 || got.Messages[0].Role != "user" || got.Messages[1].Role != "assistant" {
+		t.Errorf("got.Messages = %+v, want [user, assistant]", got.Messages)
+	}
+}
+
+func TestSendMessageUsesRunInstanceForToolNodes(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{
+		"researcher": {Name: "researcher", Environment: "WebSearch", Graph: toolGraph("curl -s example.com")},
+	}}
+	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}, toolOutput: "search results"}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+
+	run, err := m.StartRun("researcher")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	reply, err := m.SendMessage(run.ID, "search for cats")
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if reply.Content != "search results" {
+		t.Errorf("SendMessage() = %+v, want the tool node's output", reply)
+	}
+}
+
+func TestSendMessageUnknownRun(t *testing.T) {
+	m := NewManager(context.Background(), &fakeAgentReader{}, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+
+	if _, err := m.SendMessage("does-not-exist", "hi"); err == nil {
+		t.Error("SendMessage() error = nil, want an error for an unknown run")
+	}
+}
+
+func TestSendMessageRequiresMessage(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+
+	run, err := m.StartRun("greeter")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	if _, err := m.SendMessage(run.ID, ""); err == nil {
+		t.Error("SendMessage() error = nil, want an error for an empty message")
+	}
+}
+
+func TestSendMessageEngineErrorRecordsUserMessageOnly(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
+	llm := &fakeLLM{err: errors.New("ollama unreachable")}
+	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, eventbus.New())
+
+	run, err := m.StartRun("greeter")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	if _, err := m.SendMessage(run.ID, "hi"); err == nil {
+		t.Fatal("SendMessage() error = nil, want the engine error to propagate")
+	}
+
+	got, ok := m.GetRun(run.ID)
+	if !ok {
+		t.Fatal("GetRun() not found")
+	}
+	if len(got.Messages) != 1 || got.Messages[0].Role != "user" {
+		t.Errorf("got.Messages = %+v, want just the user message recorded on failure", got.Messages)
+	}
+}
+
+func TestSendMessageIncludesPriorHistory(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
+	llm := &fakeLLM{responses: []string{"first reply", "second reply"}}
+	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, eventbus.New())
+
+	run, err := m.StartRun("greeter")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	if _, err := m.SendMessage(run.ID, "first message"); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if _, err := m.SendMessage(run.ID, "second message"); err != nil {
+		t.Fatalf("SendMessage() (second) error = %v", err)
+	}
+
+	if len(llm.calls) != 2 {
+		t.Fatalf("llm.calls = %v, want 2 calls", llm.calls)
+	}
+	if !strings.Contains(llm.calls[1], "first message") || !strings.Contains(llm.calls[1], "first reply") {
+		t.Errorf("second call prompt = %q, want it to include the first turn's history", llm.calls[1])
+	}
+}

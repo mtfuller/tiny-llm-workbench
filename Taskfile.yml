@@ -21,11 +21,24 @@ tasks:
     silent: true
 
   build:
-    desc: Build the binary
+    desc: Build the binary (rebuilds the embedded web UI first)
+    deps: [web:build]
     cmds:
       - echo "Building {{.BINARY_NAME}}..."
       - go build {{.LDFLAGS}} -o {{.BINARY_NAME}} main.go
       - echo "Build complete{{":"}} ./{{.BINARY_NAME}}"
+
+  web:install:
+    desc: Install browser UI dependencies
+    dir: web
+    cmds:
+      - npm install
+
+  web:build:
+    desc: Build the browser UI into web/dist for embedding
+    dir: web
+    cmds:
+      - npm run build
 
   test:
     desc: Run all tests (unit + integration)
