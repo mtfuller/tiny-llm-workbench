@@ -1,8 +1,10 @@
+import { AlertTriangle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { cancelTrainingRun, getTrainingRun, type TrainingRun } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import { useEventStream } from '../eventStream'
+import LinkArrow from '../LinkArrow'
 import LossChart from '../LossChart'
 import RunStats from '../RunStats'
 import Skeleton from '../Skeleton'
@@ -129,12 +131,17 @@ function TrainingRunDetail() {
         </div>
       </div>
 
-      {run.status === 'failed' && run.error && <p className="error">{run.error}</p>}
+      {run.status === 'failed' && run.error && (
+        <div className="alert-banner">
+          <AlertTriangle size={16} />
+          <span>{run.error}</span>
+        </div>
+      )}
 
       {run.status === 'succeeded' && (
         <p className="hint">
           Registered as model <code>{run.config.outputName}</code> —{' '}
-          <Link to="/models">view in Models →</Link>
+          <LinkArrow to={`/models/${encodeURIComponent(run.config.outputName)}`}>view model</LinkArrow>
         </p>
       )}
 

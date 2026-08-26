@@ -8,6 +8,7 @@ import Environments from './pages/Environments'
 import EvaluationDetail from './pages/EvaluationDetail'
 import Evaluations from './pages/Evaluations'
 import Home from './pages/Home'
+import ModelDetail from './pages/ModelDetail'
 import Models from './pages/Models'
 import Settings from './pages/Settings'
 import Training from './pages/Training'
@@ -19,6 +20,7 @@ function App() {
       <Route element={<Layout />}>
         <Route index element={<Home />} />
         <Route path="models" element={<Models />} />
+        <Route path="models/:name" element={<ModelDetail />} />
         <Route path="datasets" element={<Datasets />} />
         <Route path="datasets/:name" element={<DatasetDetail />} />
         <Route path="training" element={<Training />} />

@@ -2,7 +2,15 @@ export type ModelSource = 'mlx' | 'binary' | string
 
 export interface Model {
   name: string
+  baseModel?: string
   source: ModelSource
+}
+
+export interface ModelDetail {
+  name: string
+  baseModel?: string
+  source: ModelSource
+  trainingRun?: TrainingRun
 }
 
 export interface Example {
@@ -14,12 +22,16 @@ export interface Example {
 
 export interface DatasetSummary {
   name: string
+  title?: string
+  description?: string
   createdAt: string
   pairCount: number
 }
 
 export interface DatasetDetail {
   name: string
+  title?: string
+  description?: string
   examples: Example[]
 }
 
@@ -232,19 +244,39 @@ export function listModels(): Promise<Model[]> {
   return fetch('/api/models').then(json<Model[]>)
 }
 
+export function getModel(name: string): Promise<ModelDetail> {
+  return fetch(`/api/models/${encodeURIComponent(name)}`).then(json<ModelDetail>)
+}
+
 export function deleteModel(name: string): Promise<void> {
   return fetch(`/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+}
+
+export interface ChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+// chatWithModel sends the full conversation so far (including the newest
+// user turn) — mlx_lm.server is stateless between requests, so nothing
+// persists between calls on the backend either.
+export function chatWithModel(name: string, messages: ChatTurn[]): Promise<{ completion: string }> {
+  return fetch(`/api/models/${encodeURIComponent(name)}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
+  }).then(json<{ completion: string }>)
 }
 
 export function listDatasets(): Promise<DatasetSummary[]> {
   return fetch('/api/datasets').then(json<DatasetSummary[]>)
 }
 
-export function createDataset(name: string): Promise<DatasetSummary> {
+export function createDataset(name: string, title?: string, description?: string): Promise<DatasetSummary> {
   return fetch('/api/datasets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, title, description }),
   }).then(json<DatasetSummary>)
 }
 

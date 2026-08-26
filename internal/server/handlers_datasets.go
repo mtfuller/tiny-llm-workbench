@@ -32,7 +32,9 @@ func listDatasetsHandler(datasets datasetStore) http.HandlerFunc {
 
 // createDatasetRequest is the POST /api/datasets request body.
 type createDatasetRequest struct {
-	Name string `json:"name"`
+	Name        string `json:"name"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
 }
 
 // createDatasetHandler creates a new, empty dataset.
@@ -48,7 +50,7 @@ func createDatasetHandler(datasets datasetStore) http.HandlerFunc {
 			return
 		}
 
-		dataset, err := datasets.CreateDataset(req.Name)
+		dataset, err := datasets.CreateDataset(req.Name, req.Title, req.Description)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -70,11 +72,14 @@ func deleteDatasetHandler(datasets datasetStore) http.HandlerFunc {
 
 // datasetDetail is the GET /api/datasets/{name} response body.
 type datasetDetail struct {
-	Name     string             `json:"name"`
-	Examples []registry.Example `json:"examples"`
+	Name        string             `json:"name"`
+	Title       string             `json:"title,omitempty"`
+	Description string             `json:"description,omitempty"`
+	Examples    []registry.Example `json:"examples"`
 }
 
-// getDatasetHandler responds with a single dataset's input/output pairs.
+// getDatasetHandler responds with a single dataset's metadata and
+// input/output pairs.
 func getDatasetHandler(datasets datasetStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
@@ -87,7 +92,18 @@ func getDatasetHandler(datasets datasetStore) http.HandlerFunc {
 		if examples == nil {
 			examples = []registry.Example{}
 		}
-		writeJSON(w, http.StatusOK, datasetDetail{Name: name, Examples: examples})
+
+		// Metadata lives in the same directory ListExamples just proved
+		// exists, so a failure here is unexpected — fall back to Name-only
+		// metadata rather than failing the whole request over it.
+		dataset, _ := datasets.GetDataset(name)
+
+		writeJSON(w, http.StatusOK, datasetDetail{
+			Name:        name,
+			Title:       dataset.Title,
+			Description: dataset.Description,
+			Examples:    examples,
+		})
 	}
 }
 

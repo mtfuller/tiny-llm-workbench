@@ -121,8 +121,9 @@ func TestStartRunSucceeds(t *testing.T) {
 		t.Error("finished.FinishedAt = nil, want it set")
 	}
 
-	if len(models.saved) != 1 || models.saved[0].Name != "my-finetune" || models.saved[0].Source != "mlx" {
-		t.Errorf("models.saved = %+v, want the trained model registered", models.saved)
+	if len(models.saved) != 1 || models.saved[0].Name != "my-finetune" || models.saved[0].Source != "mlx" ||
+		models.saved[0].BaseModel != "mlx-community/test-model" {
+		t.Errorf("models.saved = %+v, want the trained model registered with its base model", models.saved)
 	}
 	wantPath := models.ModelDir("my-finetune")
 	if models.saved[0].Path != wantPath {

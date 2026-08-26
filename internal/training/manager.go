@@ -271,6 +271,7 @@ func (m *Manager) run(ctx context.Context, run *Run, examples []registry.Example
 
 	if saveErr := m.models.SaveModel(registry.Model{
 		Name:      run.Config.OutputName,
+		BaseModel: run.Config.BaseModel,
 		Source:    "mlx",
 		Path:      fusedDir,
 		CreatedAt: now,

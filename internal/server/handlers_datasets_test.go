@@ -106,6 +106,47 @@ func TestCreateDataset(t *testing.T) {
 	}
 }
 
+func TestCreateDatasetWithTitleAndDescription(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(createDatasetRequest{Name: "greetings", Title: "Greetings", Description: "Casual hello/goodbye pairs"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/datasets status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var got registry.Dataset
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if got.Title != "Greetings" || got.Description != "Casual hello/goodbye pairs" {
+		t.Errorf("POST /api/datasets body = %+v, want Title=Greetings Description set", got)
+	}
+
+	// GET should also surface the metadata alongside the examples.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/datasets/greetings", nil)
+	handler.ServeHTTP(rec, req)
+
+	var detail datasetDetail
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if detail.Title != "Greetings" || detail.Description != "Casual hello/goodbye pairs" {
+		t.Errorf("GET /api/datasets/greetings body = %+v, want Title=Greetings Description set", detail)
+	}
+}
+
 func TestCreateDatasetRequiresName(t *testing.T) {
 	deps := testDeps()
 

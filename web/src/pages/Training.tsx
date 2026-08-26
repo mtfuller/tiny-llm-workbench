@@ -1,6 +1,6 @@
 import { Ban, Plus } from 'lucide-react'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   cancelTrainingRun,
   listDatasets,
@@ -13,11 +13,14 @@ import {
 } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import { useEventStream } from '../eventStream'
+import LinkArrow from '../LinkArrow'
 import Modal from '../Modal'
+import Pagination from '../Pagination'
 import RunStats from '../RunStats'
 import { TableSkeleton } from '../Skeleton'
 import { suggestedModels } from '../suggestedModels'
 import { useToast } from '../Toast'
+import { usePagination } from '../usePagination'
 
 function formatDuration(startedAt: string, finishedAt?: string): string {
   const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
@@ -160,6 +163,10 @@ function Training() {
     )
   }, [pastRuns, search])
 
+  const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filteredRuns)
+
+  useEffect(resetPage, [search, resetPage])
+
   return (
     <>
       <div className="page-header">
@@ -188,14 +195,10 @@ function Training() {
           </div>
           <RunStats run={activeRun} />
           <p className="hint">
-            <Link to={`/training/${activeRun.id}`}>View live loss chart →</Link>
+            <LinkArrow to={`/training/${activeRun.id}`}>View live loss chart</LinkArrow>
           </p>
         </section>
       )}
-
-      <div className="page-header">
-        <h3>Runs</h3>
-      </div>
 
       <div className="panel panel-flush">
         <div className="list-toolbar panel-toolbar">
@@ -253,7 +256,7 @@ function Training() {
               </tr>
             </thead>
             <tbody>
-              {filteredRuns.map((run) => {
+              {pageItems.map((run) => {
                 const latest = run.progress[run.progress.length - 1]
                 return (
                   <tr key={run.id} className="run-row" onClick={() => navigate(`/training/${run.id}`)}>
@@ -262,7 +265,6 @@ function Training() {
                     <td>{run.config.dataset}</td>
                     <td>
                       <span className={`status ${statusClass(run.status)}`}>{run.status}</span>
-                      {run.status === 'failed' && run.error && <div className="error">{run.error}</div>}
                     </td>
                     <td>{latest ? `${latest.iteration} / ${run.config.iterations}` : '—'}</td>
                     <td>{latest?.trainLoss !== undefined ? latest.trainLoss.toFixed(3) : '—'}</td>
@@ -287,6 +289,15 @@ function Training() {
             </tbody>
           </table>
         )}
+
+        <Pagination
+          page={page}
+          pageCount={pageCount}
+          onChange={setPage}
+          shownCount={filteredRuns.length}
+          totalCount={pastRuns.length}
+          itemLabel="runs"
+        />
       </div>
 
       {createOpen && (

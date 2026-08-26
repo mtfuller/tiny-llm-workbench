@@ -4,9 +4,11 @@ import { Link } from 'react-router-dom'
 import { deleteEvaluation, listEnvironments, listEvaluations, saveEvaluation, type Environment, type Evaluation } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import Modal from '../Modal'
+import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { emptyTestCase, TestCaseFields, toPayloadTestCases, type DraftTestCase } from '../TestCaseEditor'
 import { useToast } from '../Toast'
+import { usePagination } from '../usePagination'
 
 function Evaluations() {
   const confirm = useConfirm()
@@ -39,6 +41,10 @@ function Evaluations() {
     if (!q) return evaluations ?? []
     return (evaluations ?? []).filter((e) => e.name.toLowerCase().includes(q))
   }, [evaluations, search])
+
+  const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
+
+  useEffect(resetPage, [search, resetPage])
 
   const handleCreate = async (name: string, environment: string, testCases: DraftTestCase[]) => {
     const payloadTestCases = toPayloadTestCases(testCases)
@@ -144,7 +150,7 @@ function Evaluations() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((eval_) => (
+              {pageItems.map((eval_) => (
                 <tr key={eval_.name}>
                   <td>
                     <Link to={`/evaluations/${encodeURIComponent(eval_.name)}`}>{eval_.name}</Link>
@@ -168,6 +174,15 @@ function Evaluations() {
             </tbody>
           </table>
         )}
+
+        <Pagination
+          page={page}
+          pageCount={pageCount}
+          onChange={setPage}
+          shownCount={filtered.length}
+          totalCount={evaluations?.length ?? 0}
+          itemLabel="evaluations"
+        />
       </div>
 
       {createOpen && (

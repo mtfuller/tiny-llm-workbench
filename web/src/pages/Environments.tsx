@@ -16,8 +16,10 @@ import {
 import { useConfirm } from '../ConfirmDialog'
 import { useEventStream } from '../eventStream'
 import Modal from '../Modal'
+import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { useToast } from '../Toast'
+import { usePagination } from '../usePagination'
 
 function Environments() {
   const { subscribe } = useEventStream()
@@ -87,6 +89,18 @@ function Environments() {
     if (!q) return environments ?? []
     return (environments ?? []).filter((e) => e.name.toLowerCase().includes(q))
   }, [environments, search])
+
+  const {
+    page: definitionsPage,
+    setPage: setDefinitionsPage,
+    resetPage: resetDefinitionsPage,
+    pageCount: definitionsPageCount,
+    pageItems: pageDefinitions,
+  } = usePagination(filteredEnvironments)
+  const { page: instancesPage, setPage: setInstancesPage, pageCount: instancesPageCount, pageItems: pageInstances } =
+    usePagination(instances ?? [])
+
+  useEffect(resetDefinitionsPage, [search, resetDefinitionsPage])
 
   const handleCreate = async (name: string, image: string, tools: string, mounts: Mount[]) => {
     setCreating(true)
@@ -237,7 +251,7 @@ function Environments() {
               </tr>
             </thead>
             <tbody>
-              {filteredEnvironments.map((env) => (
+              {pageDefinitions.map((env) => (
                 <tr key={env.name}>
                   <td>
                     {env.name} {env.prebuilt && <span className="badge">prebuilt</span>}
@@ -284,6 +298,15 @@ function Environments() {
             </tbody>
           </table>
         )}
+
+        <Pagination
+          page={definitionsPage}
+          pageCount={definitionsPageCount}
+          onChange={setDefinitionsPage}
+          shownCount={filteredEnvironments.length}
+          totalCount={environments?.length ?? 0}
+          itemLabel="environments"
+        />
       </div>
 
       <div className="page-header">
@@ -308,7 +331,7 @@ function Environments() {
               </tr>
             </thead>
             <tbody>
-              {instances.map((instance) => (
+              {pageInstances.map((instance) => (
                 <tr key={instance.id}>
                   <td>{instance.name}</td>
                   <td>{instance.environmentName}</td>
@@ -345,6 +368,14 @@ function Environments() {
               ))}
             </tbody>
           </table>
+          <Pagination
+            page={instancesPage}
+            pageCount={instancesPageCount}
+            onChange={setInstancesPage}
+            shownCount={instances.length}
+            totalCount={instances.length}
+            itemLabel="instances"
+          />
         </div>
       )}
 

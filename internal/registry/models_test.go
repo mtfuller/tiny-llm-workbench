@@ -10,7 +10,13 @@ import (
 func TestSaveAndListModels(t *testing.T) {
 	reg := New(t.TempDir())
 
-	want := Model{Name: "my-mlx-model", Source: "mlx", Path: "weights.safetensors", CreatedAt: time.Now().UTC().Truncate(time.Second)}
+	want := Model{
+		Name:      "my-mlx-model",
+		BaseModel: "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+		Source:    "mlx",
+		Path:      "weights.safetensors",
+		CreatedAt: time.Now().UTC().Truncate(time.Second),
+	}
 	if err := reg.SaveModel(want); err != nil {
 		t.Fatalf("SaveModel() error = %v", err)
 	}
@@ -22,8 +28,34 @@ func TestSaveAndListModels(t *testing.T) {
 	if len(models) != 1 {
 		t.Fatalf("ListModels() returned %d models, want 1", len(models))
 	}
-	if got := models[0]; got.Name != want.Name || got.Source != want.Source || got.Path != want.Path || !got.CreatedAt.Equal(want.CreatedAt) {
+	if got := models[0]; got.Name != want.Name || got.BaseModel != want.BaseModel || got.Source != want.Source ||
+		got.Path != want.Path || !got.CreatedAt.Equal(want.CreatedAt) {
 		t.Errorf("ListModels()[0] = %+v, want %+v", got, want)
+	}
+}
+
+func TestGetModel(t *testing.T) {
+	reg := New(t.TempDir())
+
+	want := Model{Name: "my-mlx-model", BaseModel: "mlx-community/Qwen2.5-0.5B-Instruct-4bit", Source: "mlx"}
+	if err := reg.SaveModel(want); err != nil {
+		t.Fatalf("SaveModel() error = %v", err)
+	}
+
+	got, err := reg.GetModel("my-mlx-model")
+	if err != nil {
+		t.Fatalf("GetModel() error = %v", err)
+	}
+	if got.Name != want.Name || got.BaseModel != want.BaseModel {
+		t.Errorf("GetModel() = %+v, want %+v", got, want)
+	}
+}
+
+func TestGetModelNotFound(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.GetModel("does-not-exist"); err == nil {
+		t.Error("GetModel() error = nil, want an error for an unknown model")
 	}
 }
 

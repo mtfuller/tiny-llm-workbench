@@ -5,9 +5,10 @@ interface ModalProps {
   title: string
   onClose: () => void
   children: ReactNode
+  size?: 'md' | 'lg'
 }
 
-function Modal({ title, onClose, children }: ModalProps) {
+function Modal({ title, onClose, children, size = 'md' }: ModalProps) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -18,7 +19,13 @@ function Modal({ title, onClose, children }: ModalProps) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={title}>
+      <div
+        className={`modal${size === 'lg' ? ' modal-lg' : ''}`}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         <div className="modal-header">
           <h3>{title}</h3>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close">

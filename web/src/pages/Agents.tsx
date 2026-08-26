@@ -4,8 +4,10 @@ import { Link, useNavigate } from 'react-router-dom'
 import { deleteAgent, listAgents, saveAgent, type Agent } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import Modal from '../Modal'
+import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { useToast } from '../Toast'
+import { usePagination } from '../usePagination'
 
 function Agents() {
   const navigate = useNavigate()
@@ -32,6 +34,10 @@ function Agents() {
     if (!q) return agents ?? []
     return (agents ?? []).filter((a) => a.name.toLowerCase().includes(q))
   }, [agents, search])
+
+  const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
+
+  useEffect(resetPage, [search, resetPage])
 
   const handleDelete = async (name: string) => {
     if (!(await confirm(`Delete agent "${name}"? This cannot be undone.`))) return
@@ -125,7 +131,7 @@ function Agents() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((agent) => (
+              {pageItems.map((agent) => (
                 <tr key={agent.name}>
                   <td>
                     <Link to={`/agents/${encodeURIComponent(agent.name)}`}>{agent.name}</Link>
@@ -148,6 +154,15 @@ function Agents() {
             </tbody>
           </table>
         )}
+
+        <Pagination
+          page={page}
+          pageCount={pageCount}
+          onChange={setPage}
+          shownCount={filtered.length}
+          totalCount={agents?.length ?? 0}
+          itemLabel="agents"
+        />
       </div>
 
       {createOpen && (

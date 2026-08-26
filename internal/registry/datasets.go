@@ -17,8 +17,10 @@ const (
 
 // Dataset is a registry-tracked dataset's metadata.
 type Dataset struct {
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"createdAt"`
+	Name        string    `json:"name"`
+	Title       string    `json:"title,omitempty"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
 }
 
 // DatasetSummary is a Dataset plus its example count, as returned by
@@ -37,14 +39,16 @@ type Example struct {
 	Tags        []string `json:"tags,omitempty"`
 }
 
-// CreateDataset creates a new, empty dataset named name.
-func (r *Registry) CreateDataset(name string) (Dataset, error) {
+// CreateDataset creates a new, empty dataset named name. title and
+// description are optional, freeform metadata shown on the dataset's detail
+// page — they don't affect training.
+func (r *Registry) CreateDataset(name, title, description string) (Dataset, error) {
 	dir := r.datasetDir(name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Dataset{}, fmt.Errorf("create dataset directory: %w", err)
 	}
 
-	dataset := Dataset{Name: name, CreatedAt: time.Now().UTC()}
+	dataset := Dataset{Name: name, Title: title, Description: description, CreatedAt: time.Now().UTC()}
 
 	data, err := json.MarshalIndent(dataset, "", "  ")
 	if err != nil {
@@ -61,6 +65,12 @@ func (r *Registry) CreateDataset(name string) (Dataset, error) {
 	}
 
 	return dataset, nil
+}
+
+// GetDataset returns a single dataset's metadata (name, title, description,
+// creation time), without its examples.
+func (r *Registry) GetDataset(name string) (Dataset, error) {
+	return r.readDatasetMetadata(name)
 }
 
 // ListDatasets returns all registry-tracked datasets, sorted by name.

@@ -55,6 +55,43 @@ body {
   background: var(--bg);
 }
 
+/* Links — accent-colored, no underline by default (added back on hover for
+   affordance) instead of the browser's default blue-underline, which read
+   as an unstyled/unfinished corner of an otherwise designed app. More
+   specific rules (.page-header a, .nav-item, .dashboard-card, ...) still
+   win where a link is meant to blend in rather than stand out. */
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* LinkArrow — a "go to X" link (label + trailing arrow) used wherever a
+   link's whole job is sending the reader elsewhere, in place of a raw "→"
+   glyph. Underline is skipped even on hover since the arrow itself already
+   signals "this goes somewhere"; the nudge is animation enough. */
+.link-arrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-weight: 500;
+}
+
+.link-arrow:hover {
+  text-decoration: none;
+}
+
+.link-arrow svg {
+  transition: transform 0.15s ease;
+}
+
+.link-arrow:hover svg {
+  transform: translateX(3px);
+}
+
 /* Layout */
 
 .app-shell {
@@ -71,6 +108,14 @@ body {
   padding: 1.5rem 1rem;
   background: var(--surface);
   border-right: 1px solid var(--border);
+  /* Pin to the viewport instead of stretching with .app-shell's min-height:
+     100vh on a page taller than the screen — otherwise .sidebar-nav's flex:1
+     pushes .sidebar-footer down to match the page's full scroll height
+     instead of the visible bottom of the screen. */
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .sidebar-brand {
@@ -229,6 +274,13 @@ a.nav-item:hover {
   color: var(--text);
 }
 
+/* A dataset's optional display title/description, shown just under the
+   breadcrumb heading on its detail page. */
+.dataset-title {
+  margin: -0.75rem 0 0.25rem;
+  font-size: 1rem;
+}
+
 .status {
   font-size: 0.72rem;
   font-weight: 600;
@@ -337,6 +389,28 @@ a.nav-item:hover {
 .error {
   color: var(--danger);
   font-size: 0.85rem;
+}
+
+/* Alert banner — a more prominent, boxed variant of .error for surfacing a
+   single important failure (e.g. a training run's error) at the top of a
+   detail page, rather than inline text. */
+.alert-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-left: 3px solid var(--danger);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  color: var(--danger);
+  font-size: 0.88rem;
+  margin-bottom: 1.25rem;
+}
+
+.alert-banner svg {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
 }
 
 /* Tables */
@@ -626,7 +700,6 @@ a.nav-item:hover {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  max-width: 420px;
 }
 
 .stacked-form label,
@@ -780,6 +853,53 @@ textarea {
   padding: 0.45rem 0.65rem;
   resize: vertical;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+/* Line-numbered plaintext editor (LineNumberedTextarea) — a gutter of line
+   numbers synced to a monospace, non-wrapping textarea, for content where
+   exact line breaks/spacing matter (dataset example input/output). */
+
+.line-editor {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85rem;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.line-editor:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.line-editor-gutter {
+  flex-shrink: 0;
+  padding: 0.45rem 0.55rem;
+  text-align: right;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--text) 40%, transparent);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  user-select: none;
+}
+
+.line-editor-textarea {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+  resize: none;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+
+.line-editor-textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 /* Icon buttons */
@@ -1031,6 +1151,11 @@ textarea {
   overflow: hidden;
 }
 
+.modal-lg {
+  max-width: 720px;
+  height: 85vh;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -1152,6 +1277,137 @@ textarea {
   font-weight: 600;
   text-transform: capitalize;
   flex-shrink: 0;
+}
+
+/* Model chat modal (ModelChatModal) — a taller, avatar-based chat window
+   distinct from the plain role-label chat log above. */
+
+.chat-modal-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.chat-modal-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.25rem 0.25rem 1rem;
+}
+
+.chat-modal-empty {
+  margin: auto;
+  text-align: center;
+  color: color-mix(in srgb, var(--text) 50%, transparent);
+  font-size: 0.9rem;
+}
+
+.chat-modal-message {
+  display: flex;
+  gap: 0.6rem;
+  max-width: 82%;
+}
+
+.chat-modal-message-user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.chat-modal-message-assistant {
+  align-self: flex-start;
+}
+
+.chat-modal-avatar {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-modal-message-user .chat-modal-avatar {
+  background: var(--accent);
+  color: white;
+}
+
+.chat-modal-message-assistant .chat-modal-avatar {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+
+.chat-modal-bubble {
+  padding: 0.6rem 0.85rem;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.chat-modal-message-user .chat-modal-bubble {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-top-right-radius: 4px;
+}
+
+.chat-modal-message-assistant .chat-modal-bubble {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  border-top-left-radius: 4px;
+}
+
+.chat-modal-bubble-pending {
+  display: flex;
+  align-items: center;
+}
+
+.chat-modal-spinner {
+  animation: chat-modal-spin 0.8s linear infinite;
+}
+
+@keyframes chat-modal-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-modal-spinner {
+    animation: none;
+  }
+}
+
+.chat-modal-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.chat-modal-input {
+  flex: 1;
+  resize: none;
+  max-height: 140px;
+}
+
+.chat-modal-send {
+  flex-shrink: 0;
+  border-radius: 999px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Evaluations */

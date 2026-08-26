@@ -18,7 +18,11 @@ const modelMetadataFile = "metadata.json"
 // fused output of internal/training's post-training fuse step, not the raw
 // LoRA adapter (which isn't runnable on its own).
 type Model struct {
-	Name      string    `json:"name"`
+	Name string `json:"name"`
+	// BaseModel is the MLX-format model (a Hugging Face repo id, or another
+	// registry model's name) this model was fine-tuned from — empty for a
+	// model that wasn't produced by a training run.
+	BaseModel string    `json:"baseModel,omitempty"`
 	Source    string    `json:"source"` // e.g. "mlx", "binary"
 	Path      string    `json:"path,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -41,6 +45,11 @@ func (r *Registry) SaveModel(m Model) error {
 	}
 
 	return nil
+}
+
+// GetModel returns a single registry-tracked model's metadata.
+func (r *Registry) GetModel(name string) (Model, error) {
+	return r.readModelMetadata(name)
 }
 
 // ListModels returns all registry-tracked models, sorted by name.

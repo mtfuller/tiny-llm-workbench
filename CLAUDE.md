@@ -90,16 +90,33 @@ choice:
     and only registers *that* as the model — a fuse failure fails the whole run, since a run that can't
     produce something runnable didn't really succeed. Runs persist to `<registry root>/runs/<id>.json`
     and survive a `tlw serve` restart.
-  - **Inference** (Agents' prompt nodes, dataset variation generation): `internal/mlxrunner.Runner`
-    manages a pool of on-demand `mlx_lm.server` subprocesses — one per distinct model actually in use,
-    started lazily on first request (a free port via a brief `:0` bind, then polled on `/v1/models`
-    until ready), reused across requests, and stopped after 15 minutes idle. It implements the same
-    `Generate(ctx, model, prompt) (string, error)` shape `ollama.Client` used to, so `internal/agents`
-    and `internal/datasetgen` needed zero code changes — only what gets injected in `cmd/serve.go`
-    changed. Talks to `mlx_lm.server`'s OpenAI-compatible `POST /v1/completions`, capping `max_tokens`
-    at `Runner.MaxTokens` (default 256, `mlxrunner.defaultMaxTokens`) — confirmed by hand that
-    `mlx_lm.server`'s own default (512, no repetition penalty engaged by default) routinely rambled into
-    long repetitive text for a short chat/dataset-gen prompt.
+  - **Inference** (Agents' prompt nodes, dataset variation generation, the Models page's chat modal):
+    `internal/mlxrunner.Runner` manages a pool of on-demand `mlx_lm.server` subprocesses — one per
+    distinct model actually in use, started lazily on first request (a free port via a brief `:0` bind,
+    then polled on `/v1/models` until ready), reused across requests, and stopped after 15 minutes idle.
+    `Generate(ctx, model, prompt) (string, error)` (the same shape `ollama.Client` used to, so
+    `internal/agents` and `internal/datasetgen` needed zero code changes when Ollama was swapped out —
+    only what gets injected in `cmd/serve.go` changed) wraps a single implicit user turn; `Chat(ctx,
+    model string, messages []ChatMessage) (string, error)` takes an explicit multi-turn history for the
+    Models page's chat modal — mlx_lm.server itself is stateless between requests, so the full
+    conversation has to be resent every call. Both funnel through the same internal `complete()`, which
+    talks to `mlx_lm.server`'s OpenAI-compatible `POST /v1/chat/completions`, capping `max_tokens` at
+    `Runner.MaxTokens` (default 256, `mlxrunner.defaultMaxTokens`).
+
+    **Real, confirmed root cause of small models producing repeated-gibberish output** (e.g. the same
+    sentence looping for hundreds of tokens): reading the installed `mlx_lm.server` 0.31.3 source
+    directly showed two compounding defaults. First, `repetition_penalty` on its request body defaults to
+    `0.0` (disabled) unless a caller sets it — TLW now always sends `Runner.RepetitionPenalty` (default
+    1.3, `mlxrunner.defaultRepetitionPenalty`) to suppress the token loops small models are prone to
+    under low-temperature decoding. Second, and more fundamental: TLW originally hit the plain-text
+    `/v1/completions` endpoint, which (confirmed by reading the source) is the *one* endpoint that does
+    **not** call the model's own `tokenizer.apply_chat_template` — an Instruct-tuned model fed a raw
+    prompt string with no role markers isn't being asked to answer anything, it's just continuing
+    whatever text pattern statistically follows. Switching to `/v1/chat/completions` (wrapping the prompt
+    as a `{"role": "user", ...}` message) fixed this at the source rather than papering over it with a
+    lower token cap. Verified by hand against a real repeated-gibberish case (a plain "What do you like
+    to do?" prompt) — the same prompt through the old path degenerated into a looping sentence; through
+    the new path it produced a normal, on-topic, non-repeating reply.
   - The "model" string throughout is either a Hugging Face MLX repo id (e.g.
     `mlx-community/Qwen2.5-0.5B-Instruct-4bit`, downloaded automatically on first use) or a registry
     model's `Path` (a local, standalone, fused model directory) — both load the same way, so the

@@ -86,6 +86,7 @@ URL in a browser. Stop it with Ctrl+C.`,
 		handler, err := server.New(server.Deps{
 			Bus:          bus,
 			Models:       reg,
+			ModelRunner:  runner,
 			Datasets:     reg,
 			Generator:    generator,
 			Training:     trainingMgr,

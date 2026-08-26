@@ -1,9 +1,13 @@
-import { Trash2 } from 'lucide-react'
+import { Play, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useConfirm } from '../ConfirmDialog'
 import { deleteModel, listModels, type Model } from '../api'
+import ModelChatModal from '../ModelChatModal'
+import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { useToast } from '../Toast'
+import { usePagination } from '../usePagination'
 
 function Models() {
   const confirm = useConfirm()
@@ -12,6 +16,7 @@ function Models() {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [chatModel, setChatModel] = useState<string | null>(null)
 
   const reload = () => {
     listModels()
@@ -24,8 +29,12 @@ function Models() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return models ?? []
-    return (models ?? []).filter((m) => m.name.toLowerCase().includes(q))
+    return (models ?? []).filter((m) => m.name.toLowerCase().includes(q) || (m.baseModel ?? '').toLowerCase().includes(q))
   }, [models, search])
+
+  const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
+
+  useEffect(resetPage, [search, resetPage])
 
   const handleDelete = async (model: Model) => {
     if (!(await confirm(`Delete model "${model.name}"? This cannot be undone.`))) return
@@ -73,7 +82,7 @@ function Models() {
 
         {!error && models === null && (
           <div className="panel-body">
-            <TableSkeleton columns={2} />
+            <TableSkeleton columns={3} />
           </div>
         )}
 
@@ -94,14 +103,27 @@ function Models() {
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Base model</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((model) => (
+              {pageItems.map((model) => (
                 <tr key={model.name}>
-                  <td>{model.name}</td>
+                  <td>
+                    <Link to={`/models/${encodeURIComponent(model.name)}`}>{model.name}</Link>
+                  </td>
+                  <td>{model.baseModel || '—'}</td>
                   <td className="row-actions">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="Run / prompt model"
+                      aria-label="Run / prompt model"
+                      onClick={() => setChatModel(model.name)}
+                    >
+                      <Play size={15} />
+                    </button>
                     <button
                       type="button"
                       className="icon-button"
@@ -118,7 +140,18 @@ function Models() {
             </tbody>
           </table>
         )}
+
+        <Pagination
+          page={page}
+          pageCount={pageCount}
+          onChange={setPage}
+          shownCount={filtered.length}
+          totalCount={models?.length ?? 0}
+          itemLabel="models"
+        />
       </div>
+
+      {chatModel && <ModelChatModal modelName={chatModel} onClose={() => setChatModel(null)} />}
     </>
   )
 }

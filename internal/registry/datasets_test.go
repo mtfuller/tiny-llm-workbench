@@ -8,7 +8,7 @@ import (
 func TestCreateAndListDatasets(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("greetings"); err != nil {
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 
@@ -27,10 +27,34 @@ func TestCreateAndListDatasets(t *testing.T) {
 	}
 }
 
+func TestCreateDatasetWithTitleAndDescriptionRoundTrips(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings", "Greetings", "Casual hello/goodbye pairs"); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+
+	got, err := reg.GetDataset("greetings")
+	if err != nil {
+		t.Fatalf("GetDataset() error = %v", err)
+	}
+	if got.Title != "Greetings" || got.Description != "Casual hello/goodbye pairs" {
+		t.Errorf("GetDataset() = %+v, want Title=Greetings Description=%q", got, "Casual hello/goodbye pairs")
+	}
+
+	datasets, err := reg.ListDatasets()
+	if err != nil {
+		t.Fatalf("ListDatasets() error = %v", err)
+	}
+	if len(datasets) != 1 || datasets[0].Title != "Greetings" {
+		t.Errorf("ListDatasets() = %+v, want a single entry with Title=Greetings", datasets)
+	}
+}
+
 func TestAppendAndListExamples(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("greetings"); err != nil {
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 
@@ -59,7 +83,7 @@ func TestAppendAndListExamples(t *testing.T) {
 func TestAppendAndListExamplesWithDescriptionAndTags(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("greetings"); err != nil {
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 
@@ -80,7 +104,7 @@ func TestAppendAndListExamplesWithDescriptionAndTags(t *testing.T) {
 func TestUpdateExample(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("greetings"); err != nil {
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 	if err := reg.AppendExamples("greetings", []Example{
@@ -106,7 +130,7 @@ func TestUpdateExample(t *testing.T) {
 func TestUpdateExampleOutOfRange(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("greetings"); err != nil {
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 
@@ -118,7 +142,7 @@ func TestUpdateExampleOutOfRange(t *testing.T) {
 func TestDeleteExample(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("greetings"); err != nil {
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 	if err := reg.AppendExamples("greetings", []Example{
@@ -144,7 +168,7 @@ func TestDeleteExample(t *testing.T) {
 func TestDeleteExampleOutOfRange(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("greetings"); err != nil {
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 
@@ -156,7 +180,7 @@ func TestDeleteExampleOutOfRange(t *testing.T) {
 func TestListDatasetsReflectsPairCount(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("greetings"); err != nil {
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 	if err := reg.AppendExamples("greetings", []Example{{Input: "hi", Output: "hello!"}}); err != nil {
@@ -195,7 +219,7 @@ func TestListExamplesUnknownDataset(t *testing.T) {
 func TestDeleteDataset(t *testing.T) {
 	reg := New(t.TempDir())
 
-	if _, err := reg.CreateDataset("throwaway"); err != nil {
+	if _, err := reg.CreateDataset("throwaway", "", ""); err != nil {
 		t.Fatalf("CreateDataset() error = %v", err)
 	}
 

@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
+	"github.com/mtfuller/tiny-llm-workbench/internal/mlxrunner"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
 )
@@ -14,12 +16,25 @@ import (
 type fakeModelStore struct {
 	list      []registry.Model
 	err       error
+	getErr    error
 	deleteErr error
 	deleted   []string
 }
 
 func (f *fakeModelStore) ListModels() ([]registry.Model, error) {
 	return f.list, f.err
+}
+
+func (f *fakeModelStore) GetModel(name string) (registry.Model, error) {
+	if f.getErr != nil {
+		return registry.Model{}, f.getErr
+	}
+	for _, m := range f.list {
+		if m.Name == name {
+			return m, nil
+		}
+	}
+	return registry.Model{}, fmt.Errorf("model %q not found", name)
 }
 
 func (f *fakeModelStore) DeleteModel(name string) error {
@@ -30,9 +45,29 @@ func (f *fakeModelStore) DeleteModel(name string) error {
 	return nil
 }
 
+type fakeModelRunner struct {
+	completion string
+	err        error
+	calls      []fakeModelRunnerCall
+}
+
+type fakeModelRunnerCall struct {
+	model    string
+	messages []mlxrunner.ChatMessage
+}
+
+func (f *fakeModelRunner) Chat(ctx context.Context, model string, messages []mlxrunner.ChatMessage) (string, error) {
+	f.calls = append(f.calls, fakeModelRunnerCall{model: model, messages: messages})
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.completion, nil
+}
+
 type fakeDatasetStore struct {
 	datasets     []registry.DatasetSummary
 	examples     map[string][]registry.Example
+	metadata     map[string]registry.Dataset
 	createErr    error
 	created      []string
 	appendErr    error
@@ -60,11 +95,23 @@ func (f *fakeDatasetStore) ListDatasets() ([]registry.DatasetSummary, error) {
 	return f.datasets, f.listErr
 }
 
-func (f *fakeDatasetStore) CreateDataset(name string) (registry.Dataset, error) {
+func (f *fakeDatasetStore) CreateDataset(name, title, description string) (registry.Dataset, error) {
 	if f.createErr != nil {
 		return registry.Dataset{}, f.createErr
 	}
 	f.created = append(f.created, name)
+	dataset := registry.Dataset{Name: name, Title: title, Description: description}
+	if f.metadata == nil {
+		f.metadata = make(map[string]registry.Dataset)
+	}
+	f.metadata[name] = dataset
+	return dataset, nil
+}
+
+func (f *fakeDatasetStore) GetDataset(name string) (registry.Dataset, error) {
+	if d, ok := f.metadata[name]; ok {
+		return d, nil
+	}
 	return registry.Dataset{Name: name}, nil
 }
 
@@ -364,6 +411,7 @@ func testDeps() Deps {
 	return Deps{
 		Bus:          eventbus.New(),
 		Models:       &fakeModelStore{},
+		ModelRunner:  &fakeModelRunner{},
 		Datasets:     newFakeDatasetStore(),
 		Generator:    &fakeGenerator{},
 		Training:     &fakeTrainingManager{},

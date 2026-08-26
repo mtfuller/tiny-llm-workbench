@@ -12,6 +12,7 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
+	"github.com/mtfuller/tiny-llm-workbench/internal/mlxrunner"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
 	"github.com/mtfuller/tiny-llm-workbench/web"
@@ -21,14 +22,22 @@ import (
 // endpoints.
 type modelStore interface {
 	ListModels() ([]registry.Model, error)
+	GetModel(name string) (registry.Model, error)
 	DeleteModel(name string) error
+}
+
+// modelRunner is the subset of mlxrunner.Runner the server needs to chat
+// with a registry model from the Models detail page's "Run model" modal.
+type modelRunner interface {
+	Chat(ctx context.Context, model string, messages []mlxrunner.ChatMessage) (string, error)
 }
 
 // datasetStore is the subset of registry.Registry the server needs for
 // dataset endpoints.
 type datasetStore interface {
 	ListDatasets() ([]registry.DatasetSummary, error)
-	CreateDataset(name string) (registry.Dataset, error)
+	CreateDataset(name, title, description string) (registry.Dataset, error)
+	GetDataset(name string) (registry.Dataset, error)
 	DeleteDataset(name string) error
 	ListExamples(name string) ([]registry.Example, error)
 	AppendExamples(name string, examples []registry.Example) error
@@ -104,6 +113,7 @@ type evaluationManager interface {
 type Deps struct {
 	Bus          *eventbus.Bus
 	Models       modelStore
+	ModelRunner  modelRunner
 	Datasets     datasetStore
 	Generator    variationGenerator
 	Training     trainingManager
@@ -133,7 +143,9 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /api/events", sseHandler(deps.Bus))
 	mux.HandleFunc("GET /api/system", systemInfoHandler(deps.RegistryRoot))
 	mux.HandleFunc("GET /api/models", listModelsHandler(deps.Models))
+	mux.HandleFunc("GET /api/models/{name}", getModelHandler(deps.Models, deps.Training))
 	mux.HandleFunc("DELETE /api/models/{name}", deleteModelHandler(deps.Models))
+	mux.HandleFunc("POST /api/models/{name}/chat", chatWithModelHandler(deps.Models, deps.ModelRunner))
 	mux.HandleFunc("GET /api/datasets", listDatasetsHandler(deps.Datasets))
 	mux.HandleFunc("POST /api/datasets", createDatasetHandler(deps.Datasets))
 	mux.HandleFunc("GET /api/datasets/{name}", getDatasetHandler(deps.Datasets))

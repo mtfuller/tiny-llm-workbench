@@ -57,6 +57,9 @@ type Runner struct {
 	// MaxTokens overrides how many tokens a single Generate call may
 	// produce. Zero means defaultMaxTokens.
 	MaxTokens int
+	// RepetitionPenalty overrides how strongly repeated tokens are
+	// discouraged during generation. Zero means defaultRepetitionPenalty.
+	RepetitionPenalty float64
 
 	// ctx bounds the lifetime of every server process this Runner starts —
 	// it must outlive any single HTTP request (a server is reused across
@@ -101,12 +104,35 @@ func New(ctx context.Context) *Runner {
 // a Hugging Face repo id, or a local directory (e.g. a TLW-trained model,
 // already fused into a standalone model by internal/training).
 func (r *Runner) Generate(ctx context.Context, model, prompt string) (string, error) {
+	return r.chat(ctx, model, []chatMessage{{Role: "user", Content: prompt}})
+}
+
+// ChatMessage is one turn in a multi-turn conversation passed to Chat.
+type ChatMessage struct {
+	Role    string
+	Content string
+}
+
+// Chat runs a full conversation (every prior turn plus the latest one)
+// against model in a single call, for multi-turn chat UIs. Unlike Generate's
+// single implicit user turn, callers must resend the whole history every
+// time — mlx_lm.server itself is stateless between requests, so nothing
+// persists between calls on TLW's side either.
+func (r *Runner) Chat(ctx context.Context, model string, messages []ChatMessage) (string, error) {
+	msgs := make([]chatMessage, len(messages))
+	for i, m := range messages {
+		msgs[i] = chatMessage{Role: m.Role, Content: m.Content}
+	}
+	return r.chat(ctx, model, msgs)
+}
+
+func (r *Runner) chat(ctx context.Context, model string, messages []chatMessage) (string, error) {
 	srv, err := r.ensure(model)
 	if err != nil {
 		return "", err
 	}
 
-	text, err := r.complete(ctx, srv.baseURL, prompt)
+	text, err := r.complete(ctx, srv.baseURL, messages)
 	if err != nil {
 		return "", err
 	}
@@ -118,44 +144,80 @@ func (r *Runner) Generate(ctx context.Context, model, prompt string) (string, er
 	return text, nil
 }
 
-// completionRequest/-Response mirror mlx_lm.server's OpenAI-compatible
-// POST /v1/completions API. "default_model" asks for whatever model the
-// server was started with — mlx_lm.server's --adapter-path flag has a real
-// bug where it's silently ignored for the server's own default model
-// (confirmed against mlx-lm 0.31.3: the CLI-supplied adapter never gets
-// applied), which is exactly why training fuses adapters into a standalone
-// model first instead of ever asking a server to load base+adapter together.
-type completionRequest struct {
-	Model     string `json:"model"`
-	Prompt    string `json:"prompt"`
-	MaxTokens int    `json:"max_tokens"`
+// chatMessage/chatCompletionRequest/-Response mirror mlx_lm.server's
+// OpenAI-compatible POST /v1/chat/completions API. "default_model" asks for
+// whatever model the server was started with — mlx_lm.server's
+// --adapter-path flag has a real bug where it's silently ignored for the
+// server's own default model (confirmed against mlx-lm 0.31.3: the
+// CLI-supplied adapter never gets applied), which is exactly why training
+// fuses adapters into a standalone model first instead of ever asking a
+// server to load base+adapter together.
+//
+// This hits /v1/chat/completions rather than the plain-text /v1/completions
+// endpoint deliberately: reading mlx_lm.server's source (0.31.3) shows only
+// the chat endpoint calls the model's own tokenizer.apply_chat_template —
+// /v1/completions feeds prompt straight to the model with no role markers
+// or stop tokens at all. For an Instruct-tuned model that means it isn't
+// being asked to answer anything, just to keep writing whatever text
+// pattern statistically follows the raw prompt string — a real, confirmed
+// contributor (alongside repetition_penalty below) to the repeated-gibberish
+// output seen from small models on this endpoint.
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatCompletionRequest struct {
+	Model             string        `json:"model"`
+	Messages          []chatMessage `json:"messages"`
+	MaxTokens         int           `json:"max_tokens"`
+	RepetitionPenalty float64       `json:"repetition_penalty"`
 }
 
 // defaultMaxTokens caps how long a single completion can run. Confirmed by
-// hand: mlx_lm.server's own default (512, with no repetition penalty
-// engaged by default) routinely rambled into long repetitive text for a
-// short chat/dataset-gen prompt — this both bounds latency and keeps
-// replies from running away.
+// hand: mlx_lm.server's own default (512 tokens) routinely rambled into
+// long text for a short chat/dataset-gen prompt — this both bounds latency
+// and keeps replies from running away.
 const defaultMaxTokens = 256
 
-type completionResponse struct {
+// defaultRepetitionPenalty discourages the token-loop degeneration small
+// models are prone to under greedy decoding (mlx_lm.server's own default
+// temperature is 0.0). Confirmed by reading mlx_lm.server's source (0.31.3):
+// its repetition_penalty request field defaults to 0.0, i.e. off, unless a
+// caller sets it — matching a real observed case where a 0.5B model's reply
+// to a plain prompt degenerated into the same sentence repeated dozens of
+// times. 1.3 is a fairly assertive but standard value for suppressing that
+// on small models without visibly hurting coherent replies.
+const defaultRepetitionPenalty = 1.3
+
+type chatCompletionResponse struct {
 	Choices []struct {
-		Text string `json:"text"`
+		Message chatMessage `json:"message"`
 	} `json:"choices"`
 }
 
-func (r *Runner) complete(ctx context.Context, baseURL, prompt string) (string, error) {
+func (r *Runner) complete(ctx context.Context, baseURL string, messages []chatMessage) (string, error) {
 	maxTokens := r.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = defaultMaxTokens
 	}
 
-	body, err := json.Marshal(completionRequest{Model: "default_model", Prompt: prompt, MaxTokens: maxTokens})
+	repetitionPenalty := r.RepetitionPenalty
+	if repetitionPenalty == 0 {
+		repetitionPenalty = defaultRepetitionPenalty
+	}
+
+	body, err := json.Marshal(chatCompletionRequest{
+		Model:             "default_model",
+		Messages:          messages,
+		MaxTokens:         maxTokens,
+		RepetitionPenalty: repetitionPenalty,
+	})
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
@@ -172,7 +234,7 @@ func (r *Runner) complete(ctx context.Context, baseURL, prompt string) (string, 
 		return "", fmt.Errorf("mlx_lm.server returned status %d: %s", resp.StatusCode, respBody)
 	}
 
-	var completion completionResponse
+	var completion chatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&completion); err != nil {
 		return "", fmt.Errorf("decode mlx_lm.server response: %w", err)
 	}
@@ -180,7 +242,7 @@ func (r *Runner) complete(ctx context.Context, baseURL, prompt string) (string, 
 		return "", errors.New("mlx_lm.server returned no choices")
 	}
 
-	return completion.Choices[0].Text, nil
+	return completion.Choices[0].Message.Content, nil
 }
 
 // ensure returns a ready server for model, starting one if none is running

@@ -4,8 +4,10 @@ import { Link } from 'react-router-dom'
 import { createDataset, deleteDataset, listDatasets, type DatasetSummary } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import Modal from '../Modal'
+import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { useToast } from '../Toast'
+import { usePagination } from '../usePagination'
 
 function Datasets() {
   const confirm = useConfirm()
@@ -32,11 +34,15 @@ function Datasets() {
     return (datasets ?? []).filter((d) => d.name.toLowerCase().includes(q))
   }, [datasets, search])
 
-  const handleCreate = async (name: string) => {
+  const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
+
+  useEffect(resetPage, [search, resetPage])
+
+  const handleCreate = async (name: string, title: string, description: string) => {
     setCreating(true)
     setCreateError(null)
     try {
-      await createDataset(name)
+      await createDataset(name, title || undefined, description || undefined)
       setCreateOpen(false)
       reload()
     } catch (err) {
@@ -119,7 +125,7 @@ function Datasets() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((dataset) => (
+              {pageItems.map((dataset) => (
                 <tr key={dataset.name}>
                   <td>
                     <Link to={`/datasets/${encodeURIComponent(dataset.name)}`}>{dataset.name}</Link>
@@ -142,6 +148,15 @@ function Datasets() {
             </tbody>
           </table>
         )}
+
+        <Pagination
+          page={page}
+          pageCount={pageCount}
+          onChange={setPage}
+          shownCount={filtered.length}
+          totalCount={datasets?.length ?? 0}
+          itemLabel="datasets"
+        />
       </div>
 
       {createOpen && (
@@ -159,17 +174,19 @@ function Datasets() {
 interface CreateDatasetModalProps {
   creating: boolean
   error: string | null
-  onCreate: (name: string) => void
+  onCreate: (name: string, title: string, description: string) => void
   onClose: () => void
 }
 
 function CreateDatasetModal({ creating, error, onCreate, onClose }: CreateDatasetModalProps) {
   const [name, setName] = useState('')
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
-    onCreate(name.trim())
+    onCreate(name.trim(), title.trim(), description.trim())
   }
 
   return (
@@ -178,6 +195,14 @@ function CreateDatasetModal({ creating, error, onCreate, onClose }: CreateDatase
         <label>
           Name
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+        <label>
+          Title (optional)
+          <input type="text" placeholder="A short display name" value={title} onChange={(e) => setTitle(e.target.value)} />
+        </label>
+        <label>
+          Description (optional)
+          <textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
         {error && <p className="error">{error}</p>}
         <div className="row-actions confirm-actions">

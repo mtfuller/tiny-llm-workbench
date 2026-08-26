@@ -16,13 +16,15 @@ import {
   type Model,
 } from '../api'
 import { useConfirm } from '../ConfirmDialog'
+import LineNumberedTextarea from '../LineNumberedTextarea'
 import Modal from '../Modal'
+import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { suggestedModels } from '../suggestedModels'
 import TagInput from '../TagInput'
 import { useToast } from '../Toast'
+import { usePagination } from '../usePagination'
 
-const PAGE_SIZE = 20
 const emptyExample: Example = { input: '', output: '', description: '', tags: [] }
 
 type ModalState = { mode: 'add' } | { mode: 'edit'; index: number } | null
@@ -37,7 +39,6 @@ function DatasetDetail() {
 
   const [search, setSearch] = useState('')
   const [activeTags, setActiveTags] = useState<Set<string>>(new Set())
-  const [page, setPage] = useState(0)
 
   const [modal, setModal] = useState<ModalState>(null)
   const [modalSaving, setModalSaving] = useState(false)
@@ -63,8 +64,6 @@ function DatasetDetail() {
       .then(setModels)
       .catch(() => setModels([]))
   }, [])
-
-  useEffect(() => setPage(0), [search, activeTags])
 
   const modelOptions = useMemo(() => {
     const trained = models.map((m) => m.name)
@@ -98,10 +97,9 @@ function DatasetDetail() {
       })
   }, [examples, search, activeTags])
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const currentPage = Math.min(page, pageCount - 1)
-  const pageStart = currentPage * PAGE_SIZE
-  const pageItems = filtered.slice(pageStart, pageStart + PAGE_SIZE)
+  const { page: currentPage, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
+
+  useEffect(resetPage, [search, activeTags, resetPage])
 
   const toggleTagFilter = (tag: string) => {
     setActiveTags((prev) => {
@@ -192,6 +190,8 @@ function DatasetDetail() {
           <Link to="/datasets">Datasets</Link> / {name}
         </h2>
       </div>
+      {dataset?.title && <h3 className="dataset-title">{dataset.title}</h3>}
+      {dataset?.description && <p className="hint">{dataset.description}</p>}
 
       <div className="panel panel-flush">
         <div className="list-toolbar panel-toolbar">
@@ -332,19 +332,14 @@ function DatasetDetail() {
           </table>
         )}
 
-        {filtered.length > 0 && pageCount > 1 && (
-          <div className="pagination">
-            <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>
-              Previous
-            </button>
-            <span className="hint">
-              Page {currentPage + 1} of {pageCount} ({filtered.length} of {examples.length} examples)
-            </span>
-            <button type="button" disabled={currentPage >= pageCount - 1} onClick={() => setPage(currentPage + 1)}>
-              Next
-            </button>
-          </div>
-        )}
+        <Pagination
+          page={currentPage}
+          pageCount={pageCount}
+          onChange={setPage}
+          shownCount={filtered.length}
+          totalCount={examples.length}
+          itemLabel="examples"
+        />
       </div>
 
       {modal && (
@@ -485,11 +480,11 @@ function ExampleModal({ title, initial, allTags, saving, error, onSave, onClose 
       <form className="stacked-form" onSubmit={handleSubmit}>
         <label>
           Input
-          <textarea rows={3} value={input} onChange={(e) => setInput(e.target.value)} autoFocus />
+          <LineNumberedTextarea value={input} onChange={setInput} rows={5} autoFocus />
         </label>
         <label>
           Output
-          <textarea rows={3} value={output} onChange={(e) => setOutput(e.target.value)} />
+          <LineNumberedTextarea value={output} onChange={setOutput} rows={5} />
         </label>
         <label>
           Description (optional)
