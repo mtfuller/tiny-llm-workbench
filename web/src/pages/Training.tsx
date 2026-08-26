@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
+  cancelTrainingRun,
   listDatasets,
   listTrainingRuns,
   startTrainingRun,
@@ -8,6 +9,8 @@ import {
   type TrainingRun,
 } from '../api'
 import { useEventStream } from '../eventStream'
+import LossChart from '../LossChart'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 
 function formatDuration(startedAt: string, finishedAt?: string): string {
   const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
@@ -22,7 +25,7 @@ function latestPoint(run: TrainingRun): ProgressPoint | undefined {
 
 function statusClass(status: TrainingRun['status']): string {
   if (status === 'succeeded') return 'status-open'
-  if (status === 'failed') return 'status-closed'
+  if (status === 'failed' || status === 'cancelled') return 'status-closed'
   return 'status-connecting'
 }
 
@@ -38,6 +41,8 @@ function Training() {
   const [iterations, setIterations] = useState(200)
   const [learningRate, setLearningRate] = useState('')
   const [starting, setStarting] = useState(false)
+  const [cancelling, setCancelling] = useState<string | null>(null)
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null)
 
   useEffect(() => {
     listDatasets()
@@ -58,6 +63,9 @@ function Training() {
         const others = prev.filter((r) => r.id !== run.id)
         return [run, ...others]
       })
+      // Auto-open the chart for a run as soon as it starts, since watching
+      // its loss come in live is the highest-value moment to see it.
+      if (run.status === 'running') setExpandedRunId(run.id)
     })
 
     const unsubscribeProgress = subscribe('training.progress', (event) => {
@@ -91,6 +99,20 @@ function Training() {
     return () => clearInterval(interval)
   }, [activeRun])
 
+  const handleCancel = async (run: TrainingRun) => {
+    if (!window.confirm(`Cancel training run "${run.config.outputName}"? This stops it permanently.`)) return
+
+    setCancelling(run.id)
+    setError(null)
+    try {
+      await cancelTrainingRun(run.id)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setCancelling(null)
+    }
+  }
+
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!baseModel.trim() || !dataset || !outputName.trim()) return
@@ -106,6 +128,7 @@ function Training() {
         learningRate: learningRate ? Number(learningRate) : undefined,
       })
       setRuns((prev) => [run, ...prev])
+      setExpandedRunId(run.id)
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -188,6 +211,7 @@ function Training() {
         <table className="data-table">
           <thead>
             <tr>
+              <th></th>
               <th>Output</th>
               <th>Base model</th>
               <th>Dataset</th>
@@ -196,29 +220,56 @@ function Training() {
               <th>Train loss</th>
               <th>Peak mem</th>
               <th>Duration</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
             {runs.map((run) => {
               const latest = latestPoint(run)
+              const expanded = expandedRunId === run.id
               return (
-                <tr key={run.id}>
-                  <td>{run.config.outputName}</td>
-                  <td>{run.config.baseModel}</td>
-                  <td>{run.config.dataset}</td>
-                  <td>
-                    <span className={`status ${statusClass(run.status)}`}>{run.status}</span>
-                    {run.status === 'failed' && run.error && (
-                      <div className="error">{run.error}</div>
-                    )}
-                  </td>
-                  <td>
-                    {latest ? `${latest.iteration} / ${run.config.iterations}` : '—'}
-                  </td>
-                  <td>{latest?.trainLoss !== undefined ? latest.trainLoss.toFixed(3) : '—'}</td>
-                  <td>{latest?.peakMemGB !== undefined ? `${latest.peakMemGB.toFixed(1)} GB` : '—'}</td>
-                  <td>{formatDuration(run.startedAt, run.finishedAt)}</td>
-                </tr>
+                <Fragment key={run.id}>
+                  <tr
+                    className="run-row"
+                    onClick={() => setExpandedRunId(expanded ? null : run.id)}
+                  >
+                    <td>{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</td>
+                    <td>{run.config.outputName}</td>
+                    <td>{run.config.baseModel}</td>
+                    <td>{run.config.dataset}</td>
+                    <td>
+                      <span className={`status ${statusClass(run.status)}`}>{run.status}</span>
+                      {run.status === 'failed' && run.error && (
+                        <div className="error">{run.error}</div>
+                      )}
+                    </td>
+                    <td>
+                      {latest ? `${latest.iteration} / ${run.config.iterations}` : '—'}
+                    </td>
+                    <td>{latest?.trainLoss !== undefined ? latest.trainLoss.toFixed(3) : '—'}</td>
+                    <td>{latest?.peakMemGB !== undefined ? `${latest.peakMemGB.toFixed(1)} GB` : '—'}</td>
+                    <td>{formatDuration(run.startedAt, run.finishedAt)}</td>
+                    <td className="row-actions" onClick={(e) => e.stopPropagation()}>
+                      {run.status === 'running' && (
+                        <button
+                          type="button"
+                          className="danger-button"
+                          disabled={cancelling === run.id}
+                          onClick={() => handleCancel(run)}
+                        >
+                          {cancelling === run.id ? 'Cancelling…' : 'Cancel'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {expanded && (
+                    <tr className="run-detail-row">
+                      <td colSpan={10}>
+                        <LossChart progress={run.progress} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               )
             })}
           </tbody>

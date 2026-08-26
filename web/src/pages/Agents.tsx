@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { listAgents, saveAgent, type Agent } from '../api'
+import { deleteAgent, listAgents, saveAgent, type Agent } from '../api'
 
 function Agents() {
   const navigate = useNavigate()
@@ -8,12 +8,30 @@ function Agents() {
   const [error, setError] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
-  useEffect(() => {
+  const reload = () => {
     listAgents()
       .then(setAgents)
       .catch((err: Error) => setError(err.message))
-  }, [])
+  }
+
+  useEffect(reload, [])
+
+  const handleDelete = async (name: string) => {
+    if (!window.confirm(`Delete agent "${name}"? This cannot be undone.`)) return
+
+    setDeleting(name)
+    setError(null)
+    try {
+      await deleteAgent(name)
+      reload()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setDeleting(null)
+    }
+  }
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -66,6 +84,7 @@ function Agents() {
               <tr>
                 <th>Name</th>
                 <th>Nodes</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -75,6 +94,16 @@ function Agents() {
                     <Link to={`/agents/${encodeURIComponent(agent.name)}`}>{agent.name}</Link>
                   </td>
                   <td>{agent.graph.nodes.length}</td>
+                  <td className="row-actions">
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={deleting === agent.name}
+                      onClick={() => handleDelete(agent.name)}
+                    >
+                      {deleting === agent.name ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -37,6 +37,7 @@ const (
 	StatusRunning   Status = "running"
 	StatusSucceeded Status = "succeeded"
 	StatusFailed    Status = "failed"
+	StatusCancelled Status = "cancelled"
 )
 
 // ProgressPoint is one progress update parsed from the training script.

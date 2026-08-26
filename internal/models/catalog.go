@@ -22,11 +22,13 @@ type Model struct {
 // interface so tests can supply a fake without spinning up an HTTP server.
 type ollamaLister interface {
 	ListModels(ctx context.Context) ([]ollama.ModelInfo, error)
+	DeleteModel(ctx context.Context, name string) error
 }
 
 // modelRegistry is the subset of registry.Registry that Catalog needs.
 type modelRegistry interface {
 	ListModels() ([]registry.Model, error)
+	DeleteModel(name string) error
 }
 
 // Catalog merges TLW's model registry with Ollama's local models.
@@ -66,4 +68,13 @@ func (c *Catalog) List(ctx context.Context) ([]Model, error) {
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 
 	return models, nil
+}
+
+// Delete removes a model, dispatching to Ollama or the registry depending on
+// source (as reported by List).
+func (c *Catalog) Delete(ctx context.Context, name, source string) error {
+	if source == "ollama" {
+		return c.ollama.DeleteModel(ctx, name)
+	}
+	return c.registry.DeleteModel(name)
 }

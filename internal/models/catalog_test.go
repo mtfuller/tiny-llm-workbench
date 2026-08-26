@@ -10,21 +10,41 @@ import (
 )
 
 type fakeRegistry struct {
-	models []registry.Model
-	err    error
+	models    []registry.Model
+	err       error
+	deleteErr error
+	deleted   []string
 }
 
 func (f *fakeRegistry) ListModels() ([]registry.Model, error) {
 	return f.models, f.err
 }
 
+func (f *fakeRegistry) DeleteModel(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+
 type fakeOllama struct {
-	models []ollama.ModelInfo
-	err    error
+	models    []ollama.ModelInfo
+	err       error
+	deleteErr error
+	deleted   []string
 }
 
 func (f *fakeOllama) ListModels(ctx context.Context) ([]ollama.ModelInfo, error) {
 	return f.models, f.err
+}
+
+func (f *fakeOllama) DeleteModel(ctx context.Context, name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
 }
 
 func TestCatalogListMergesRegistryAndOllama(t *testing.T) {
@@ -72,5 +92,37 @@ func TestCatalogListPropagatesRegistryError(t *testing.T) {
 	catalog := NewCatalog(reg, oll)
 	if _, err := catalog.List(context.Background()); err == nil {
 		t.Error("List() error = nil, want the registry error to propagate")
+	}
+}
+
+func TestCatalogDeleteRoutesOllamaSourceToOllama(t *testing.T) {
+	reg := &fakeRegistry{}
+	oll := &fakeOllama{}
+
+	catalog := NewCatalog(reg, oll)
+	if err := catalog.Delete(context.Background(), "qwen2.5:0.5b", "ollama"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(oll.deleted) != 1 || oll.deleted[0] != "qwen2.5:0.5b" {
+		t.Errorf("ollama.deleted = %v, want [qwen2.5:0.5b]", oll.deleted)
+	}
+	if len(reg.deleted) != 0 {
+		t.Errorf("registry.deleted = %v, want empty for an ollama-sourced delete", reg.deleted)
+	}
+}
+
+func TestCatalogDeleteRoutesOtherSourcesToRegistry(t *testing.T) {
+	reg := &fakeRegistry{}
+	oll := &fakeOllama{}
+
+	catalog := NewCatalog(reg, oll)
+	if err := catalog.Delete(context.Background(), "my-finetune", "mlx"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(reg.deleted) != 1 || reg.deleted[0] != "my-finetune" {
+		t.Errorf("registry.deleted = %v, want [my-finetune]", reg.deleted)
+	}
+	if len(oll.deleted) != 0 {
+		t.Errorf("ollama.deleted = %v, want empty for a registry-sourced delete", oll.deleted)
 	}
 }

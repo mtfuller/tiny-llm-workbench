@@ -80,6 +80,17 @@ func getAgentHandler(store agentStore) http.HandlerFunc {
 	}
 }
 
+// deleteAgentHandler removes an agent's saved definition.
+func deleteAgentHandler(store agentStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := store.DeleteAgent(r.PathValue("name")); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // startAgentRunHandler begins a new chat session against the named agent.
 func startAgentRunHandler(mgr agentManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -78,6 +78,46 @@ func TestGenerate(t *testing.T) {
 	}
 }
 
+func TestDeleteModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("request method = %q, want DELETE", r.Method)
+		}
+		if r.URL.Path != "/api/delete" {
+			t.Errorf("request path = %q, want /api/delete", r.URL.Path)
+		}
+
+		var req deleteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if req.Model != "qwen2.5:0.5b" {
+			t.Errorf("request Model = %q, want %q", req.Model, "qwen2.5:0.5b")
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL)
+	if err := client.DeleteModel(context.Background(), "qwen2.5:0.5b"); err != nil {
+		t.Fatalf("DeleteModel() error = %v", err)
+	}
+}
+
+func TestDeleteModelServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("model not found"))
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL)
+	if err := client.DeleteModel(context.Background(), "missing-model"); err == nil {
+		t.Error("DeleteModel() error = nil, want an error for a 404 response")
+	}
+}
+
 func TestGenerateServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

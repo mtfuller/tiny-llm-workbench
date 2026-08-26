@@ -70,6 +70,20 @@ func (r *Registry) ListModels() ([]Model, error) {
 	return models, nil
 }
 
+// DeleteModel removes a registry-tracked model's directory (metadata and any
+// files alongside it, e.g. adapter weights). It's an error to delete a model
+// that doesn't exist.
+func (r *Registry) DeleteModel(name string) error {
+	dir := r.modelDir(name)
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("model %q not found", name)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("delete model %q: %w", name, err)
+	}
+	return nil
+}
+
 func (r *Registry) readModelMetadata(name string) (Model, error) {
 	data, err := os.ReadFile(filepath.Join(r.modelDir(name), modelMetadataFile))
 	if err != nil {

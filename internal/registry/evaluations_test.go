@@ -90,3 +90,27 @@ func TestListEvaluationsSortedByName(t *testing.T) {
 		t.Errorf("ListEvaluations() = %+v, want [alpha, zeta]", evals)
 	}
 }
+
+func TestDeleteEvaluation(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveEvaluation(Evaluation{Name: "throwaway"}); err != nil {
+		t.Fatalf("SaveEvaluation() error = %v", err)
+	}
+
+	if err := reg.DeleteEvaluation("throwaway"); err != nil {
+		t.Fatalf("DeleteEvaluation() error = %v", err)
+	}
+
+	if _, err := reg.GetEvaluation("throwaway"); err == nil {
+		t.Error("GetEvaluation() error = nil, want an error after delete")
+	}
+}
+
+func TestDeleteEvaluationNotFound(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.DeleteEvaluation("does-not-exist"); err == nil {
+		t.Error("DeleteEvaluation() error = nil, want an error for an unknown evaluation")
+	}
+}

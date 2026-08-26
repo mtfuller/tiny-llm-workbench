@@ -88,6 +88,17 @@ func getEvaluationHandler(store evaluationStore) http.HandlerFunc {
 	}
 }
 
+// deleteEvaluationHandler removes an evaluation's saved definition.
+func deleteEvaluationHandler(store evaluationStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := store.DeleteEvaluation(r.PathValue("name")); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // startEvaluationRunRequest is the POST /api/evaluations/{name}/runs
 // request body.
 type startEvaluationRunRequest struct {

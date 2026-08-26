@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   createEnvironment,
+  deleteEnvironment,
   launchEnvironment,
   listEnvironments,
   listInstances,
@@ -9,6 +10,7 @@ import {
   type Environment,
   type Exec,
   type Instance,
+  type Mount,
 } from '../api'
 import { useEventStream } from '../eventStream'
 
@@ -22,10 +24,12 @@ function Environments() {
   const [newName, setNewName] = useState('')
   const [newImage, setNewImage] = useState('')
   const [newTools, setNewTools] = useState('')
+  const [newMounts, setNewMounts] = useState<Mount[]>([])
   const [creating, setCreating] = useState(false)
 
   const [launching, setLaunching] = useState<string | null>(null)
   const [stopping, setStopping] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   const [execInstanceId, setExecInstanceId] = useState<string | null>(null)
   const [execCommand, setExecCommand] = useState('')
@@ -86,17 +90,28 @@ function Environments() {
           .split(',')
           .map((t) => t.trim())
           .filter(Boolean),
-        mounts: [],
+        mounts: newMounts.filter((m) => m.hostPath.trim() && m.containerPath.trim()),
       })
       setNewName('')
       setNewImage('')
       setNewTools('')
+      setNewMounts([])
       reloadEnvironments()
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setCreating(false)
     }
+  }
+
+  const addMountRow = () => setNewMounts((prev) => [...prev, { hostPath: '', containerPath: '' }])
+
+  const updateMountRow = (index: number, patch: Partial<Mount>) => {
+    setNewMounts((prev) => prev.map((m, i) => (i === index ? { ...m, ...patch } : m)))
+  }
+
+  const removeMountRow = (index: number) => {
+    setNewMounts((prev) => prev.filter((_, i) => i !== index))
   }
 
   const handleLaunch = async (name: string) => {
@@ -126,6 +141,21 @@ function Environments() {
       setError((err as Error).message)
     } finally {
       setStopping(null)
+    }
+  }
+
+  const handleDelete = async (name: string) => {
+    if (!window.confirm(`Delete environment "${name}"? This cannot be undone.`)) return
+
+    setDeleting(name)
+    setError(null)
+    try {
+      await deleteEnvironment(name)
+      reloadEnvironments()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setDeleting(null)
     }
   }
 
@@ -167,6 +197,7 @@ function Environments() {
                 <th>Name</th>
                 <th>Image</th>
                 <th>Tools</th>
+                <th>Mounts</th>
                 <th></th>
               </tr>
             </thead>
@@ -181,8 +212,27 @@ function Environments() {
                   </td>
                   <td>{env.tools.join(', ') || '—'}</td>
                   <td>
+                    {env.mounts.length === 0
+                      ? '—'
+                      : env.mounts.map((m, i) => (
+                          <div key={i}>
+                            <code>
+                              {m.hostPath} → {m.containerPath}
+                            </code>
+                          </div>
+                        ))}
+                  </td>
+                  <td className="row-actions">
                     <button type="button" disabled={launching === env.name} onClick={() => handleLaunch(env.name)}>
                       {launching === env.name ? 'Launching…' : 'Launch'}
+                    </button>
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={deleting === env.name}
+                      onClick={() => handleDelete(env.name)}
+                    >
+                      {deleting === env.name ? 'Deleting…' : 'Delete'}
                     </button>
                   </td>
                 </tr>
@@ -207,6 +257,34 @@ function Environments() {
             Tools (comma-separated)
             <input type="text" placeholder="shell, python" value={newTools} onChange={(e) => setNewTools(e.target.value)} />
           </label>
+
+          <div className="mounts-editor">
+            <span>Mounts (host ↔ container)</span>
+            {newMounts.map((mount, i) => (
+              <div className="mount-row" key={i}>
+                <input
+                  type="text"
+                  placeholder="/host/path"
+                  value={mount.hostPath}
+                  onChange={(e) => updateMountRow(i, { hostPath: e.target.value })}
+                />
+                <span className="mount-arrow">→</span>
+                <input
+                  type="text"
+                  placeholder="/container/path"
+                  value={mount.containerPath}
+                  onChange={(e) => updateMountRow(i, { containerPath: e.target.value })}
+                />
+                <button type="button" className="danger-button" onClick={() => removeMountRow(i)}>
+                  ×
+                </button>
+              </div>
+            ))}
+            <button type="button" onClick={addMountRow}>
+              + Mount
+            </button>
+          </div>
+
           <button type="submit" disabled={creating || !newName.trim() || !newImage.trim()}>
             {creating ? 'Creating…' : 'Create environment'}
           </button>

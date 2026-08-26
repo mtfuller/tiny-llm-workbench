@@ -106,6 +106,46 @@ func TestListTrainingRunsEmptyIsJSONArrayNotNull(t *testing.T) {
 	}
 }
 
+func TestCancelTrainingRun(t *testing.T) {
+	deps := testDeps()
+	mgr := &fakeTrainingManager{}
+	deps.Training = mgr
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/training/runs/run-1/cancel", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /api/training/runs/run-1/cancel status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(mgr.cancelledRuns) != 1 || mgr.cancelledRuns[0] != "run-1" {
+		t.Errorf("mgr.cancelledRuns = %v, want [run-1]", mgr.cancelledRuns)
+	}
+}
+
+func TestCancelTrainingRunNotFound(t *testing.T) {
+	deps := testDeps()
+	deps.Training = &fakeTrainingManager{cancelErr: errors.New("no such run")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/training/runs/missing/cancel", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("POST /api/training/runs/missing/cancel status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestGetTrainingRun(t *testing.T) {
 	deps := testDeps()
 	deps.Training = &fakeTrainingManager{run: &training.Run{ID: "run-1", Status: training.StatusRunning}}

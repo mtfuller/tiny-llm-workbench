@@ -73,6 +73,20 @@ func (r *Registry) GetEnvironment(name string) (Environment, error) {
 	return env, nil
 }
 
+// DeleteEnvironment removes an environment definition's directory. Deleting
+// a prebuilt definition is allowed — it won't be reseeded until the next
+// `tlw serve` start. It's an error to delete one that doesn't exist.
+func (r *Registry) DeleteEnvironment(name string) error {
+	dir := r.environmentDir(name)
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("environment %q not found", name)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("delete environment %q: %w", name, err)
+	}
+	return nil
+}
+
 // ListEnvironments returns every registry-tracked environment, sorted by
 // name.
 func (r *Registry) ListEnvironments() ([]Environment, error) {

@@ -13,12 +13,22 @@ import (
 )
 
 type fakeCatalog struct {
-	list []models.Model
-	err  error
+	list      []models.Model
+	err       error
+	deleteErr error
+	deleted   []string
 }
 
 func (f *fakeCatalog) List(ctx context.Context) ([]models.Model, error) {
 	return f.list, f.err
+}
+
+func (f *fakeCatalog) Delete(ctx context.Context, name, source string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name+"/"+source)
+	return nil
 }
 
 type fakeDatasetStore struct {
@@ -30,12 +40,20 @@ type fakeDatasetStore struct {
 	appended     map[string][]registry.Example
 	listErr      error
 	examplesErrs map[string]error
+	deleteErr    error
+	deleted      []string
+
+	updateExampleErr error
+	updatedExamples  map[int]registry.Example
+	deleteExampleErr error
+	deletedExamples  []int
 }
 
 func newFakeDatasetStore() *fakeDatasetStore {
 	return &fakeDatasetStore{
-		examples: make(map[string][]registry.Example),
-		appended: make(map[string][]registry.Example),
+		examples:        make(map[string][]registry.Example),
+		appended:        make(map[string][]registry.Example),
+		updatedExamples: make(map[int]registry.Example),
 	}
 }
 
@@ -58,11 +76,35 @@ func (f *fakeDatasetStore) ListExamples(name string) ([]registry.Example, error)
 	return f.examples[name], nil
 }
 
+func (f *fakeDatasetStore) DeleteDataset(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+
 func (f *fakeDatasetStore) AppendExamples(name string, examples []registry.Example) error {
 	if f.appendErr != nil {
 		return f.appendErr
 	}
 	f.appended[name] = append(f.appended[name], examples...)
+	return nil
+}
+
+func (f *fakeDatasetStore) UpdateExample(name string, index int, example registry.Example) error {
+	if f.updateExampleErr != nil {
+		return f.updateExampleErr
+	}
+	f.updatedExamples[index] = example
+	return nil
+}
+
+func (f *fakeDatasetStore) DeleteExample(name string, index int) error {
+	if f.deleteExampleErr != nil {
+		return f.deleteExampleErr
+	}
+	f.deletedExamples = append(f.deletedExamples, index)
 	return nil
 }
 
@@ -81,6 +123,9 @@ type fakeTrainingManager struct {
 	run      *training.Run
 	runs     []*training.Run
 	getOK    bool
+
+	cancelErr     error
+	cancelledRuns []string
 }
 
 func (f *fakeTrainingManager) StartRun(cfg training.Config) (*training.Run, error) {
@@ -92,6 +137,14 @@ func (f *fakeTrainingManager) StartRun(cfg training.Config) (*training.Run, erro
 		return f.run, nil
 	}
 	return &training.Run{ID: "run-1", Config: cfg, Status: training.StatusRunning}, nil
+}
+
+func (f *fakeTrainingManager) CancelRun(id string) error {
+	if f.cancelErr != nil {
+		return f.cancelErr
+	}
+	f.cancelledRuns = append(f.cancelledRuns, id)
+	return nil
 }
 
 func (f *fakeTrainingManager) ListRuns() []*training.Run {
@@ -106,10 +159,12 @@ func (f *fakeTrainingManager) GetRun(id string) (*training.Run, bool) {
 }
 
 type fakeEnvironmentStore struct {
-	list    []registry.Environment
-	listErr error
-	saveErr error
-	saved   []registry.Environment
+	list      []registry.Environment
+	listErr   error
+	saveErr   error
+	saved     []registry.Environment
+	deleteErr error
+	deleted   []string
 }
 
 func (f *fakeEnvironmentStore) ListEnvironments() ([]registry.Environment, error) {
@@ -121,6 +176,14 @@ func (f *fakeEnvironmentStore) SaveEnvironment(e registry.Environment) error {
 		return f.saveErr
 	}
 	f.saved = append(f.saved, e)
+	return nil
+}
+
+func (f *fakeEnvironmentStore) DeleteEnvironment(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
 	return nil
 }
 
@@ -167,12 +230,14 @@ func (f *fakeEnvironmentManager) GetExec(id string) (*environments.Exec, bool) {
 }
 
 type fakeAgentStore struct {
-	list    []registry.Agent
-	listErr error
-	saveErr error
-	saved   []registry.Agent
-	get     registry.Agent
-	getErr  error
+	list      []registry.Agent
+	listErr   error
+	saveErr   error
+	saved     []registry.Agent
+	get       registry.Agent
+	getErr    error
+	deleteErr error
+	deleted   []string
 }
 
 func (f *fakeAgentStore) ListAgents() ([]registry.Agent, error) {
@@ -189,6 +254,14 @@ func (f *fakeAgentStore) SaveAgent(a registry.Agent) error {
 
 func (f *fakeAgentStore) GetAgent(name string) (registry.Agent, error) {
 	return f.get, f.getErr
+}
+
+func (f *fakeAgentStore) DeleteAgent(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
 }
 
 type fakeAgentManager struct {
@@ -227,12 +300,14 @@ func (f *fakeAgentManager) GetRun(id string) (*agents.Run, bool) {
 }
 
 type fakeEvaluationStore struct {
-	list    []registry.Evaluation
-	listErr error
-	saveErr error
-	saved   []registry.Evaluation
-	get     registry.Evaluation
-	getErr  error
+	list      []registry.Evaluation
+	listErr   error
+	saveErr   error
+	saved     []registry.Evaluation
+	get       registry.Evaluation
+	getErr    error
+	deleteErr error
+	deleted   []string
 }
 
 func (f *fakeEvaluationStore) ListEvaluations() ([]registry.Evaluation, error) {
@@ -249,6 +324,14 @@ func (f *fakeEvaluationStore) SaveEvaluation(e registry.Evaluation) error {
 
 func (f *fakeEvaluationStore) GetEvaluation(name string) (registry.Evaluation, error) {
 	return f.get, f.getErr
+}
+
+func (f *fakeEvaluationStore) DeleteEvaluation(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
 }
 
 type fakeEvaluationManager struct {

@@ -115,6 +115,46 @@ func TestCreateEnvironmentRequiresImage(t *testing.T) {
 	}
 }
 
+func TestDeleteEnvironment(t *testing.T) {
+	deps := testDeps()
+	store := &fakeEnvironmentStore{}
+	deps.Environments = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/environments/my-env", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/environments/my-env status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "my-env" {
+		t.Errorf("store.deleted = %v, want [my-env]", store.deleted)
+	}
+}
+
+func TestDeleteEnvironmentNotFound(t *testing.T) {
+	deps := testDeps()
+	deps.Environments = &fakeEnvironmentStore{deleteErr: errors.New("environment not found")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/environments/missing", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("DELETE /api/environments/missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestLaunchEnvironment(t *testing.T) {
 	deps := testDeps()
 	mgr := &fakeEnvironmentManager{launchResult: environments.Instance{ID: "abc123", EnvironmentName: "WebSearch"}}

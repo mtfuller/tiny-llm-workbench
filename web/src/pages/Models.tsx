@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listModels, type Model } from '../api'
+import { deleteModel, listModels, type Model } from '../api'
 
 function formatSize(bytes?: number): string {
   if (!bytes) return '—'
@@ -17,12 +17,30 @@ function sourceBadgeClass(source: string): string {
 function Models() {
   const [models, setModels] = useState<Model[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
-  useEffect(() => {
+  const reload = () => {
     listModels()
       .then(setModels)
       .catch((err: Error) => setError(err.message))
-  }, [])
+  }
+
+  useEffect(reload, [])
+
+  const handleDelete = async (model: Model) => {
+    if (!window.confirm(`Delete model "${model.name}"? This cannot be undone.`)) return
+
+    setDeleting(model.name)
+    setError(null)
+    try {
+      await deleteModel(model.name, model.source)
+      reload()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setDeleting(null)
+    }
+  }
 
   return (
     <>
@@ -51,6 +69,7 @@ function Models() {
                 <th>Name</th>
                 <th>Source</th>
                 <th>Size</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -61,6 +80,16 @@ function Models() {
                     <span className={sourceBadgeClass(model.source)}>{model.source}</span>
                   </td>
                   <td>{formatSize(model.size)}</td>
+                  <td className="row-actions">
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={deleting === model.name}
+                      onClick={() => handleDelete(model)}
+                    >
+                      {deleting === model.name ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

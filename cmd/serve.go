@@ -82,17 +82,19 @@ URL in a browser. Stop it with Ctrl+C.`,
 		evaluationsMgr := evaluations.NewManager(ctx, reg, agentsMgr, environmentsMgr, bus)
 
 		handler, err := server.New(server.Deps{
-			Bus:          bus,
-			Catalog:      catalog,
-			Datasets:     reg,
-			Generator:    generator,
-			Training:     trainingMgr,
-			Environments: reg,
-			Instances:    environmentsMgr,
-			Agents:       reg,
-			AgentRuns:    agentsMgr,
-			Evaluations:  reg,
-			EvalRuns:     evaluationsMgr,
+			Bus:           bus,
+			Catalog:       catalog,
+			Datasets:      reg,
+			Generator:     generator,
+			Training:      trainingMgr,
+			Environments:  reg,
+			Instances:     environmentsMgr,
+			Agents:        reg,
+			AgentRuns:     agentsMgr,
+			Evaluations:   reg,
+			EvalRuns:      evaluationsMgr,
+			RegistryRoot:  reg.Root(),
+			OllamaBaseURL: ollama.DefaultBaseURL,
 		})
 		if err != nil {
 			return fmt.Errorf("build server: %w", err)

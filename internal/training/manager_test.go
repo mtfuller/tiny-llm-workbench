@@ -44,6 +44,10 @@ type fakeTrainer struct {
 	result   Result
 	err      error
 	started  chan struct{} // closed once Train is invoked, for synchronization
+
+	// blockUntilCancel, when set, makes Train hang until ctx is cancelled
+	// and return ctx.Err() — simulating a subprocess killed by CancelRun.
+	blockUntilCancel bool
 }
 
 func (f *fakeTrainer) Train(ctx context.Context, cfg Config, examples []registry.Example, onProgress func(ProgressPoint)) (Result, error) {
@@ -52,6 +56,10 @@ func (f *fakeTrainer) Train(ctx context.Context, cfg Config, examples []registry
 	}
 	for _, p := range f.progress {
 		onProgress(p)
+	}
+	if f.blockUntilCancel {
+		<-ctx.Done()
+		return Result{}, ctx.Err()
 	}
 	return f.result, f.err
 }
@@ -208,6 +216,52 @@ func TestListRunsMostRecentFirst(t *testing.T) {
 	runs := m.ListRuns()
 	if len(runs) != 2 || runs[0].ID != second.ID || runs[1].ID != first.ID {
 		t.Errorf("ListRuns() = %+v, want [second, first]", runs)
+	}
+}
+
+func TestCancelRunStopsAndMarksCancelled(t *testing.T) {
+	started := make(chan struct{})
+	trainer := &fakeTrainer{started: started, blockUntilCancel: true}
+	datasets := &fakeDatasets{examples: map[string][]registry.Example{"greetings": {{Input: "hi", Output: "hello!"}}}}
+	m := NewManager(context.Background(), t.TempDir(), eventbus.New(), datasets, &fakeModelSaver{}, trainer)
+
+	run, err := m.StartRun(validConfig())
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	<-started
+
+	if err := m.CancelRun(run.ID); err != nil {
+		t.Fatalf("CancelRun() error = %v", err)
+	}
+
+	finished := waitForStatus(t, m, run.ID, StatusCancelled, time.Second)
+	if finished.Error == "" {
+		t.Error("finished.Error = \"\", want a message explaining the cancellation")
+	}
+}
+
+func TestCancelRunUnknownRun(t *testing.T) {
+	m := NewManager(context.Background(), t.TempDir(), eventbus.New(), &fakeDatasets{}, &fakeModelSaver{}, &fakeTrainer{})
+
+	if err := m.CancelRun("does-not-exist"); err == nil {
+		t.Error("CancelRun() error = nil, want an error for an unknown run")
+	}
+}
+
+func TestCancelRunAlreadyFinishedIsNoop(t *testing.T) {
+	trainer := &fakeTrainer{result: Result{OutputDir: "/tmp/adapter"}}
+	datasets := &fakeDatasets{examples: map[string][]registry.Example{"greetings": {{Input: "hi", Output: "hello!"}}}}
+	m := NewManager(context.Background(), t.TempDir(), eventbus.New(), datasets, &fakeModelSaver{}, trainer)
+
+	run, err := m.StartRun(validConfig())
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	waitForStatus(t, m, run.ID, StatusSucceeded, time.Second)
+
+	if err := m.CancelRun(run.ID); err != nil {
+		t.Fatalf("CancelRun() error = %v, want nil for an already-finished run", err)
 	}
 }
 

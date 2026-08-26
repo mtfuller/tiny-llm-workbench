@@ -144,6 +144,72 @@ func (r *Registry) AppendExamples(name string, examples []Example) error {
 	return nil
 }
 
+// UpdateExample overwrites the example at index (0-based, in the order
+// ListExamples returns them). It's an error if index is out of range.
+func (r *Registry) UpdateExample(name string, index int, example Example) error {
+	examples, err := r.ListExamples(name)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(examples) {
+		return fmt.Errorf("example index %d out of range (dataset has %d examples)", index, len(examples))
+	}
+
+	examples[index] = example
+	return r.writeExamples(name, examples)
+}
+
+// DeleteExample removes the example at index (0-based, in the order
+// ListExamples returns them). It's an error if index is out of range.
+func (r *Registry) DeleteExample(name string, index int) error {
+	examples, err := r.ListExamples(name)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(examples) {
+		return fmt.Errorf("example index %d out of range (dataset has %d examples)", index, len(examples))
+	}
+
+	examples = append(examples[:index], examples[index+1:]...)
+	return r.writeExamples(name, examples)
+}
+
+// writeExamples overwrites a dataset's entire examples file, used by
+// UpdateExample/DeleteExample since editing or removing a single line means
+// rewriting the rest of the file anyway (JSONL isn't seekable-in-place).
+func (r *Registry) writeExamples(name string, examples []Example) error {
+	f, err := os.OpenFile(filepath.Join(r.datasetDir(name), datasetExamplesFile), os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open dataset examples: %w", err)
+	}
+	defer f.Close()
+
+	for _, example := range examples {
+		data, err := json.Marshal(example)
+		if err != nil {
+			return fmt.Errorf("marshal dataset example: %w", err)
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			return fmt.Errorf("write dataset example: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// DeleteDataset removes a dataset's directory (metadata and examples). It's
+// an error to delete a dataset that doesn't exist.
+func (r *Registry) DeleteDataset(name string) error {
+	dir := r.datasetDir(name)
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("dataset %q not found", name)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("delete dataset %q: %w", name, err)
+	}
+	return nil
+}
+
 func (r *Registry) readDatasetMetadata(name string) (Dataset, error) {
 	data, err := os.ReadFile(filepath.Join(r.datasetDir(name), datasetMetadataFile))
 	if err != nil {

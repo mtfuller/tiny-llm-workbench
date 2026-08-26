@@ -171,6 +171,48 @@ func TestGetDatasetNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteDataset(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/datasets/greetings", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/datasets/greetings status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "greetings" {
+		t.Errorf("store.deleted = %v, want [greetings]", store.deleted)
+	}
+}
+
+func TestDeleteDatasetNotFound(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	store.deleteErr = errors.New("dataset not found")
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/datasets/missing", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("DELETE /api/datasets/missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestGenerateVariations(t *testing.T) {
 	deps := testDeps()
 	store := newFakeDatasetStore()
@@ -233,5 +275,303 @@ func TestGenerateVariationsGeneratorError(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("POST .../variations (generator error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestAddExamples(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(addExamplesRequest{Examples: []registry.Example{{Input: "hi", Output: "hello!"}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/examples", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST .../examples status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if len(store.appended["greetings"]) != 1 || store.appended["greetings"][0].Input != "hi" {
+		t.Errorf("store.appended[greetings] = %+v, want the posted example", store.appended["greetings"])
+	}
+}
+
+func TestAddExamplesRequiresAtLeastOne(t *testing.T) {
+	deps := testDeps()
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(addExamplesRequest{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/examples", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../examples (empty) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUpdateExample(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(registry.Example{Input: "hi", Output: "hey!"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/datasets/greetings/examples/1", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT .../examples/1 status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, ok := store.updatedExamples[1]; !ok || got.Output != "hey!" {
+		t.Errorf("store.updatedExamples[1] = %+v, want the posted example", store.updatedExamples[1])
+	}
+}
+
+func TestUpdateExampleInvalidIndex(t *testing.T) {
+	deps := testDeps()
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(registry.Example{Input: "hi", Output: "hey!"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/datasets/greetings/examples/not-a-number", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("PUT .../examples/not-a-number status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUpdateExampleOutOfRange(t *testing.T) {
+	deps := testDeps()
+	deps.Datasets = &fakeDatasetStore{updateExampleErr: errors.New("example index 5 out of range")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(registry.Example{Input: "hi", Output: "hey!"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/datasets/greetings/examples/5", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("PUT .../examples/5 (out of range) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDeleteExample(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/datasets/greetings/examples/0", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE .../examples/0 status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.deletedExamples) != 1 || store.deletedExamples[0] != 0 {
+		t.Errorf("store.deletedExamples = %v, want [0]", store.deletedExamples)
+	}
+}
+
+func TestDeleteExampleOutOfRange(t *testing.T) {
+	deps := testDeps()
+	deps.Datasets = &fakeDatasetStore{deleteExampleErr: errors.New("example index 5 out of range")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/datasets/greetings/examples/5", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("DELETE .../examples/5 (out of range) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestExportDatasetJSONL(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	store.examples["greetings"] = []registry.Example{{Input: "hi", Output: "hello!"}}
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/datasets/greetings/export", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET .../export status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"input":"hi","output":"hello!"}` {
+		t.Errorf("GET .../export body = %q, want a single JSONL line", got)
+	}
+	if disp := rec.Header().Get("Content-Disposition"); !strings.Contains(disp, "greetings.jsonl") {
+		t.Errorf("Content-Disposition = %q, want it to name greetings.jsonl", disp)
+	}
+}
+
+func TestExportDatasetCSV(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	store.examples["greetings"] = []registry.Example{{Input: "hi", Output: "hello!"}}
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/datasets/greetings/export?format=csv", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET .../export?format=csv status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	want := "input,output\nhi,hello!\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("GET .../export?format=csv body = %q, want %q", got, want)
+	}
+}
+
+func TestExportDatasetUnsupportedFormat(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/datasets/greetings/export?format=xml", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("GET .../export?format=xml status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestImportDatasetJSONL(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(importDatasetRequest{
+		Format:  "jsonl",
+		Content: `{"input":"hi","output":"hello!"}` + "\n" + `{"input":"hey","output":"hey there!"}`,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/import", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST .../import (jsonl) status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if len(store.appended["greetings"]) != 2 {
+		t.Errorf("store.appended[greetings] = %+v, want 2 examples", store.appended["greetings"])
+	}
+}
+
+func TestImportDatasetCSV(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(importDatasetRequest{
+		Format:  "csv",
+		Content: "input,output\nhi,hello!\n\"hey, there\",\"hey, yourself!\"\n",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/import", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST .../import (csv) status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if len(store.appended["greetings"]) != 2 || store.appended["greetings"][1].Input != "hey, there" {
+		t.Errorf("store.appended[greetings] = %+v, want 2 examples with quoted commas preserved", store.appended["greetings"])
+	}
+}
+
+func TestImportDatasetCSVBadHeader(t *testing.T) {
+	deps := testDeps()
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(importDatasetRequest{Format: "csv", Content: "foo,bar\n1,2\n"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/import", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../import (bad header) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestImportDatasetEmpty(t *testing.T) {
+	deps := testDeps()
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(importDatasetRequest{Format: "jsonl", Content: ""})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/import", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../import (empty) status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }

@@ -21,6 +21,7 @@ import (
 // modelCatalog is the subset of models.Catalog the server needs.
 type modelCatalog interface {
 	List(ctx context.Context) ([]models.Model, error)
+	Delete(ctx context.Context, name, source string) error
 }
 
 // datasetStore is the subset of registry.Registry the server needs for
@@ -28,8 +29,11 @@ type modelCatalog interface {
 type datasetStore interface {
 	ListDatasets() ([]registry.DatasetSummary, error)
 	CreateDataset(name string) (registry.Dataset, error)
+	DeleteDataset(name string) error
 	ListExamples(name string) ([]registry.Example, error)
 	AppendExamples(name string, examples []registry.Example) error
+	UpdateExample(name string, index int, example registry.Example) error
+	DeleteExample(name string, index int) error
 }
 
 // variationGenerator is the subset of datasetgen.Generator the server needs.
@@ -40,6 +44,7 @@ type variationGenerator interface {
 // trainingManager is the subset of training.Manager the server needs.
 type trainingManager interface {
 	StartRun(cfg training.Config) (*training.Run, error)
+	CancelRun(id string) error
 	ListRuns() []*training.Run
 	GetRun(id string) (*training.Run, bool)
 }
@@ -49,6 +54,7 @@ type trainingManager interface {
 type environmentStore interface {
 	ListEnvironments() ([]registry.Environment, error)
 	SaveEnvironment(e registry.Environment) error
+	DeleteEnvironment(name string) error
 }
 
 // environmentManager is the subset of environments.Manager the server needs.
@@ -66,6 +72,7 @@ type agentStore interface {
 	ListAgents() ([]registry.Agent, error)
 	SaveAgent(a registry.Agent) error
 	GetAgent(name string) (registry.Agent, error)
+	DeleteAgent(name string) error
 }
 
 // agentManager is the subset of agents.Manager the server needs.
@@ -82,6 +89,7 @@ type evaluationStore interface {
 	ListEvaluations() ([]registry.Evaluation, error)
 	SaveEvaluation(e registry.Evaluation) error
 	GetEvaluation(name string) (registry.Evaluation, error)
+	DeleteEvaluation(name string) error
 }
 
 // evaluationManager is the subset of evaluations.Manager the server needs.
@@ -105,6 +113,11 @@ type Deps struct {
 	AgentRuns    agentManager
 	Evaluations  evaluationStore
 	EvalRuns     evaluationManager
+
+	// RegistryRoot and OllamaBaseURL are plain config values (not behavior),
+	// shown read-only on the Settings page.
+	RegistryRoot  string
+	OllamaBaseURL string
 }
 
 // New builds the HTTP handler for the TLW webserver: the embedded browser UI
@@ -119,16 +132,26 @@ func New(deps Deps) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle("/", spaHandler(dist))
 	mux.HandleFunc("GET /api/events", sseHandler(deps.Bus))
+	mux.HandleFunc("GET /api/system", systemInfoHandler(deps.RegistryRoot, deps.OllamaBaseURL))
 	mux.HandleFunc("GET /api/models", listModelsHandler(deps.Catalog))
+	mux.HandleFunc("DELETE /api/models/{name}", deleteModelHandler(deps.Catalog))
 	mux.HandleFunc("GET /api/datasets", listDatasetsHandler(deps.Datasets))
 	mux.HandleFunc("POST /api/datasets", createDatasetHandler(deps.Datasets))
 	mux.HandleFunc("GET /api/datasets/{name}", getDatasetHandler(deps.Datasets))
+	mux.HandleFunc("DELETE /api/datasets/{name}", deleteDatasetHandler(deps.Datasets))
 	mux.HandleFunc("POST /api/datasets/{name}/variations", generateVariationsHandler(deps.Datasets, deps.Generator))
+	mux.HandleFunc("POST /api/datasets/{name}/examples", addExamplesHandler(deps.Datasets))
+	mux.HandleFunc("PUT /api/datasets/{name}/examples/{index}", updateExampleHandler(deps.Datasets))
+	mux.HandleFunc("DELETE /api/datasets/{name}/examples/{index}", deleteExampleHandler(deps.Datasets))
+	mux.HandleFunc("GET /api/datasets/{name}/export", exportDatasetHandler(deps.Datasets))
+	mux.HandleFunc("POST /api/datasets/{name}/import", importDatasetHandler(deps.Datasets))
 	mux.HandleFunc("POST /api/training/runs", startTrainingRunHandler(deps.Training))
 	mux.HandleFunc("GET /api/training/runs", listTrainingRunsHandler(deps.Training))
 	mux.HandleFunc("GET /api/training/runs/{id}", getTrainingRunHandler(deps.Training))
+	mux.HandleFunc("POST /api/training/runs/{id}/cancel", cancelTrainingRunHandler(deps.Training))
 	mux.HandleFunc("GET /api/environments", listEnvironmentsHandler(deps.Environments))
 	mux.HandleFunc("POST /api/environments", createEnvironmentHandler(deps.Environments))
+	mux.HandleFunc("DELETE /api/environments/{name}", deleteEnvironmentHandler(deps.Environments))
 	mux.HandleFunc("POST /api/environments/{name}/launch", launchEnvironmentHandler(deps.Instances))
 	mux.HandleFunc("GET /api/environments/instances", listInstancesHandler(deps.Instances))
 	mux.HandleFunc("POST /api/environments/instances/{id}/stop", stopInstanceHandler(deps.Instances))
@@ -137,6 +160,7 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /api/agents", listAgentsHandler(deps.Agents))
 	mux.HandleFunc("POST /api/agents", saveAgentHandler(deps.Agents))
 	mux.HandleFunc("GET /api/agents/{name}", getAgentHandler(deps.Agents))
+	mux.HandleFunc("DELETE /api/agents/{name}", deleteAgentHandler(deps.Agents))
 	mux.HandleFunc("POST /api/agents/{name}/runs", startAgentRunHandler(deps.AgentRuns))
 	mux.HandleFunc("POST /api/agents/runs/{id}/messages", sendAgentMessageHandler(deps.AgentRuns))
 	mux.HandleFunc("GET /api/agents/runs/{id}", getAgentRunHandler(deps.AgentRuns))
@@ -144,6 +168,7 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /api/evaluations", listEvaluationsHandler(deps.Evaluations))
 	mux.HandleFunc("POST /api/evaluations", saveEvaluationHandler(deps.Evaluations))
 	mux.HandleFunc("GET /api/evaluations/{name}", getEvaluationHandler(deps.Evaluations))
+	mux.HandleFunc("DELETE /api/evaluations/{name}", deleteEvaluationHandler(deps.Evaluations))
 	mux.HandleFunc("POST /api/evaluations/{name}/runs", startEvaluationRunHandler(deps.EvalRuns))
 	mux.HandleFunc("GET /api/evaluations/runs", listEvaluationRunsHandler(deps.EvalRuns))
 	mux.HandleFunc("GET /api/evaluations/runs/{id}", getEvaluationRunHandler(deps.EvalRuns))

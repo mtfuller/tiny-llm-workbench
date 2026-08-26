@@ -55,6 +55,82 @@ func TestAppendAndListExamples(t *testing.T) {
 	}
 }
 
+func TestUpdateExample(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings"); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+	if err := reg.AppendExamples("greetings", []Example{
+		{Input: "hi", Output: "hello!"},
+		{Input: "hey", Output: "hey there!"},
+	}); err != nil {
+		t.Fatalf("AppendExamples() error = %v", err)
+	}
+
+	if err := reg.UpdateExample("greetings", 1, Example{Input: "hey", Output: "yo!"}); err != nil {
+		t.Fatalf("UpdateExample() error = %v", err)
+	}
+
+	got, err := reg.ListExamples("greetings")
+	if err != nil {
+		t.Fatalf("ListExamples() error = %v", err)
+	}
+	if len(got) != 2 || got[0].Output != "hello!" || got[1].Output != "yo!" {
+		t.Errorf("ListExamples() = %+v, want index 0 unchanged and index 1 updated", got)
+	}
+}
+
+func TestUpdateExampleOutOfRange(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings"); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+
+	if err := reg.UpdateExample("greetings", 0, Example{Input: "hi", Output: "hello!"}); err == nil {
+		t.Error("UpdateExample() error = nil, want an error for an out-of-range index")
+	}
+}
+
+func TestDeleteExample(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings"); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+	if err := reg.AppendExamples("greetings", []Example{
+		{Input: "hi", Output: "hello!"},
+		{Input: "hey", Output: "hey there!"},
+	}); err != nil {
+		t.Fatalf("AppendExamples() error = %v", err)
+	}
+
+	if err := reg.DeleteExample("greetings", 0); err != nil {
+		t.Fatalf("DeleteExample() error = %v", err)
+	}
+
+	got, err := reg.ListExamples("greetings")
+	if err != nil {
+		t.Fatalf("ListExamples() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Input != "hey" {
+		t.Errorf("ListExamples() = %+v, want only the second example to remain", got)
+	}
+}
+
+func TestDeleteExampleOutOfRange(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings"); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+
+	if err := reg.DeleteExample("greetings", 0); err == nil {
+		t.Error("DeleteExample() error = nil, want an error for an out-of-range index")
+	}
+}
+
 func TestListDatasetsReflectsPairCount(t *testing.T) {
 	reg := New(t.TempDir())
 
@@ -91,5 +167,33 @@ func TestListExamplesUnknownDataset(t *testing.T) {
 
 	if _, err := reg.ListExamples("does-not-exist"); err == nil {
 		t.Error("ListExamples() error = nil, want an error for an unknown dataset")
+	}
+}
+
+func TestDeleteDataset(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("throwaway"); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+
+	if err := reg.DeleteDataset("throwaway"); err != nil {
+		t.Fatalf("DeleteDataset() error = %v", err)
+	}
+
+	datasets, err := reg.ListDatasets()
+	if err != nil {
+		t.Fatalf("ListDatasets() error = %v", err)
+	}
+	if len(datasets) != 0 {
+		t.Errorf("ListDatasets() = %+v, want empty after delete", datasets)
+	}
+}
+
+func TestDeleteDatasetNotFound(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.DeleteDataset("does-not-exist"); err == nil {
+		t.Error("DeleteDataset() error = nil, want an error for an unknown dataset")
 	}
 }

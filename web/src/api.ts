@@ -30,7 +30,7 @@ export interface TrainingConfig {
   learningRate?: number
 }
 
-export type TrainingStatus = 'running' | 'succeeded' | 'failed'
+export type TrainingStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface ProgressPoint {
   timestamp: string
@@ -218,8 +218,23 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
+// noContent checks a 204-style response for errors without trying to parse
+// a (likely empty) JSON body on success.
+async function noContent(res: Response): Promise<void> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(body.error ?? `request failed with status ${res.status}`)
+  }
+}
+
 export function listModels(): Promise<Model[]> {
   return fetch('/api/models').then(json<Model[]>)
+}
+
+export function deleteModel(name: string, source: string): Promise<void> {
+  return fetch(`/api/models/${encodeURIComponent(name)}?source=${encodeURIComponent(source)}`, {
+    method: 'DELETE',
+  }).then(noContent)
 }
 
 export function listDatasets(): Promise<DatasetSummary[]> {
@@ -238,6 +253,10 @@ export function getDataset(name: string): Promise<DatasetDetail> {
   return fetch(`/api/datasets/${encodeURIComponent(name)}`).then(json<DatasetDetail>)
 }
 
+export function deleteDataset(name: string): Promise<void> {
+  return fetch(`/api/datasets/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+}
+
 export function generateVariations(
   name: string,
   req: { model: string; seed: Example; count: number },
@@ -247,6 +266,38 @@ export function generateVariations(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   }).then(json<Example[]>)
+}
+
+export function addExamples(name: string, examples: Example[]): Promise<Example[]> {
+  return fetch(`/api/datasets/${encodeURIComponent(name)}/examples`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ examples }),
+  }).then(json<Example[]>)
+}
+
+export function updateExample(name: string, index: number, example: Example): Promise<Example> {
+  return fetch(`/api/datasets/${encodeURIComponent(name)}/examples/${index}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(example),
+  }).then(json<Example>)
+}
+
+export function deleteExample(name: string, index: number): Promise<void> {
+  return fetch(`/api/datasets/${encodeURIComponent(name)}/examples/${index}`, { method: 'DELETE' }).then(noContent)
+}
+
+export function importDataset(name: string, format: 'csv' | 'jsonl', content: string): Promise<Example[]> {
+  return fetch(`/api/datasets/${encodeURIComponent(name)}/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ format, content }),
+  }).then(json<Example[]>)
+}
+
+export function datasetExportUrl(name: string, format: 'csv' | 'jsonl'): string {
+  return `/api/datasets/${encodeURIComponent(name)}/export?format=${format}`
 }
 
 export function startTrainingRun(cfg: TrainingConfig): Promise<TrainingRun> {
@@ -265,6 +316,10 @@ export function getTrainingRun(id: string): Promise<TrainingRun> {
   return fetch(`/api/training/runs/${encodeURIComponent(id)}`).then(json<TrainingRun>)
 }
 
+export function cancelTrainingRun(id: string): Promise<void> {
+  return fetch(`/api/training/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).then(noContent)
+}
+
 export function listEnvironments(): Promise<Environment[]> {
   return fetch('/api/environments').then(json<Environment[]>)
 }
@@ -275,6 +330,10 @@ export function createEnvironment(env: { name: string; image: string; tools: str
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(env),
   }).then(json<Environment>)
+}
+
+export function deleteEnvironment(name: string): Promise<void> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
 }
 
 export function launchEnvironment(name: string, instanceName?: string): Promise<Instance> {
@@ -327,6 +386,10 @@ export function getAgent(name: string): Promise<Agent> {
   return fetch(`/api/agents/${encodeURIComponent(name)}`).then(json<Agent>)
 }
 
+export function deleteAgent(name: string): Promise<void> {
+  return fetch(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+}
+
 export function startAgentRun(name: string): Promise<AgentRun> {
   return fetch(`/api/agents/${encodeURIComponent(name)}/runs`, { method: 'POST' }).then(json<AgentRun>)
 }
@@ -363,6 +426,10 @@ export function getEvaluation(name: string): Promise<Evaluation> {
   return fetch(`/api/evaluations/${encodeURIComponent(name)}`).then(json<Evaluation>)
 }
 
+export function deleteEvaluation(name: string): Promise<void> {
+  return fetch(`/api/evaluations/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+}
+
 export function startEvaluationRun(name: string, agentNames: string[]): Promise<EvaluationRun> {
   return fetch(`/api/evaluations/${encodeURIComponent(name)}/runs`, {
     method: 'POST',
@@ -377,4 +444,14 @@ export function listEvaluationRuns(): Promise<EvaluationRun[]> {
 
 export function getEvaluationRun(id: string): Promise<EvaluationRun> {
   return fetch(`/api/evaluations/runs/${encodeURIComponent(id)}`).then(json<EvaluationRun>)
+}
+
+export interface SystemInfo {
+  version: string
+  registryRoot: string
+  ollamaBaseUrl: string
+}
+
+export function getSystemInfo(): Promise<SystemInfo> {
+  return fetch('/api/system').then(json<SystemInfo>)
 }

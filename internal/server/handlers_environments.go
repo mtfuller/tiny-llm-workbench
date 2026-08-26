@@ -81,6 +81,18 @@ func createEnvironmentHandler(envs environmentStore) http.HandlerFunc {
 	}
 }
 
+// deleteEnvironmentHandler removes an Environment definition. It doesn't
+// touch any already-running instances of it.
+func deleteEnvironmentHandler(envs environmentStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := envs.DeleteEnvironment(r.PathValue("name")); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // launchEnvironmentRequest is the POST /api/environments/{name}/launch
 // request body.
 type launchEnvironmentRequest struct {

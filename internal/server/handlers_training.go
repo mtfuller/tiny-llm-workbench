@@ -42,6 +42,18 @@ func listTrainingRunsHandler(mgr trainingManager) http.HandlerFunc {
 	}
 }
 
+// cancelTrainingRunHandler stops a running training job's subprocess. It's a
+// no-op if the run has already finished.
+func cancelTrainingRunHandler(mgr trainingManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := mgr.CancelRun(r.PathValue("id")); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // getTrainingRunHandler responds with a single run's current state.
 func getTrainingRunHandler(mgr trainingManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

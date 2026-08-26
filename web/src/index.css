@@ -8,6 +8,7 @@
   --ok: #4d7a3f;
   --warn: #b8792f;
   --danger: #b6482f;
+  --minimap-mask: rgba(43, 35, 24, 0.06);
 
   font: 15px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
   color-scheme: light dark;
@@ -16,14 +17,33 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --text: #efe6d8;
     --bg: #1a1512;
     --surface: #221b16;
     --border: #372c22;
     --accent: #e0916d;
     --accent-soft: rgba(224, 145, 109, 0.16);
+    --minimap-mask: rgba(0, 0, 0, 0.35);
+    color-scheme: dark;
   }
+}
+
+/* Manual override from the Settings page (persisted in localStorage), wins
+   over the system preference in both directions. */
+:root[data-theme="dark"] {
+  --text: #efe6d8;
+  --bg: #1a1512;
+  --surface: #221b16;
+  --border: #372c22;
+  --accent: #e0916d;
+  --accent-soft: rgba(224, 145, 109, 0.16);
+  --minimap-mask: rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 * {
@@ -106,11 +126,6 @@ a.nav-item:hover {
   color: var(--accent);
 }
 
-.nav-item-disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 .sidebar-footer {
   display: flex;
   flex-direction: column;
@@ -152,6 +167,18 @@ a.nav-item:hover {
   max-width: 960px;
   margin: 0 auto;
   padding: 2.5rem 2.5rem 4rem;
+}
+
+/* The agent canvas is a workspace, not a document — let it use the full
+   width/height next to the sidebar instead of the centered reading column
+   every other page gets. */
+.page-content:has(> .agent-editor) {
+  max-width: none;
+  margin: 0;
+  padding: 1.25rem 1.5rem;
+  height: 100vh;
+  box-sizing: border-box;
+  display: flex;
 }
 
 /* Page furniture */
@@ -322,6 +349,17 @@ a.nav-item:hover {
   color: color-mix(in srgb, var(--text) 70%, transparent);
 }
 
+.result-cell {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.result-cell:hover .badge {
+  outline: 2px solid color-mix(in srgb, var(--text) 25%, transparent);
+}
+
 .badge-blue {
   background: #e7ecf3;
   color: #4c6484;
@@ -366,6 +404,36 @@ a.nav-item:hover {
   color: color-mix(in srgb, var(--text) 75%, transparent);
 }
 
+.mounts-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--text) 75%, transparent);
+}
+
+.mount-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.mount-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.mount-arrow {
+  color: color-mix(in srgb, var(--text) 45%, transparent);
+  flex-shrink: 0;
+}
+
+.mount-row .danger-button {
+  padding: 0.3rem 0.6rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 input,
 select,
 button {
@@ -398,6 +466,35 @@ button:disabled {
 
 .danger-button {
   background: var(--danger);
+}
+
+.button-file,
+.button-like {
+  display: inline-flex;
+  align-items: center;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 0.5rem 1rem;
+  font-weight: 500;
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.button-file:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 0.85rem;
+  border-top: 1px solid var(--border);
 }
 
 textarea {
@@ -440,8 +537,9 @@ textarea {
 .agent-editor {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 130px);
-  min-height: 520px;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
 }
 
 .agent-editor-header {
@@ -449,7 +547,10 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.75rem;
+  padding-bottom: 0.85rem;
+  margin-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 .agent-editor-header h2 {
@@ -471,6 +572,8 @@ textarea {
   border-radius: 12px;
   overflow: hidden;
   background: var(--surface);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--text) 8%, transparent),
+    0 8px 24px color-mix(in srgb, var(--text) 6%, transparent);
 }
 
 .agent-palette {
@@ -519,10 +622,35 @@ textarea {
   flex: 1;
   min-width: 0;
   position: relative;
+  box-shadow: inset 0 1px 6px color-mix(in srgb, var(--text) 6%, transparent);
+
+  /* Our node types are literally named "input"/"output", colliding with
+     xyflow's built-in default node classes (react-flow__node-input/-output),
+     which ship their own hardcoded white background/border/width. Neutralize
+     that baked-in chrome so only our own .flow-node-* styling shows. */
+  --xy-node-border-default: none;
+  --xy-node-background-color-default: transparent;
+  --xy-node-boxshadow-hover-default: none;
+  --xy-node-boxshadow-selected-default: none;
+  --xy-node-color-default: inherit;
+}
+
+.agent-canvas-area .react-flow__node-input,
+.agent-canvas-area .react-flow__node-output,
+.agent-canvas-area .react-flow__node-default,
+.agent-canvas-area .react-flow__node-group {
+  padding: 0;
+  width: auto;
+  font-size: inherit;
+  text-align: left;
 }
 
 .agent-canvas-area .react-flow {
-  background: var(--bg);
+  background: color-mix(in srgb, var(--text) 4%, var(--surface));
+}
+
+.agent-canvas-area .react-flow__background-pattern {
+  fill: color-mix(in srgb, var(--text) 18%, transparent);
 }
 
 .agent-canvas-area .react-flow__attribution {
@@ -544,6 +672,13 @@ textarea {
   overflow: hidden;
   box-shadow: none;
   border: 1px solid var(--border);
+}
+
+.agent-canvas-area .react-flow__minimap {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .agent-inspector {
@@ -624,6 +759,11 @@ textarea {
   background: var(--surface);
   border-left: 4px solid var(--border);
   font-size: 0.85rem;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.react-flow__node.selected .flow-node {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .flow-node-title {
@@ -763,4 +903,112 @@ textarea {
 
 .checkbox-label input {
   width: auto;
+}
+
+.theme-picker {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.info-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1.5rem;
+  margin: 0 0 1rem;
+}
+
+.info-list dt {
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  font-size: 0.85rem;
+}
+
+.info-list dd {
+  margin: 0;
+}
+
+/* Loss chart */
+
+.loss-chart-plot {
+  position: relative;
+}
+
+.loss-chart-legend {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.78rem;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+
+.loss-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.loss-chart-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.loss-chart-svg {
+  width: 100%;
+  height: 200px;
+  display: block;
+  cursor: crosshair;
+}
+
+.loss-chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.loss-chart-axis-label {
+  fill: color-mix(in srgb, var(--text) 50%, transparent);
+  font-size: 9px;
+}
+
+.loss-chart-crosshair {
+  stroke: color-mix(in srgb, var(--text) 30%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.loss-chart-tooltip {
+  position: absolute;
+  top: 8px;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--text) 12%, transparent);
+  z-index: 1;
+}
+
+.loss-chart-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.loss-chart-tooltip .loss-chart-swatch {
+  margin-right: 0.15rem;
+}
+
+.run-row {
+  cursor: pointer;
+}
+
+.run-row:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.run-detail-row td {
+  padding: 1rem 1.25rem;
+  background: color-mix(in srgb, var(--text) 2%, transparent);
 }

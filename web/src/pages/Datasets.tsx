@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { createDataset, listDatasets, type DatasetSummary } from '../api'
+import { createDataset, deleteDataset, listDatasets, type DatasetSummary } from '../api'
 
 function Datasets() {
   const [datasets, setDatasets] = useState<DatasetSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   const reload = () => {
     listDatasets()
@@ -30,6 +31,21 @@ function Datasets() {
       setError((err as Error).message)
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleDelete = async (name: string) => {
+    if (!window.confirm(`Delete dataset "${name}"? This cannot be undone.`)) return
+
+    setDeleting(name)
+    setError(null)
+    try {
+      await deleteDataset(name)
+      reload()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setDeleting(null)
     }
   }
 
@@ -67,6 +83,7 @@ function Datasets() {
               <tr>
                 <th>Name</th>
                 <th>Pairs</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -76,6 +93,16 @@ function Datasets() {
                     <Link to={`/datasets/${encodeURIComponent(dataset.name)}`}>{dataset.name}</Link>
                   </td>
                   <td>{dataset.pairCount}</td>
+                  <td className="row-actions">
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={deleting === dataset.name}
+                      onClick={() => handleDelete(dataset.name)}
+                    >
+                      {deleting === dataset.name ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

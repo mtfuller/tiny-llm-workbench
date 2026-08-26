@@ -9,6 +9,7 @@ import EvaluationDetail from './pages/EvaluationDetail'
 import Evaluations from './pages/Evaluations'
 import Home from './pages/Home'
 import Models from './pages/Models'
+import Settings from './pages/Settings'
 import Training from './pages/Training'
 
 function App() {
@@ -25,6 +26,7 @@ function App() {
         <Route path="agents/:name" element={<AgentEditor />} />
         <Route path="evaluations" element={<Evaluations />} />
         <Route path="evaluations/:name" element={<EvaluationDetail />} />
+        <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>
   )

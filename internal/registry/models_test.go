@@ -92,3 +92,31 @@ func TestListModelsSkipsDirectoriesWithoutMetadata(t *testing.T) {
 		t.Errorf("ListModels() = %+v, want only the valid model", models)
 	}
 }
+
+func TestDeleteModel(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveModel(Model{Name: "throwaway", Source: "mlx"}); err != nil {
+		t.Fatalf("SaveModel() error = %v", err)
+	}
+
+	if err := reg.DeleteModel("throwaway"); err != nil {
+		t.Fatalf("DeleteModel() error = %v", err)
+	}
+
+	models, err := reg.ListModels()
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(models) != 0 {
+		t.Errorf("ListModels() = %+v, want empty after delete", models)
+	}
+}
+
+func TestDeleteModelNotFound(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.DeleteModel("does-not-exist"); err == nil {
+		t.Error("DeleteModel() error = nil, want an error for an unknown model")
+	}
+}

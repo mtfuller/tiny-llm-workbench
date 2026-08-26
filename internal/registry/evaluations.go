@@ -79,6 +79,19 @@ func (r *Registry) GetEvaluation(name string) (Evaluation, error) {
 	return eval, nil
 }
 
+// DeleteEvaluation removes an evaluation's directory (its definition). It's
+// an error to delete an evaluation that doesn't exist.
+func (r *Registry) DeleteEvaluation(name string) error {
+	dir := r.evaluationDir(name)
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("evaluation %q not found", name)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("delete evaluation %q: %w", name, err)
+	}
+	return nil
+}
+
 // ListEvaluations returns every registry-tracked evaluation, sorted by name.
 func (r *Registry) ListEvaluations() ([]Evaluation, error) {
 	entries, err := os.ReadDir(r.evaluationsDir())

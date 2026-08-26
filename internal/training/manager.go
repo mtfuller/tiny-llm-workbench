@@ -46,8 +46,9 @@ type Manager struct {
 	models   modelSaver
 	trainer  Trainer
 
-	mu   sync.Mutex
-	runs map[string]*Run
+	mu      sync.Mutex
+	runs    map[string]*Run
+	cancels map[string]context.CancelFunc
 }
 
 // NewManager builds a Manager. ctx bounds the lifetime of every run it
@@ -63,6 +64,7 @@ func NewManager(ctx context.Context, runsDir string, bus *eventbus.Bus, datasets
 		models:   models,
 		trainer:  trainer,
 		runs:     make(map[string]*Run),
+		cancels:  make(map[string]context.CancelFunc),
 	}
 }
 
@@ -149,16 +151,40 @@ func (m *Manager) StartRun(cfg Config) (*Run, error) {
 		Progress: []ProgressPoint{},
 	}
 
+	runCtx, cancel := context.WithCancel(m.ctx)
+
 	m.mu.Lock()
 	m.runs[run.ID] = run
+	m.cancels[run.ID] = cancel
 	m.mu.Unlock()
 
 	m.persist(run)
 	m.publishStatus(run)
 
-	go m.run(run, examples)
+	go m.run(runCtx, run, examples)
 
 	return run, nil
+}
+
+// CancelRun stops a running training job, killing its subprocess. It's a
+// no-op (not an error) if the run has already finished, since the frontend
+// may race a cancel request against the run's own completion. It's an error
+// to cancel a run that was never started.
+func (m *Manager) CancelRun(id string) error {
+	m.mu.Lock()
+	run, ok := m.runs[id]
+	cancel, hasCancel := m.cancels[id]
+	m.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("no such run %q", id)
+	}
+	if run.Status != StatusRunning || !hasCancel {
+		return nil
+	}
+
+	cancel()
+	return nil
 }
 
 // ListRuns returns every known run, most recently started first.
@@ -184,10 +210,17 @@ func (m *Manager) GetRun(id string) (*Run, bool) {
 	return run, ok
 }
 
-// run drives a single training job to completion. It always runs in its
-// own goroutine, using m.ctx (not any per-request context) so it survives
-// past the HTTP request that started it.
-func (m *Manager) run(run *Run, examples []registry.Example) {
+// run drives a single training job to completion. It always runs in its own
+// goroutine, using ctx (a per-run context derived from m.ctx, not m.ctx
+// itself) so it survives past the HTTP request that started it and can be
+// cancelled independently of any other run.
+func (m *Manager) run(ctx context.Context, run *Run, examples []registry.Example) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.cancels, run.ID)
+		m.mu.Unlock()
+	}()
+
 	onProgress := func(point ProgressPoint) {
 		m.mu.Lock()
 		run.Progress = append(run.Progress, point)
@@ -197,12 +230,15 @@ func (m *Manager) run(run *Run, examples []registry.Example) {
 		m.publishProgress(run.ID, point)
 	}
 
-	result, err := m.trainer.Train(m.ctx, run.Config, examples, onProgress)
+	result, err := m.trainer.Train(ctx, run.Config, examples, onProgress)
 
 	m.mu.Lock()
 	now := time.Now().UTC()
 	run.FinishedAt = &now
-	if err != nil {
+	if errors.Is(err, context.Canceled) {
+		run.Status = StatusCancelled
+		run.Error = "cancelled by user"
+	} else if err != nil {
 		run.Status = StatusFailed
 		run.Error = err.Error()
 	} else {

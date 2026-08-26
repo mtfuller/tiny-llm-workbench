@@ -4,6 +4,10 @@ import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import { EventStreamProvider } from './eventStream.tsx'
+import { applyTheme, getStoredTheme } from './theme.ts'
+
+// Applied before the first render so there's no flash of the wrong theme.
+applyTheme(getStoredTheme())
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

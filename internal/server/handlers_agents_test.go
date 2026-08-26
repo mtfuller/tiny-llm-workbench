@@ -178,6 +178,46 @@ func TestGetAgentNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteAgent(t *testing.T) {
+	deps := testDeps()
+	store := &fakeAgentStore{}
+	deps.Agents = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/agents/greeter", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/agents/greeter status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "greeter" {
+		t.Errorf("store.deleted = %v, want [greeter]", store.deleted)
+	}
+}
+
+func TestDeleteAgentNotFound(t *testing.T) {
+	deps := testDeps()
+	deps.Agents = &fakeAgentStore{deleteErr: errors.New("agent not found")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/agents/missing", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("DELETE /api/agents/missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestStartAgentRun(t *testing.T) {
 	deps := testDeps()
 	mgr := &fakeAgentManager{startResult: &agents.Run{ID: "run-1", AgentName: "greeter", Messages: []agents.ChatMessage{}}}

@@ -67,6 +67,38 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	return tags.Models, nil
 }
 
+// deleteRequest mirrors Ollama's DELETE /api/delete request body.
+type deleteRequest struct {
+	Model string `json:"model"`
+}
+
+// DeleteModel removes a locally-pulled Ollama model.
+func (c *Client) DeleteModel(ctx context.Context, name string) error {
+	body, err := json.Marshal(deleteRequest{Model: name})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/delete", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("request Ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Ollama returned status %d: %s", resp.StatusCode, respBody)
+	}
+
+	return nil
+}
+
 // generateRequest mirrors Ollama's POST /api/generate request body.
 type generateRequest struct {
 	Model  string `json:"model"`

@@ -1,15 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   getEvaluation,
   listAgents,
+  listEnvironments,
   listEvaluationRuns,
+  saveEvaluation,
   startEvaluationRun,
   type Agent,
+  type Environment,
   type Evaluation,
   type EvaluationRun,
+  type TestCase,
+  type TestCaseResult,
 } from '../api'
 import { useEventStream } from '../eventStream'
+import Modal from '../Modal'
+import { TestCaseFields, toDraftTestCases, toPayloadTestCases, type DraftTestCase } from '../TestCaseEditor'
 
 function formatDuration(startedAt: string, finishedAt?: string): string {
   const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
@@ -24,22 +31,41 @@ function EvaluationDetail() {
 
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
+  const [environments, setEnvironments] = useState<Environment[]>([])
   const [selectedAgents, setSelectedAgents] = useState<string[]>([])
   const [runs, setRuns] = useState<EvaluationRun[]>([])
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const [editing, setEditing] = useState(false)
+  const [editEnvironment, setEditEnvironment] = useState('')
+  const [editTestCases, setEditTestCases] = useState<DraftTestCase[]>([])
+  const [savingEdit, setSavingEdit] = useState(false)
+
+  const [selectedResult, setSelectedResult] = useState<{
+    agentName: string
+    testCase: TestCase
+    result: TestCaseResult
+  } | null>(null)
+
+  const reloadEvaluation = useCallback(() => {
     getEvaluation(name)
       .then(setEvaluation)
       .catch((err: Error) => setError(err.message))
+  }, [name])
+
+  useEffect(() => {
+    reloadEvaluation()
     listAgents()
       .then(setAgents)
       .catch(() => setAgents([]))
+    listEnvironments()
+      .then(setEnvironments)
+      .catch(() => setEnvironments([]))
     listEvaluationRuns()
       .then((all) => setRuns(all.filter((r) => r.evaluationName === name)))
       .catch(() => setRuns([]))
-  }, [name])
+  }, [name, reloadEvaluation])
 
   useEffect(() => {
     const unsubscribeStatus = subscribe('evaluation.status', (event) => {
@@ -67,6 +93,37 @@ function EvaluationDetail() {
     }, 3000)
     return () => clearInterval(interval)
   }, [activeRun, name])
+
+  const startEditing = () => {
+    if (!evaluation) return
+    setEditEnvironment(evaluation.environment ?? '')
+    setEditTestCases(toDraftTestCases(evaluation.testCases))
+    setEditing(true)
+  }
+
+  const cancelEditing = () => setEditing(false)
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    const payloadTestCases = toPayloadTestCases(editTestCases)
+    if (payloadTestCases.length === 0) {
+      setError('At least one test case with a prompt is required.')
+      return
+    }
+
+    setSavingEdit(true)
+    setError(null)
+    try {
+      await saveEvaluation({ name, environment: editEnvironment || undefined, testCases: payloadTestCases })
+      setEditing(false)
+      reloadEvaluation()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSavingEdit(false)
+    }
+  }
 
   const toggleAgent = (agentName: string) => {
     setSelectedAgents((prev) => (prev.includes(agentName) ? prev.filter((a) => a !== agentName) : [...prev, agentName]))
@@ -98,9 +155,14 @@ function EvaluationDetail() {
 
       {error && <p className="error">{error}</p>}
 
-      {evaluation && (
+      {evaluation && !editing && (
         <section className="panel">
-          <h3>Test cases</h3>
+          <div className="page-header">
+            <h3>Test cases</h3>
+            <button type="button" onClick={startEditing}>
+              Edit
+            </button>
+          </div>
           {evaluation.environment && (
             <p className="hint">
               Launches environment <code>{evaluation.environment}</code> for the run (agents can't act
@@ -131,6 +193,36 @@ function EvaluationDetail() {
               ))}
             </tbody>
           </table>
+        </section>
+      )}
+
+      {evaluation && editing && (
+        <section className="panel">
+          <h3>Edit test cases</h3>
+          <form className="stacked-form" onSubmit={handleSaveEdit}>
+            <label>
+              Environment (optional)
+              <select value={editEnvironment} onChange={(e) => setEditEnvironment(e.target.value)}>
+                <option value="">None</option>
+                {environments.map((env) => (
+                  <option key={env.name} value={env.name}>
+                    {env.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <TestCaseFields testCases={editTestCases} onChange={setEditTestCases} />
+
+            <div className="row-actions">
+              <button type="submit" disabled={savingEdit}>
+                {savingEdit ? 'Saving…' : 'Save changes'}
+              </button>
+              <button type="button" onClick={cancelEditing}>
+                Cancel
+              </button>
+            </div>
+          </form>
         </section>
       )}
 
@@ -183,11 +275,17 @@ function EvaluationDetail() {
                       {evaluation.testCases.map((tc) => {
                         const result = ar.results.find((r) => r.testCaseId === tc.id)
                         return (
-                          <td key={tc.id} title={result?.reply || result?.error || ''}>
+                          <td key={tc.id}>
                             {result ? (
-                              <span className={`badge ${result.passed ? 'badge-purple' : ''}`}>
-                                {result.passed ? 'pass' : 'fail'}
-                              </span>
+                              <button
+                                type="button"
+                                className="result-cell"
+                                onClick={() => setSelectedResult({ agentName: ar.agentName, testCase: tc, result })}
+                              >
+                                <span className={`badge ${result.passed ? 'badge-purple' : ''}`}>
+                                  {result.passed ? 'pass' : 'fail'}
+                                </span>
+                              </button>
                             ) : (
                               '—'
                             )}
@@ -221,6 +319,34 @@ function EvaluationDetail() {
             ))}
           </ul>
         </section>
+      )}
+
+      {selectedResult && (
+        <Modal
+          title={`${selectedResult.agentName} — ${selectedResult.result.passed ? 'pass' : 'fail'}`}
+          onClose={() => setSelectedResult(null)}
+        >
+          <p className="hint">Prompt</p>
+          <p>{selectedResult.testCase.prompt}</p>
+
+          <p className="hint">Reply</p>
+          <pre className="exec-output">{selectedResult.result.reply || selectedResult.result.error || '(no reply)'}</pre>
+
+          <p className="hint">Assertions</p>
+          <ul className="event-log">
+            {selectedResult.result.assertions.map((a, i) => (
+              <li key={i}>
+                <span className={`badge ${a.passed ? 'badge-purple' : ''}`}>{a.passed ? 'pass' : 'fail'}</span>
+                <span className="event-data">
+                  <code>
+                    {a.type} "{a.value}"
+                  </code>
+                  {a.error && <div className="error">{a.error}</div>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Modal>
       )}
     </>
   )

@@ -59,6 +59,63 @@ func TestListModelsEmptyIsJSONArrayNotNull(t *testing.T) {
 	}
 }
 
+func TestDeleteModel(t *testing.T) {
+	deps := testDeps()
+	catalog := &fakeCatalog{}
+	deps.Catalog = catalog
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/models/qwen2.5:0.5b?source=ollama", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/models/qwen2.5:0.5b status = %d, want %d, body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if len(catalog.deleted) != 1 || catalog.deleted[0] != "qwen2.5:0.5b/ollama" {
+		t.Errorf("catalog.deleted = %v, want [qwen2.5:0.5b/ollama]", catalog.deleted)
+	}
+}
+
+func TestDeleteModelRequiresSource(t *testing.T) {
+	deps := testDeps()
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/models/qwen2.5:0.5b", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("DELETE /api/models/qwen2.5:0.5b (no source) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDeleteModelCatalogError(t *testing.T) {
+	deps := testDeps()
+	deps.Catalog = &fakeCatalog{deleteErr: errors.New("ollama unreachable")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/models/qwen2.5:0.5b?source=ollama", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("DELETE /api/models/qwen2.5:0.5b (catalog error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
 func TestListModelsCatalogError(t *testing.T) {
 	deps := testDeps()
 	deps.Catalog = &fakeCatalog{err: errors.New("boom")}

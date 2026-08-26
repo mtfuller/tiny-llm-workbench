@@ -174,6 +174,46 @@ func TestGetEvaluationNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteEvaluation(t *testing.T) {
+	deps := testDeps()
+	store := &fakeEvaluationStore{}
+	deps.Evaluations = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/evaluations/greeter-eval", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/evaluations/greeter-eval status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "greeter-eval" {
+		t.Errorf("store.deleted = %v, want [greeter-eval]", store.deleted)
+	}
+}
+
+func TestDeleteEvaluationNotFound(t *testing.T) {
+	deps := testDeps()
+	deps.Evaluations = &fakeEvaluationStore{deleteErr: errors.New("evaluation not found")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/evaluations/missing", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("DELETE /api/evaluations/missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestStartEvaluationRun(t *testing.T) {
 	deps := testDeps()
 	mgr := &fakeEvaluationManager{startResult: &evaluations.Run{ID: "evalrun-1", EvaluationName: "greeting-eval"}}

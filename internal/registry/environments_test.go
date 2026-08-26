@@ -98,3 +98,27 @@ func TestEnsurePrebuiltEnvironmentsSeedsOnce(t *testing.T) {
 		t.Errorf("GetEnvironment().Image = %q, want the customization to survive re-seeding", got.Image)
 	}
 }
+
+func TestDeleteEnvironment(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveEnvironment(Environment{Name: "throwaway", Image: "alpine:3.20"}); err != nil {
+		t.Fatalf("SaveEnvironment() error = %v", err)
+	}
+
+	if err := reg.DeleteEnvironment("throwaway"); err != nil {
+		t.Fatalf("DeleteEnvironment() error = %v", err)
+	}
+
+	if _, err := reg.GetEnvironment("throwaway"); err == nil {
+		t.Error("GetEnvironment() error = nil, want an error after delete")
+	}
+}
+
+func TestDeleteEnvironmentNotFound(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.DeleteEnvironment("does-not-exist"); err == nil {
+		t.Error("DeleteEnvironment() error = nil, want an error for an unknown environment")
+	}
+}

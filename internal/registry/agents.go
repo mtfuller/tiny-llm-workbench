@@ -109,6 +109,19 @@ func (r *Registry) GetAgent(name string) (Agent, error) {
 	return agent, nil
 }
 
+// DeleteAgent removes an agent's directory (its graph definition). It's an
+// error to delete an agent that doesn't exist.
+func (r *Registry) DeleteAgent(name string) error {
+	dir := r.agentDir(name)
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("agent %q not found", name)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("delete agent %q: %w", name, err)
+	}
+	return nil
+}
+
 // ListAgents returns every registry-tracked agent, sorted by name.
 func (r *Registry) ListAgents() ([]Agent, error) {
 	entries, err := os.ReadDir(r.agentsDir())

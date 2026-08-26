@@ -1,28 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import {
-  listEnvironments,
-  listEvaluations,
-  saveEvaluation,
-  type AssertionType,
-  type Environment,
-  type Evaluation,
-  type TestCase,
-} from '../api'
-
-interface DraftAssertion {
-  type: AssertionType
-  value: string
-}
-
-interface DraftTestCase {
-  prompt: string
-  assertions: DraftAssertion[]
-}
-
-function emptyTestCase(): DraftTestCase {
-  return { prompt: '', assertions: [{ type: 'contains', value: '' }] }
-}
+import { deleteEvaluation, listEnvironments, listEvaluations, saveEvaluation, type Environment, type Evaluation } from '../api'
+import { emptyTestCase, TestCaseFields, toPayloadTestCases, type DraftTestCase } from '../TestCaseEditor'
 
 function Evaluations() {
   const [evaluations, setEvaluations] = useState<Evaluation[] | null>(null)
@@ -33,6 +12,7 @@ function Evaluations() {
   const [environment, setEnvironment] = useState('')
   const [testCases, setTestCases] = useState<DraftTestCase[]>([emptyTestCase()])
   const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   const reload = () => {
     listEvaluations()
@@ -47,46 +27,11 @@ function Evaluations() {
       .catch(() => setEnvironments([]))
   }, [])
 
-  const updateTestCase = (i: number, patch: Partial<DraftTestCase>) => {
-    setTestCases((prev) => prev.map((tc, idx) => (idx === i ? { ...tc, ...patch } : tc)))
-  }
-
-  const updateAssertion = (tcIndex: number, aIndex: number, patch: Partial<DraftAssertion>) => {
-    setTestCases((prev) =>
-      prev.map((tc, idx) =>
-        idx === tcIndex
-          ? { ...tc, assertions: tc.assertions.map((a, ai) => (ai === aIndex ? { ...a, ...patch } : a)) }
-          : tc,
-      ),
-    )
-  }
-
-  const addAssertion = (tcIndex: number) => {
-    setTestCases((prev) =>
-      prev.map((tc, idx) => (idx === tcIndex ? { ...tc, assertions: [...tc.assertions, { type: 'contains', value: '' }] } : tc)),
-    )
-  }
-
-  const removeAssertion = (tcIndex: number, aIndex: number) => {
-    setTestCases((prev) =>
-      prev.map((tc, idx) => (idx === tcIndex ? { ...tc, assertions: tc.assertions.filter((_, ai) => ai !== aIndex) } : tc)),
-    )
-  }
-
-  const addTestCase = () => setTestCases((prev) => [...prev, emptyTestCase()])
-  const removeTestCase = (i: number) => setTestCases((prev) => prev.filter((_, idx) => idx !== i))
-
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
 
-    const payloadTestCases: TestCase[] = testCases
-      .filter((tc) => tc.prompt.trim())
-      .map((tc, i) => ({
-        id: `tc-${i}`,
-        prompt: tc.prompt.trim(),
-        assertions: tc.assertions.filter((a) => a.value.trim()).map((a) => ({ type: a.type, value: a.value.trim() })),
-      }))
+    const payloadTestCases = toPayloadTestCases(testCases)
 
     if (payloadTestCases.length === 0) {
       setError('At least one test case with a prompt is required.')
@@ -105,6 +50,21 @@ function Evaluations() {
       setError((err as Error).message)
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleDelete = async (name: string) => {
+    if (!window.confirm(`Delete evaluation "${name}"? This cannot be undone.`)) return
+
+    setDeleting(name)
+    setError(null)
+    try {
+      await deleteEvaluation(name)
+      reload()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setDeleting(null)
     }
   }
 
@@ -139,56 +99,7 @@ function Evaluations() {
             </select>
           </label>
 
-          {testCases.map((tc, tcIndex) => (
-            <div key={tcIndex} className="test-case-editor">
-              <div className="page-header">
-                <strong>Test case {tcIndex + 1}</strong>
-                {testCases.length > 1 && (
-                  <button type="button" className="danger-button" onClick={() => removeTestCase(tcIndex)}>
-                    Remove
-                  </button>
-                )}
-              </div>
-              <label>
-                Prompt
-                <input
-                  type="text"
-                  placeholder="say hello"
-                  value={tc.prompt}
-                  onChange={(e) => updateTestCase(tcIndex, { prompt: e.target.value })}
-                />
-              </label>
-              {tc.assertions.map((a, aIndex) => (
-                <div className="assertion-row" key={aIndex}>
-                  <select
-                    value={a.type}
-                    onChange={(e) => updateAssertion(tcIndex, aIndex, { type: e.target.value as AssertionType })}
-                  >
-                    <option value="contains">contains</option>
-                    <option value="not_contains">not contains</option>
-                    <option value="regex">matches regex</option>
-                  </select>
-                  <input
-                    type="text"
-                    placeholder="value"
-                    value={a.value}
-                    onChange={(e) => updateAssertion(tcIndex, aIndex, { value: e.target.value })}
-                  />
-                  {tc.assertions.length > 1 && (
-                    <button type="button" className="danger-button" onClick={() => removeAssertion(tcIndex, aIndex)}>
-                      ×
-                    </button>
-                  )}
-                </div>
-              ))}
-              <button type="button" onClick={() => addAssertion(tcIndex)}>
-                + Assertion
-              </button>
-            </div>
-          ))}
-          <button type="button" onClick={addTestCase}>
-            + Test case
-          </button>
+          <TestCaseFields testCases={testCases} onChange={setTestCases} />
 
           <button type="submit" disabled={creating || !name.trim()}>
             {creating ? 'Creating…' : 'Create evaluation'}
@@ -210,6 +121,7 @@ function Evaluations() {
                 <th>Name</th>
                 <th>Environment</th>
                 <th>Test cases</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -220,6 +132,16 @@ function Evaluations() {
                   </td>
                   <td>{eval_.environment || '—'}</td>
                   <td>{eval_.testCases.length}</td>
+                  <td className="row-actions">
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={deleting === eval_.name}
+                      onClick={() => handleDelete(eval_.name)}
+                    >
+                      {deleting === eval_.name ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

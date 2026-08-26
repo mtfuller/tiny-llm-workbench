@@ -94,3 +94,27 @@ func TestListAgentsSortedByName(t *testing.T) {
 		t.Errorf("ListAgents() = %+v, want [alpha, zeta]", agents)
 	}
 }
+
+func TestDeleteAgent(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveAgent(Agent{Name: "throwaway"}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := reg.DeleteAgent("throwaway"); err != nil {
+		t.Fatalf("DeleteAgent() error = %v", err)
+	}
+
+	if _, err := reg.GetAgent("throwaway"); err == nil {
+		t.Error("GetAgent() error = nil, want an error after delete")
+	}
+}
+
+func TestDeleteAgentNotFound(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.DeleteAgent("does-not-exist"); err == nil {
+		t.Error("DeleteAgent() error = nil, want an error for an unknown agent")
+	}
+}

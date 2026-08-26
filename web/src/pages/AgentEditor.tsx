@@ -2,6 +2,7 @@ import {
   addEdge,
   Background,
   Controls,
+  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
@@ -35,6 +36,24 @@ import { useEventStream } from '../eventStream'
 import Modal from '../Modal'
 
 type FlowNode = Node<AgentNodeData>
+
+// Mirrors the .flow-node-* border colors in index.css so the minimap reads
+// as a shrunk-down view of the same graph.
+function minimapNodeColor(node: FlowNode): string {
+  const root = getComputedStyle(document.documentElement)
+  switch (node.type) {
+    case 'prompt':
+      return '#2f6fd6'
+    case 'decision':
+      return root.getPropertyValue('--warn').trim() || '#b8792f'
+    case 'tool':
+      return '#2f8f6d'
+    case 'output':
+      return '#d0447a'
+    default:
+      return root.getPropertyValue('--accent').trim() || '#c1633f'
+  }
+}
 
 const PALETTE: { type: NodeType; label: string; icon: typeof MessageSquare }[] = [
   { type: 'prompt', label: 'Prompt', icon: MessageSquare },
@@ -295,8 +314,14 @@ function AgentEditorWorkspace() {
               onPaneClick={() => setSelectedNodeId(null)}
               fitView
             >
-              <Background />
+              <Background gap={18} />
               <Controls />
+              <MiniMap
+                pannable
+                zoomable
+                nodeColor={minimapNodeColor}
+                maskColor="var(--minimap-mask)"
+              />
             </ReactFlow>
           )}
         </div>

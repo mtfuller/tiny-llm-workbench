@@ -69,10 +69,10 @@ function Layout() {
         </nav>
 
         <div className="sidebar-footer">
-          <span className="nav-item nav-item-disabled">
+          <NavLink to="/settings" className={({ isActive }) => `nav-item${isActive ? ' nav-item-active' : ''}`}>
             <Settings size={17} strokeWidth={2} />
             Settings
-          </span>
+          </NavLink>
           <div className={`status-row status-row-${status}`}>
             <span className="status-dot" />
             API: {connectionLabel(status)}
