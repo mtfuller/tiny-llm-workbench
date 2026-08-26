@@ -207,7 +207,7 @@ func TestRunCycleHitsMaxSteps(t *testing.T) {
 }
 
 func TestRunPromptNodeLLMError(t *testing.T) {
-	llm := &fakeLLM{err: errors.New("ollama unreachable")}
+	llm := &fakeLLM{err: errors.New("model runner unreachable")}
 	engine := NewEngine(llm, &fakeTools{})
 
 	if _, err := engine.Run(context.Background(), linearGraph(), nil, "hi", "", nil); err == nil {

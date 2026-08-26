@@ -13,9 +13,10 @@ import (
 // model's weights/files under models/<name>/.
 const modelMetadataFile = "metadata.json"
 
-// Model describes a registry-tracked model. Ollama models are intentionally
-// not part of this registry — they're listed live from Ollama's own API and
-// merged in by internal/models.Catalog.
+// Model describes a registry-tracked model. Path points at a standalone,
+// directly-loadable MLX model directory — for a trained model, this is the
+// fused output of internal/training's post-training fuse step, not the raw
+// LoRA adapter (which isn't runnable on its own).
 type Model struct {
 	Name      string    `json:"name"`
 	Source    string    `json:"source"` // e.g. "mlx", "binary"

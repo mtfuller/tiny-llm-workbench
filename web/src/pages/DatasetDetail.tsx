@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { FileJson, FileSpreadsheet, Pencil, Plus, Sparkles, Tags, Trash2, Upload } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useParams } from 'react-router-dom'
 import {
   addExamples,
@@ -13,35 +15,41 @@ import {
   type Example,
   type Model,
 } from '../api'
+import { useConfirm } from '../ConfirmDialog'
+import Modal from '../Modal'
+import { TableSkeleton } from '../Skeleton'
+import { suggestedModels } from '../suggestedModels'
+import TagInput from '../TagInput'
+import { useToast } from '../Toast'
 
 const PAGE_SIZE = 20
+const emptyExample: Example = { input: '', output: '', description: '', tags: [] }
+
+type ModalState = { mode: 'add' } | { mode: 'edit'; index: number } | null
 
 function DatasetDetail() {
+  const confirm = useConfirm()
+  const showToast = useToast()
   const { name = '' } = useParams<{ name: string }>()
   const [dataset, setDataset] = useState<DatasetDetailType | null>(null)
   const [models, setModels] = useState<Model[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  const [selectedModel, setSelectedModel] = useState('')
-  const [seedInput, setSeedInput] = useState('')
-  const [seedOutput, setSeedOutput] = useState('')
-  const [count, setCount] = useState(3)
-  const [generating, setGenerating] = useState(false)
+  const [search, setSearch] = useState('')
+  const [activeTags, setActiveTags] = useState<Set<string>>(new Set())
+  const [page, setPage] = useState(0)
 
-  const [newInput, setNewInput] = useState('')
-  const [newOutput, setNewOutput] = useState('')
-  const [adding, setAdding] = useState(false)
+  const [modal, setModal] = useState<ModalState>(null)
+  const [modalSaving, setModalSaving] = useState(false)
+  const [modalError, setModalError] = useState<string | null>(null)
+  const [deletingIndex, setDeletingIndex] = useState<number | null>(null)
+
+  const [generateOpen, setGenerateOpen] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [generateError, setGenerateError] = useState<string | null>(null)
 
   const [importing, setImporting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-
-  const [editingIndex, setEditingIndex] = useState<number | null>(null)
-  const [editInput, setEditInput] = useState('')
-  const [editOutput, setEditOutput] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [deletingIndex, setDeletingIndex] = useState<number | null>(null)
-
-  const [page, setPage] = useState(0)
 
   const reload = () => {
     getDataset(name)
@@ -52,48 +60,108 @@ function DatasetDetail() {
   useEffect(reload, [name])
   useEffect(() => {
     listModels()
-      .then((list) => {
-        setModels(list)
-        if (list.length > 0) setSelectedModel((current) => current || list[0].name)
-      })
+      .then(setModels)
       .catch(() => setModels([]))
   }, [])
 
-  const handleGenerate = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!selectedModel || !seedInput.trim() || !seedOutput.trim()) return
+  useEffect(() => setPage(0), [search, activeTags])
 
-    setGenerating(true)
-    setError(null)
-    try {
-      await generateVariations(name, {
-        model: selectedModel,
-        seed: { input: seedInput.trim(), output: seedOutput.trim() },
-        count,
+  const modelOptions = useMemo(() => {
+    const trained = models.map((m) => m.name)
+    return Array.from(new Set([...trained, ...suggestedModels]))
+  }, [models])
+
+  const examples = dataset?.examples ?? []
+
+  const allTags = useMemo(() => {
+    const tags = new Set<string>()
+    for (const ex of examples) {
+      for (const t of ex.tags ?? []) tags.add(t)
+    }
+    return Array.from(tags).sort()
+  }, [examples])
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return examples
+      .map((example, index) => ({ example, index }))
+      .filter(({ example }) => {
+        if (activeTags.size > 0) {
+          const tags = example.tags ?? []
+          if (![...activeTags].some((t) => tags.includes(t))) return false
+        }
+        if (q) {
+          const haystack = `${example.input} ${example.output} ${example.description ?? ''}`.toLowerCase()
+          if (!haystack.includes(q)) return false
+        }
+        return true
       })
+  }, [examples, search, activeTags])
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount - 1)
+  const pageStart = currentPage * PAGE_SIZE
+  const pageItems = filtered.slice(pageStart, pageStart + PAGE_SIZE)
+
+  const toggleTagFilter = (tag: string) => {
+    setActiveTags((prev) => {
+      const next = new Set(prev)
+      if (next.has(tag)) next.delete(tag)
+      else next.add(tag)
+      return next
+    })
+  }
+
+  const handleSaveModal = async (example: Example) => {
+    if (!modal) return
+
+    setModalSaving(true)
+    setModalError(null)
+    try {
+      if (modal.mode === 'add') {
+        await addExamples(name, [example])
+        showToast('Added example')
+      } else {
+        await updateExample(name, modal.index, example)
+        showToast('Saved example')
+      }
+      setModal(null)
       reload()
     } catch (err) {
-      setError((err as Error).message)
+      setModalError((err as Error).message)
     } finally {
-      setGenerating(false)
+      setModalSaving(false)
     }
   }
 
-  const handleAddExample = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newInput.trim() || !newOutput.trim()) return
+  const handleDeleteExample = async (index: number) => {
+    if (!(await confirm('Delete this example? This cannot be undone.'))) return
 
-    setAdding(true)
+    setDeletingIndex(index)
     setError(null)
     try {
-      await addExamples(name, [{ input: newInput.trim(), output: newOutput.trim() }])
-      setNewInput('')
-      setNewOutput('')
+      await deleteExample(name, index)
+      showToast('Deleted example')
       reload()
     } catch (err) {
       setError((err as Error).message)
     } finally {
-      setAdding(false)
+      setDeletingIndex(null)
+    }
+  }
+
+  const handleGenerate = async (req: { model: string; seed: Example; count: number }) => {
+    setGenerating(true)
+    setGenerateError(null)
+    try {
+      await generateVariations(name, req)
+      showToast(`Generated ${req.count} variation${req.count === 1 ? '' : 's'}`)
+      setGenerateOpen(false)
+      reload()
+    } catch (err) {
+      setGenerateError((err as Error).message)
+    } finally {
+      setGenerating(false)
     }
   }
 
@@ -107,6 +175,7 @@ function DatasetDetail() {
     try {
       const content = await file.text()
       await importDataset(name, format, content)
+      showToast('Imported examples')
       reload()
     } catch (err) {
       setError((err as Error).message)
@@ -116,51 +185,6 @@ function DatasetDetail() {
     }
   }
 
-  const startEdit = (index: number, example: Example) => {
-    setEditingIndex(index)
-    setEditInput(example.input)
-    setEditOutput(example.output)
-  }
-
-  const cancelEdit = () => setEditingIndex(null)
-
-  const handleSaveEdit = async (index: number) => {
-    if (!editInput.trim() || !editOutput.trim()) return
-
-    setSaving(true)
-    setError(null)
-    try {
-      await updateExample(name, index, { input: editInput.trim(), output: editOutput.trim() })
-      setEditingIndex(null)
-      reload()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleDeleteExample = async (index: number) => {
-    if (!window.confirm('Delete this example? This cannot be undone.')) return
-
-    setDeletingIndex(index)
-    setError(null)
-    try {
-      await deleteExample(name, index)
-      reload()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setDeletingIndex(null)
-    }
-  }
-
-  const examples = dataset?.examples ?? []
-  const pageCount = Math.max(1, Math.ceil(examples.length / PAGE_SIZE))
-  const currentPage = Math.min(page, pageCount - 1)
-  const pageStart = currentPage * PAGE_SIZE
-  const pageExamples = examples.slice(pageStart, pageStart + PAGE_SIZE)
-
   return (
     <>
       <div className="page-header">
@@ -169,179 +193,393 @@ function DatasetDetail() {
         </h2>
       </div>
 
-      <section className="panel">
-        <h3>Generate variations</h3>
-        <p className="hint">
-          Give one example input/output pair and a local model will generate similar ones.
-        </p>
-        <form className="stacked-form" onSubmit={handleGenerate}>
-          <label>
-            Model
-            <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
-              {models.length === 0 && <option value="">No models available</option>}
-              {models.map((model) => (
-                <option key={model.name} value={model.name}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Example input
-            <input type="text" value={seedInput} onChange={(e) => setSeedInput(e.target.value)} />
-          </label>
-          <label>
-            Example output
-            <input type="text" value={seedOutput} onChange={(e) => setSeedOutput(e.target.value)} />
-          </label>
-          <label>
-            How many variations
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={count}
-              onChange={(e) => setCount(Number(e.target.value))}
-            />
-          </label>
-          <button type="submit" disabled={generating || !selectedModel}>
-            {generating ? 'Generating…' : 'Generate'}
-          </button>
-        </form>
-      </section>
-
-      <section className="panel">
-        <h3>Add an example</h3>
-        <form className="inline-form" onSubmit={handleAddExample}>
+      <div className="panel panel-flush">
+        <div className="list-toolbar panel-toolbar">
           <input
-            type="text"
-            placeholder="Input"
-            value={newInput}
-            onChange={(e) => setNewInput(e.target.value)}
+            type="search"
+            placeholder="Search examples…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="list-search"
           />
-          <input
-            type="text"
-            placeholder="Output"
-            value={newOutput}
-            onChange={(e) => setNewOutput(e.target.value)}
-          />
-          <button type="submit" disabled={adding || !newInput.trim() || !newOutput.trim()}>
-            {adding ? 'Adding…' : 'Add example'}
-          </button>
-        </form>
-      </section>
-
-      <section className="panel">
-        <h3>Import / export</h3>
-        <div className="row-actions">
-          <label className="button-file">
-            {importing ? 'Importing…' : 'Import CSV/JSONL'}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,.jsonl,.txt"
-              onChange={handleImportFile}
-              disabled={importing}
-              hidden
-            />
-          </label>
-          <a className="button-like" href={datasetExportUrl(name, 'jsonl')}>
-            Export JSONL
-          </a>
-          <a className="button-like" href={datasetExportUrl(name, 'csv')}>
-            Export CSV
-          </a>
+          {allTags.length > 0 && (
+            <TagFilterDropdown tags={allTags} active={activeTags} onToggle={toggleTagFilter} onClear={() => setActiveTags(new Set())} />
+          )}
+          <div className="list-toolbar-actions">
+            <button
+              type="button"
+              className="icon-button"
+              title="Add example"
+              aria-label="Add example"
+              onClick={() => setModal({ mode: 'add' })}
+            >
+              <Plus size={16} />
+            </button>
+            <button
+              type="button"
+              className="icon-button"
+              title="Generate variations…"
+              aria-label="Generate variations"
+              onClick={() => setGenerateOpen(true)}
+            >
+              <Sparkles size={16} />
+            </button>
+            <label
+              className="icon-button"
+              title={
+                importing
+                  ? 'Importing…'
+                  : 'Import CSV or JSONL — CSV needs "input" and "output" columns (any order); optional ' +
+                    '"description" and "tags" columns are picked up too, tags semicolon-separated.'
+              }
+              aria-label="Import examples"
+            >
+              <Upload size={16} />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.jsonl,.txt"
+                onChange={handleImportFile}
+                disabled={importing}
+                hidden
+              />
+            </label>
+            <a className="icon-button" title="Export JSONL" aria-label="Export JSONL" href={datasetExportUrl(name, 'jsonl')}>
+              <FileJson size={16} />
+            </a>
+            <a className="icon-button" title="Export CSV" aria-label="Export CSV" href={datasetExportUrl(name, 'csv')}>
+              <FileSpreadsheet size={16} />
+            </a>
+          </div>
         </div>
-        <p className="hint">
-          A CSV import expects an <code>input,output</code> header row.
-        </p>
-      </section>
 
-      {error && <p className="error">{error}</p>}
+        {error && (
+          <div className="panel-body">
+            <p className="error">{error}</p>
+          </div>
+        )}
 
-      {!error && dataset === null && <p className="hint">Loading…</p>}
+        {!error && dataset === null && (
+          <div className="panel-body">
+            <TableSkeleton columns={5} />
+          </div>
+        )}
 
-      {dataset !== null && examples.length === 0 && (
-        <p className="empty-state">No examples yet. Add one above or generate some.</p>
-      )}
+        {dataset !== null && examples.length === 0 && (
+          <div className="panel-body">
+            <p className="hint">No examples yet. Add one above or generate some.</p>
+          </div>
+        )}
 
-      {dataset !== null && examples.length > 0 && (
-        <div className="panel panel-flush">
+        {dataset !== null && examples.length > 0 && filtered.length === 0 && (
+          <div className="panel-body">
+            <p className="hint">No examples match your search/filter.</p>
+          </div>
+        )}
+
+        {filtered.length > 0 && (
           <table className="data-table">
             <thead>
               <tr>
                 <th>Input</th>
                 <th>Output</th>
+                <th>Description</th>
+                <th>Tags</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {pageExamples.map((example, i) => {
-                const index = pageStart + i
-                const isEditing = editingIndex === index
-                return (
-                  <tr key={index}>
-                    {isEditing ? (
-                      <>
-                        <td>
-                          <input type="text" value={editInput} onChange={(e) => setEditInput(e.target.value)} />
-                        </td>
-                        <td>
-                          <input type="text" value={editOutput} onChange={(e) => setEditOutput(e.target.value)} />
-                        </td>
-                        <td className="row-actions">
-                          <button type="button" disabled={saving} onClick={() => handleSaveEdit(index)}>
-                            {saving ? 'Saving…' : 'Save'}
-                          </button>
-                          <button type="button" onClick={cancelEdit}>
-                            Cancel
-                          </button>
-                        </td>
-                      </>
+              {pageItems.map(({ example, index }) => (
+                <tr key={index}>
+                  <td className="cell-truncate">{example.input}</td>
+                  <td className="cell-truncate">{example.output}</td>
+                  <td className="cell-truncate">{example.description || '—'}</td>
+                  <td>
+                    {example.tags && example.tags.length > 0 ? (
+                      <div className="tag-list">
+                        {example.tags.map((tag) => (
+                          <span className="badge" key={tag}>
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
                     ) : (
-                      <>
-                        <td>{example.input}</td>
-                        <td>{example.output}</td>
-                        <td className="row-actions">
-                          <button type="button" onClick={() => startEdit(index, example)}>
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="danger-button"
-                            disabled={deletingIndex === index}
-                            onClick={() => handleDeleteExample(index)}
-                          >
-                            {deletingIndex === index ? 'Deleting…' : 'Delete'}
-                          </button>
-                        </td>
-                      </>
+                      '—'
                     )}
-                  </tr>
-                )
-              })}
+                  </td>
+                  <td className="row-actions">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Edit example"
+                      onClick={() => setModal({ mode: 'edit', index })}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Delete example"
+                      disabled={deletingIndex === index}
+                      onClick={() => handleDeleteExample(index)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
-          {pageCount > 1 && (
-            <div className="pagination">
-              <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>
-                Previous
-              </button>
-              <span className="hint">
-                Page {currentPage + 1} of {pageCount} ({examples.length} examples)
-              </span>
-              <button
-                type="button"
-                disabled={currentPage >= pageCount - 1}
-                onClick={() => setPage(currentPage + 1)}
-              >
-                Next
-              </button>
-            </div>
-          )}
-        </div>
+        )}
+
+        {filtered.length > 0 && pageCount > 1 && (
+          <div className="pagination">
+            <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>
+              Previous
+            </button>
+            <span className="hint">
+              Page {currentPage + 1} of {pageCount} ({filtered.length} of {examples.length} examples)
+            </span>
+            <button type="button" disabled={currentPage >= pageCount - 1} onClick={() => setPage(currentPage + 1)}>
+              Next
+            </button>
+          </div>
+        )}
+      </div>
+
+      {modal && (
+        <ExampleModal
+          title={modal.mode === 'add' ? 'Add example' : 'Edit example'}
+          initial={modal.mode === 'edit' ? examples[modal.index] : emptyExample}
+          allTags={allTags}
+          saving={modalSaving}
+          error={modalError}
+          onSave={handleSaveModal}
+          onClose={() => setModal(null)}
+        />
+      )}
+
+      {generateOpen && (
+        <GenerateVariationsModal
+          modelOptions={modelOptions}
+          generating={generating}
+          error={generateError}
+          onGenerate={handleGenerate}
+          onClose={() => setGenerateOpen(false)}
+        />
       )}
     </>
+  )
+}
+
+interface TagFilterDropdownProps {
+  tags: string[]
+  active: Set<string>
+  onToggle: (tag: string) => void
+  onClear: () => void
+}
+
+// TagFilterDropdown collapses the per-tag filter chips into a single toggle
+// button + popover, so the toolbar stays a fixed width regardless of how
+// many tags a dataset has accumulated. The popover is portaled to
+// document.body (positioned from the button's own bounding rect) rather
+// than rendered in place, since it lives inside a .panel-flush ancestor
+// whose overflow:hidden (needed to clip the table's square corners to the
+// panel's rounded ones) would otherwise cut it off.
+function TagFilterDropdown({ tags, active, onToggle, onClear }: TagFilterDropdownProps) {
+  const [open, setOpen] = useState(false)
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const rect = buttonRef.current?.getBoundingClientRect()
+    if (rect) setMenuPos({ top: rect.bottom + 6, left: rect.left })
+
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    const handleScroll = () => setOpen(false)
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    window.addEventListener('scroll', handleScroll, true)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+      window.removeEventListener('scroll', handleScroll, true)
+    }
+  }, [open])
+
+  return (
+    <div className="tag-filter-dropdown">
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`icon-button${active.size > 0 ? ' icon-button-active' : ''}`}
+        title="Filter by tag"
+        aria-label="Filter by tag"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Tags size={16} />
+        {active.size > 0 && <span className="icon-button-badge">{active.size}</span>}
+      </button>
+      {open &&
+        menuPos &&
+        createPortal(
+          <div className="tag-filter-menu" ref={menuRef} style={{ top: menuPos.top, left: menuPos.left }}>
+            {tags.map((tag) => (
+              <label className="tag-filter-menu-item" key={tag}>
+                <input type="checkbox" checked={active.has(tag)} onChange={() => onToggle(tag)} />
+                {tag}
+              </label>
+            ))}
+            {active.size > 0 && (
+              <button type="button" className="tag-filter-menu-clear" onClick={onClear}>
+                Clear filter
+              </button>
+            )}
+          </div>,
+          document.body,
+        )}
+    </div>
+  )
+}
+
+interface ExampleModalProps {
+  title: string
+  initial: Example
+  allTags: string[]
+  saving: boolean
+  error: string | null
+  onSave: (example: Example) => void
+  onClose: () => void
+}
+
+// ExampleModal is the single input/output/description/tags editing surface
+// used for both adding a new example and editing an existing one.
+function ExampleModal({ title, initial, allTags, saving, error, onSave, onClose }: ExampleModalProps) {
+  const [input, setInput] = useState(initial.input)
+  const [output, setOutput] = useState(initial.output)
+  const [description, setDescription] = useState(initial.description ?? '')
+  const [tags, setTags] = useState<string[]>(initial.tags ?? [])
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!input.trim() || !output.trim()) return
+    onSave({
+      input: input.trim(),
+      output: output.trim(),
+      description: description.trim() || undefined,
+      tags: tags.length > 0 ? tags : undefined,
+    })
+  }
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      <form className="stacked-form" onSubmit={handleSubmit}>
+        <label>
+          Input
+          <textarea rows={3} value={input} onChange={(e) => setInput(e.target.value)} autoFocus />
+        </label>
+        <label>
+          Output
+          <textarea rows={3} value={output} onChange={(e) => setOutput(e.target.value)} />
+        </label>
+        <label>
+          Description (optional)
+          <input
+            type="text"
+            placeholder="A short note about this example"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </label>
+        <label>
+          Tags
+          <TagInput tags={tags} onChange={setTags} suggestions={allTags} />
+        </label>
+        {error && <p className="error">{error}</p>}
+        <div className="row-actions confirm-actions">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" disabled={saving || !input.trim() || !output.trim()}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+interface GenerateVariationsModalProps {
+  modelOptions: string[]
+  generating: boolean
+  error: string | null
+  onGenerate: (req: { model: string; seed: Example; count: number }) => void
+  onClose: () => void
+}
+
+function GenerateVariationsModal({ modelOptions, generating, error, onGenerate, onClose }: GenerateVariationsModalProps) {
+  const [model, setModel] = useState('')
+  const [seedInput, setSeedInput] = useState('')
+  const [seedOutput, setSeedOutput] = useState('')
+  const [count, setCount] = useState(3)
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!model || !seedInput.trim() || !seedOutput.trim()) return
+    onGenerate({ model, seed: { input: seedInput.trim(), output: seedOutput.trim() }, count })
+  }
+
+  return (
+    <Modal title="Generate variations" onClose={onClose}>
+      <p className="hint">Give one example input/output pair and a local model will generate similar ones.</p>
+      <form className="stacked-form" onSubmit={handleSubmit}>
+        <label>
+          Model
+          <input
+            type="text"
+            list="generate-model-options"
+            placeholder="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+          <datalist id="generate-model-options">
+            {modelOptions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        </label>
+        <label>
+          Example input
+          <textarea rows={2} value={seedInput} onChange={(e) => setSeedInput(e.target.value)} />
+        </label>
+        <label>
+          Example output
+          <textarea rows={2} value={seedOutput} onChange={(e) => setSeedOutput(e.target.value)} />
+        </label>
+        <label>
+          How many variations
+          <input type="number" min={1} max={20} value={count} onChange={(e) => setCount(Number(e.target.value))} />
+        </label>
+        {error && <p className="error">{error}</p>}
+        <div className="row-actions confirm-actions">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" disabled={generating || !model}>
+            {generating ? 'Generating…' : 'Generate'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 

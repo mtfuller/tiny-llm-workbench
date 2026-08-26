@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { GitBranch, MessageSquare, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, SquareArrowOutUpRight, Terminal } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   getAgent,
@@ -34,6 +34,7 @@ import {
 import { nodeTypes } from '../agentNodes'
 import { useEventStream } from '../eventStream'
 import Modal from '../Modal'
+import { suggestedModels } from '../suggestedModels'
 
 type FlowNode = Node<AgentNodeData>
 
@@ -181,6 +182,11 @@ function AgentEditorWorkspace() {
   }
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
+
+  const modelOptions = useMemo(() => {
+    const trained = models.map((m) => m.name)
+    return Array.from(new Set([...trained, ...suggestedModels]))
+  }, [models])
 
   const handleSave = async () => {
     setSaving(true)
@@ -355,17 +361,18 @@ function AgentEditorWorkspace() {
                   <div className="stacked-form">
                     <label>
                       Model
-                      <select
+                      <input
+                        type="text"
+                        list="agent-model-options"
+                        placeholder="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
                         value={selectedNode.data.model ?? ''}
                         onChange={(e) => updateSelectedNodeData({ model: e.target.value })}
-                      >
-                        <option value="">Select a model</option>
-                        {models.map((m) => (
-                          <option key={m.name} value={m.name}>
-                            {m.name}
-                          </option>
+                      />
+                      <datalist id="agent-model-options">
+                        {modelOptions.map((name) => (
+                          <option key={name} value={name} />
                         ))}
-                      </select>
+                      </datalist>
                     </label>
                     <label>
                       System prompt

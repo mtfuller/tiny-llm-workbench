@@ -114,6 +114,7 @@ body {
   text-decoration: none;
   font-size: 0.88rem;
   font-weight: 500;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
 a.nav-item:hover {
@@ -171,14 +172,42 @@ a.nav-item:hover {
 
 /* The agent canvas is a workspace, not a document — let it use the full
    width/height next to the sidebar instead of the centered reading column
-   every other page gets. */
-.page-content:has(> .agent-editor) {
+   every other page gets. (.page-transition is the per-route fade wrapper
+   Layout renders around <Outlet/>, so this reaches through it.) */
+.page-content:has(.page-transition > .agent-editor) {
   max-width: none;
   margin: 0;
   padding: 1.25rem 1.5rem;
   height: 100vh;
   box-sizing: border-box;
   display: flex;
+}
+
+.page-content:has(.page-transition > .agent-editor) .page-transition {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.page-transition {
+  animation: page-fade-in 0.16s ease;
+}
+
+@keyframes page-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-transition {
+    animation: none;
+  }
 }
 
 /* Page furniture */
@@ -237,6 +266,7 @@ a.nav-item:hover {
   border-radius: 12px;
   padding: 1.25rem 1.5rem;
   margin-bottom: 1.5rem;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 5%, transparent);
 }
 
 .panel-flush {
@@ -247,6 +277,21 @@ a.nav-item:hover {
 .panel h3 {
   margin-top: 0;
   font-size: 0.95rem;
+}
+
+/* A toolbar (search/filter/actions) docked at the top of a .panel-flush,
+   above its table — a faint tint distinguishes it from the table body
+   without needing every control inside it to carry its own background. */
+.panel-toolbar {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 2.5%, var(--surface));
+}
+
+/* Non-table content (loading skeleton, error, empty state) sitting inside a
+   .panel-flush, e.g. below a .panel-toolbar. */
+.panel-body {
+  padding: 1rem 1.25rem;
 }
 
 /* Event log */
@@ -313,6 +358,14 @@ a.nav-item:hover {
   border-bottom: none;
 }
 
+.data-table tbody tr {
+  transition: background-color 0.12s ease;
+}
+
+.data-table tbody tr:hover {
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
 .row-actions {
   display: flex;
   gap: 0.5rem;
@@ -329,6 +382,12 @@ a.nav-item:hover {
   max-height: 260px;
   overflow-y: auto;
   margin: 0.5rem 0;
+}
+
+.data-table td input,
+.data-table td textarea,
+.data-table td select {
+  width: 100%;
 }
 
 .data-table th {
@@ -370,6 +429,172 @@ a.nav-item:hover {
   color: var(--accent);
 }
 
+/* List toolbar (search + actions) — lives inside the same .panel as the
+   table it controls (see .panel-toolbar) rather than floating above it as a
+   separate block. Shared by every table-list page (Datasets, Models,
+   Agents, Evaluations, Environments, Training runs). */
+
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.list-search {
+  min-width: 160px;
+  flex: 1 1 160px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+/* Tag filter dropdown (Dataset detail only) — a single toggle button +
+   popover in place of one chip per tag, so the toolbar stays a fixed width
+   no matter how many tags a dataset has. */
+
+.tag-filter-dropdown {
+  position: relative;
+}
+
+.icon-button-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.icon-button-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.tag-filter-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.4rem;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--text) 14%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.tag-filter-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.tag-filter-menu-item:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.tag-filter-menu-item input {
+  width: auto;
+}
+
+.tag-filter-menu-clear {
+  background: none;
+  color: var(--accent);
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  margin-top: 0.2rem;
+  padding: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-align: left;
+}
+
+.tag-filter-menu-clear:hover {
+  filter: none;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.list-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.list-toolbar-actions .icon-button {
+  padding: 0.35rem;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/* Tag input (chips editor, used in the example edit/add modal) */
+
+.tag-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg);
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 0.15rem 0.4rem 0.15rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.tag-chip button {
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tag-input-field {
+  flex: 1;
+  min-width: 100px;
+  border: none;
+  background: transparent;
+  padding: 0.2rem;
+}
+
+.tag-input-field:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 @media (prefers-color-scheme: dark) {
   .badge-blue {
     background: rgba(140, 165, 200, 0.16);
@@ -385,8 +610,16 @@ a.nav-item:hover {
   margin-bottom: 1.5rem;
 }
 
-.inline-form input {
+.inline-form input,
+.inline-form textarea {
   flex: 1;
+}
+
+.cell-truncate {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stacked-form {
@@ -396,12 +629,24 @@ a.nav-item:hover {
   max-width: 420px;
 }
 
-.stacked-form label {
+.stacked-form label,
+.form-grid label {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
   color: color-mix(in srgb, var(--text) 75%, transparent);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1.5rem;
+  align-items: end;
+}
+
+.form-grid-span {
+  grid-column: 1 / -1;
 }
 
 .mounts-editor {
@@ -447,6 +692,15 @@ select {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.45rem 0.65rem;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 button {
@@ -457,6 +711,20 @@ button {
   padding: 0.5rem 1rem;
   font-weight: 500;
   cursor: pointer;
+  transition: filter 0.12s ease, transform 0.05s ease, opacity 0.12s ease;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 button:disabled {
@@ -481,6 +749,12 @@ button:disabled {
   font-size: 0.95rem;
   cursor: pointer;
   text-decoration: none;
+  transition: filter 0.12s ease;
+}
+
+.button-file:hover,
+.button-like:hover {
+  filter: brightness(1.08);
 }
 
 .button-file:has(input:disabled) {
@@ -505,6 +779,7 @@ textarea {
   border-radius: 8px;
   padding: 0.45rem 0.65rem;
   resize: vertical;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 /* Icon buttons */
@@ -518,10 +793,18 @@ textarea {
   border: 1px solid var(--border);
   padding: 0.4rem;
   border-radius: 8px;
+  cursor: pointer;
 }
 
 .icon-button:hover {
   background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+/* .icon-button doubling as a file-picker label (e.g. dataset Import) has no
+   :disabled of its own — style it off the hidden input inside instead. */
+.icon-button:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .button-primary {
@@ -530,6 +813,24 @@ textarea {
   gap: 0.4rem;
   background: var(--accent);
   color: white;
+}
+
+/* A quieter action than the default filled button — for repeatable "add
+   another" actions (+ Test case, + Assertion, + Mount) that shouldn't
+   compete with the form's actual submit button. align-self keeps it from
+   stretching to fill a flex-column parent the way a plain <button> would.
+   Relies on a .panel background for edge contrast, same as .icon-button. */
+.button-secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  align-self: flex-start;
+}
+
+.button-secondary:not(:disabled):hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  filter: none;
 }
 
 /* Agent editor workspace */
@@ -855,6 +1156,12 @@ textarea {
 
 /* Evaluations */
 
+.test-case-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
 .test-case-editor {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -862,6 +1169,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+  background: color-mix(in srgb, var(--text) 2%, transparent);
 }
 
 .test-case-editor label {
@@ -1008,7 +1316,156 @@ textarea {
   background: color-mix(in srgb, var(--text) 4%, transparent);
 }
 
-.run-detail-row td {
-  padding: 1rem 1.25rem;
-  background: color-mix(in srgb, var(--text) 2%, transparent);
+/* Stat tiles */
+
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.stat-tile {
+  flex: 1;
+  min-width: 110px;
+  background: color-mix(in srgb, var(--text) 3%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem 0.85rem;
+}
+
+.stat-tile-value {
+  font-size: 1.3rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-tile-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  margin-top: 0.15rem;
+}
+
+/* Dashboard */
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 2rem;
+}
+
+.dashboard-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  color: var(--text);
+  text-decoration: none;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 5%, transparent);
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.dashboard-card svg {
+  color: var(--accent);
+}
+
+.dashboard-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.dashboard-card-value {
+  font-size: 1.4rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.15rem;
+}
+
+.dashboard-card-label {
+  font-size: 0.78rem;
+  color: color-mix(in srgb, var(--text) 60%, transparent);
+}
+
+/* Skeleton loaders */
+
+.skeleton {
+  display: inline-block;
+  border-radius: 5px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--text) 8%, transparent) 25%,
+    color-mix(in srgb, var(--text) 15%, transparent) 37%,
+    color-mix(in srgb, var(--text) 8%, transparent) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+  vertical-align: middle;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
+/* Toasts */
+
+.toast-stack {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  z-index: 1200;
+  max-width: 320px;
+}
+
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ok);
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  font-size: 0.85rem;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--text) 14%, transparent);
+  cursor: pointer;
+  animation: toast-in 0.16s ease;
+}
+
+.toast-error {
+  border-left-color: var(--danger);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Confirm dialog */
+
+.confirm-actions {
+  justify-content: flex-end;
+  margin-top: 1rem;
 }

@@ -28,10 +28,13 @@ type DatasetSummary struct {
 	PairCount int `json:"pairCount"`
 }
 
-// Example is a single input/output training pair.
+// Example is a single input/output training pair, plus optional metadata to
+// help organize a dataset (not used by training itself).
 type Example struct {
-	Input  string `json:"input"`
-	Output string `json:"output"`
+	Input       string   `json:"input"`
+	Output      string   `json:"output"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 // CreateDataset creates a new, empty dataset named name.

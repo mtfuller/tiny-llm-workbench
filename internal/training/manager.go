@@ -33,6 +33,9 @@ type datasetReader interface {
 // successfully trained adapter as a usable model.
 type modelSaver interface {
 	SaveModel(m registry.Model) error
+	// ModelDir returns where a model named name's files should live, so a
+	// successful run's adapter can be fused there before SaveModel is called.
+	ModelDir(name string) string
 }
 
 // Manager owns the lifecycle of training runs: starting them, tracking
@@ -232,6 +235,19 @@ func (m *Manager) run(ctx context.Context, run *Run, examples []registry.Example
 
 	result, err := m.trainer.Train(ctx, run.Config, examples, onProgress)
 
+	// A successful training run only produces a LoRA adapter (delta
+	// weights, not a runnable model on its own) — fuse it into the base
+	// model now so what gets registered is directly servable. A fuse
+	// failure means the run didn't actually deliver a usable model, so it
+	// folds into the same failure path as a training error.
+	fusedDir := m.models.ModelDir(run.Config.OutputName)
+	if err == nil {
+		if fuseErr := m.trainer.Fuse(ctx, run.Config.BaseModel, result.OutputDir, fusedDir); fuseErr != nil {
+			err = fmt.Errorf("training succeeded but preparing the model for use failed: %w", fuseErr)
+		}
+		os.RemoveAll(result.OutputDir)
+	}
+
 	m.mu.Lock()
 	now := time.Now().UTC()
 	run.FinishedAt = &now
@@ -256,7 +272,7 @@ func (m *Manager) run(ctx context.Context, run *Run, examples []registry.Example
 	if saveErr := m.models.SaveModel(registry.Model{
 		Name:      run.Config.OutputName,
 		Source:    "mlx",
-		Path:      result.OutputDir,
+		Path:      fusedDir,
 		CreatedAt: now,
 	}); saveErr != nil {
 		logger.Error("Training run %s succeeded but failed to register its model: %v", run.ID, saveErr)

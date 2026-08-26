@@ -1,7 +1,7 @@
-// Package training orchestrates MLX fine-tuning runs: it shells out to a
-// bundled Python script (see scripts/train.py) that drives mlx-lm's LoRA
-// trainer, parses its JSON-lines progress on stdout, and republishes that
-// progress on the CLI's event bus for the Training page's SSE stream.
+// Package training orchestrates MLX fine-tuning runs: it shells out directly
+// to mlx-lm's `mlx_lm.lora` CLI command (see SubprocessTrainer), regex-parses
+// its textual progress on stdout, and republishes that progress on the CLI's
+// event bus for the Training page's SSE stream.
 package training
 
 import (
@@ -14,8 +14,7 @@ import (
 // Config describes a single training run.
 type Config struct {
 	// BaseModel is a Hugging Face repo id or local path to an MLX-format
-	// model (what mlx-lm's --model flag expects). Ollama-pulled models are
-	// not MLX-compatible and can't be used here directly.
+	// model (what mlx-lm's --model flag expects).
 	BaseModel string `json:"baseModel"`
 	// Dataset is the name of a registry dataset (internal/registry) to
 	// train on.
@@ -75,4 +74,11 @@ type Result struct {
 // cancelled.
 type Trainer interface {
 	Train(ctx context.Context, cfg Config, examples []registry.Example, onProgress func(ProgressPoint)) (Result, error)
+	// Fuse merges a trained LoRA adapter (at adapterDir, as returned in a
+	// successful Result.OutputDir) into baseModel, writing a standalone
+	// model to savePath that's directly loadable for inference — no
+	// adapter needed at serve time. This exists because mlx_lm.lora's
+	// output is only a set of delta weights, not a runnable model on its
+	// own.
+	Fuse(ctx context.Context, baseModel, adapterDir, savePath string) error
 }

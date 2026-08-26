@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mtfuller/tiny-llm-workbench/internal/models"
+	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
 func TestListModels(t *testing.T) {
 	deps := testDeps()
-	deps.Catalog = &fakeCatalog{list: []models.Model{{Name: "qwen2.5:0.5b", Source: "ollama", Size: 397_000_000}}}
+	deps.Models = &fakeModelStore{list: []registry.Model{{Name: "my-finetune", Source: "mlx"}}}
 
 	handler, err := New(deps)
 	if err != nil {
@@ -28,18 +28,18 @@ func TestListModels(t *testing.T) {
 		t.Fatalf("GET /api/models status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	var got []models.Model
+	var got []modelJSON
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != "qwen2.5:0.5b" {
-		t.Errorf("GET /api/models body = %+v, want a single qwen2.5:0.5b entry", got)
+	if len(got) != 1 || got[0].Name != "my-finetune" || got[0].Source != "mlx" {
+		t.Errorf("GET /api/models body = %+v, want a single my-finetune entry", got)
 	}
 }
 
 func TestListModelsEmptyIsJSONArrayNotNull(t *testing.T) {
 	deps := testDeps()
-	deps.Catalog = &fakeCatalog{list: nil}
+	deps.Models = &fakeModelStore{list: nil}
 
 	handler, err := New(deps)
 	if err != nil {
@@ -51,7 +51,7 @@ func TestListModelsEmptyIsJSONArrayNotNull(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	// A bare "null" body breaks frontend code expecting an array
-	// (e.g. `.length` on the parsed result), so an empty catalog must
+	// (e.g. `.length` on the parsed result), so an empty list must
 	// serialize as "[]".
 	got := strings.TrimSpace(rec.Body.String())
 	if got != "[]" {
@@ -61,8 +61,8 @@ func TestListModelsEmptyIsJSONArrayNotNull(t *testing.T) {
 
 func TestDeleteModel(t *testing.T) {
 	deps := testDeps()
-	catalog := &fakeCatalog{}
-	deps.Catalog = catalog
+	models := &fakeModelStore{}
+	deps.Models = models
 
 	handler, err := New(deps)
 	if err != nil {
@@ -70,19 +70,20 @@ func TestDeleteModel(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/models/qwen2.5:0.5b?source=ollama", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/models/my-finetune", nil)
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNoContent {
-		t.Fatalf("DELETE /api/models/qwen2.5:0.5b status = %d, want %d, body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+		t.Fatalf("DELETE /api/models/my-finetune status = %d, want %d, body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
-	if len(catalog.deleted) != 1 || catalog.deleted[0] != "qwen2.5:0.5b/ollama" {
-		t.Errorf("catalog.deleted = %v, want [qwen2.5:0.5b/ollama]", catalog.deleted)
+	if len(models.deleted) != 1 || models.deleted[0] != "my-finetune" {
+		t.Errorf("models.deleted = %v, want [my-finetune]", models.deleted)
 	}
 }
 
-func TestDeleteModelRequiresSource(t *testing.T) {
+func TestDeleteModelError(t *testing.T) {
 	deps := testDeps()
+	deps.Models = &fakeModelStore{deleteErr: errors.New("model not found")}
 
 	handler, err := New(deps)
 	if err != nil {
@@ -90,35 +91,17 @@ func TestDeleteModelRequiresSource(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/models/qwen2.5:0.5b", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("DELETE /api/models/qwen2.5:0.5b (no source) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestDeleteModelCatalogError(t *testing.T) {
-	deps := testDeps()
-	deps.Catalog = &fakeCatalog{deleteErr: errors.New("ollama unreachable")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/models/qwen2.5:0.5b?source=ollama", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/models/my-finetune", nil)
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
-		t.Errorf("DELETE /api/models/qwen2.5:0.5b (catalog error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+		t.Errorf("DELETE /api/models/my-finetune (store error) status = %d, want %d", rec.Code, http.StatusBadGateway)
 	}
 }
 
-func TestListModelsCatalogError(t *testing.T) {
+func TestListModelsStoreError(t *testing.T) {
 	deps := testDeps()
-	deps.Catalog = &fakeCatalog{err: errors.New("boom")}
+	deps.Models = &fakeModelStore{err: errors.New("boom")}
 
 	handler, err := New(deps)
 	if err != nil {

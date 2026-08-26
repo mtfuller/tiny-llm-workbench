@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getSystemInfo, type SystemInfo } from '../api'
+import Skeleton from '../Skeleton'
 import { getStoredTheme, setTheme, type ThemePreference } from '../theme'
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
@@ -52,7 +53,18 @@ function Settings() {
       <section className="panel">
         <h3>System</h3>
         {error && <p className="error">{error}</p>}
-        {!error && info === null && <p className="hint">Loading…</p>}
+        {!error && info === null && (
+          <dl className="info-list">
+            <dt>Version</dt>
+            <dd>
+              <Skeleton width="6rem" />
+            </dd>
+            <dt>Registry root</dt>
+            <dd>
+              <Skeleton width="14rem" />
+            </dd>
+          </dl>
+        )}
         {info !== null && (
           <dl className="info-list">
             <dt>Version</dt>
@@ -63,16 +75,15 @@ function Settings() {
             <dd>
               <code>{info.registryRoot}</code>
             </dd>
-            <dt>Ollama server</dt>
-            <dd>
-              <code>{info.ollamaBaseUrl}</code>
-            </dd>
           </dl>
         )}
         <p className="hint">
-          The registry root and Ollama server are set when <code>tlw serve</code> starts (via the{' '}
-          <code>TLW_HOME</code> environment variable and a fixed default, respectively) — restart the
-          server to change them.
+          The registry root is set when <code>tlw serve</code> starts (via the <code>TLW_HOME</code>{' '}
+          environment variable) — restart the server to change it. Training and running models both
+          shell out directly to mlx-lm's CLI commands (<code>mlx_lm.lora</code>, <code>mlx_lm.server</code>),
+          so they must be on PATH for whatever environment <code>tlw serve</code> runs in — install with{' '}
+          <code>pip install mlx-lm</code> or <code>brew install mlx-lm</code>. If a run fails with{' '}
+          <code>not found on PATH</code>, that's what's missing.
         </p>
       </section>
     </>

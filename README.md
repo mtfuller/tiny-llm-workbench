@@ -5,21 +5,21 @@ A local, interactive tool for training, validating, and running agents — power
 TLW runs entirely on your machine: a Go CLI launches a local webserver and streams live events to a
 browser UI, so you can fine-tune small models with [Apple MLX](https://github.com/ml-explore/mlx),
 build agent workflows on a visual canvas, and evaluate how they perform — without shipping data to a
-third-party service.
+third-party service. Training and running models are both powered by [mlx-lm](https://github.com/ml-explore/mlx-lm)
+— no other model runtime is involved, so a model trained here is a model you can actually chat with here.
 
-> **Status:** early development, but every phase in the roadmap below is now built. Phases 0, 2, 3, and 4
-> are fully verified live against real local infrastructure (Ollama, Docker). Phase 1 is functionally
-> complete too, though Training's happy path (an actual successful MLX run) is unverified — see the
-> Roadmap note. See [Roadmap](#roadmap) for the specifics and caveats, and [CLAUDE.md](CLAUDE.md) for
-> the conventions and working agreements that guide day-to-day (often agent-driven) development.
+> **Status:** early development, but every phase in the roadmap below is now built and verified live
+> against real local infrastructure (Docker, and a real `mlx-lm` install for Training and running
+> models). See [Roadmap](#roadmap) for specifics, and [CLAUDE.md](CLAUDE.md) for the conventions and
+> working agreements that guide day-to-day (often agent-driven) development.
 
 ## Features
 
 - **Datasets** — TLW ships with a tiny LLM fine-tuned to generate variations of training data, so you
   don't have to hand-write it. Explore and edit generated examples before training.
-- **Training** — Train models locally with Apple MLX. Pick a base model (from Ollama or a model you've
-  already trained) and a dataset, configure a run, and watch weight changes and training stats
-  (duration, iterations, memory) update live.
+- **Training** — Train models locally with Apple MLX. Pick a base model (a Hugging Face MLX repo id, or
+  a model you've already trained here) and a dataset, configure a run, and watch weight changes and
+  training stats (duration, iterations, memory) update live.
 - **Environments** — Sandboxed environments give agents tools, memory, and a filesystem to do real
   work. Several prebuilt environments (WebSearch, SoftwareDev, OfficeWorker, ...) are included, or
   build your own.
@@ -34,19 +34,19 @@ third-party service.
 - [x] **Phase 0 — Initial build-out**
   - [x] Restructure the repo so the CLI launches a local webserver
   - [x] Serve the UI shell and stream CLI events to it over SSE
-- [ ] **Phase 1 — Dataset and Training**
+- [x] **Phase 1 — Dataset and Training**
   - [x] Add Models / Dataset / Training pages to the navbar
-  - [x] Models: list local models (Ollama, MLX files, binaries) — Ollama models list live; MLX models
-        are registered automatically when a training run succeeds. There's still no manual "import an
-        existing binary/MLX file" flow, so a model only appears in the registry by being trained here.
+  - [x] Models: list local models — registered automatically when a training run succeeds (fused into a
+        standalone, directly-runnable model, not just the raw LoRA adapter). There's still no manual
+        "import an existing model file" flow, so a model only appears in the registry by being trained
+        here; any other MLX-format Hugging Face repo id can still be used anywhere a model is picked,
+        downloaded automatically on first use.
   - [x] Dataset: list input/output training pairs
   - [x] Training: select model + dataset, configure and run training against MLX, view results — the
-        full pipeline is built and its error path (bad config, subprocess failure) is verified
-        end-to-end, but the happy path (an actual successful mlx-lm run) is **unverified**: this was
-        built without a working Python/MLX install available (see CLAUDE.md's MLX integration note).
-        Try it on a real machine and expect to iterate on `internal/training/scripts/train.py`'s
-        log-parsing if mlx-lm's output format doesn't match what it expects.
-  - [x] Local LLM client for generating dataset variations
+        full pipeline (including the happy path, a real successful `mlx_lm.lora` run producing a
+        registered, runnable model) is verified end-to-end against a real mlx-lm install (see
+        CLAUDE.md's MLX integration note).
+  - [x] Local MLX model client for generating dataset variations
 - [x] **Phase 2 — Environments**
   - [x] Add an Environments page to the navbar
   - [x] Prebuilt environments (WebSearch, SoftwareDev, OfficeWorker, ...) launched as Docker containers
@@ -62,8 +62,9 @@ third-party service.
         next node, and the container was cleaned up when the chat closed. No memory/knowledge nodes yet
         — that's future work.
   - [x] Run view: watch agent events live and chat with a running agent — fully verified live with a
-        real local Ollama model: canvas building, saving, chatting, and the live step-by-step execution
-        log all work end-to-end.
+        real local MLX model (served via `mlx_lm.server`, TLW's inference backend — see CLAUDE.md's MLX
+        integration note): canvas building, saving, chatting, and the live step-by-step execution log
+        all work end-to-end.
 - [x] **Phase 4 — Evaluations**
   - [x] Add an Evaluations page to the navbar
   - [x] Define tests (starting state, prompt, assertions) against a set of agents in one environment —
@@ -72,7 +73,7 @@ third-party service.
         duration (proving the Phase 2 plumbing), but agents can't act on it yet — see the Phase 3 note
         on Environments not being wired to agent execution.
   - [x] Run evaluations and compare agent performance — fully verified live: created a real evaluation,
-        ran it against a real agent backed by a real local Ollama model, and got a live pass/fail
+        ran it against a real agent backed by a real local MLX model, and got a live pass/fail
         comparison table with a per-agent score.
 
 Check off items as they land — this list is the source of truth for "what's actually built" and future
@@ -89,6 +90,11 @@ agent sessions rely on it being current. See [CLAUDE.md](CLAUDE.md) for how it's
 - Docker (e.g. Docker Desktop) running locally — only needed to launch Environments. `tlw serve` starts
   fine without it; launching an Environment will just fail with a clear "Docker daemon unreachable"
   error until it's running.
+- [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (Apple Silicon only) — needed for Training, and for
+  anything that runs a model (Agents, dataset variation generation) — TLW has no other model runtime.
+  Install with `pip install mlx-lm` or `brew install mlx-lm`, and make sure the resulting `mlx_lm.*`
+  commands are on PATH for wherever `tlw serve` runs. `tlw serve` starts fine without it; anything that
+  needs a model will just fail with a clear "not found on PATH" error until it's installed.
 
 ### Build & run
 
@@ -116,10 +122,9 @@ to see everything currently available.
 │   ├── eventbus/           # In-process pub/sub bridging CLI events to SSE
 │   ├── server/             # HTTP server: embedded UI + JSON API + /api/events SSE stream
 │   ├── registry/           # On-disk model/dataset/environment/agent/evaluation registry (~/.tlw)
-│   ├── ollama/             # Client for the local Ollama API
-│   ├── models/             # Merges the registry + Ollama into one model list
-│   ├── datasetgen/         # Generates dataset variations via a local LLM
-│   ├── training/           # MLX training runs via a Python subprocess
+│   ├── mlxrunner/          # On-demand mlx_lm.server pool — TLW's model inference backend
+│   ├── datasetgen/         # Generates dataset variations via a local MLX model
+│   ├── training/           # MLX training runs via the mlx_lm.lora CLI
 │   ├── docker/             # Docker Engine API client (launch/stop/exec containers)
 │   ├── environments/       # Environment instance lifecycle (launch/stop/exec)
 │   ├── agents/             # Agent graph execution engine + chat run manager

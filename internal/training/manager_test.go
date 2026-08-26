@@ -37,6 +37,10 @@ func (f *fakeModelSaver) SaveModel(m registry.Model) error {
 	return nil
 }
 
+func (f *fakeModelSaver) ModelDir(name string) string {
+	return "/tmp/fake-registry/models/" + name
+}
+
 // fakeTrainer lets tests control exactly what a training run does without
 // touching a real subprocess.
 type fakeTrainer struct {
@@ -48,6 +52,11 @@ type fakeTrainer struct {
 	// blockUntilCancel, when set, makes Train hang until ctx is cancelled
 	// and return ctx.Err() — simulating a subprocess killed by CancelRun.
 	blockUntilCancel bool
+
+	// fuseErr, when set, makes Fuse fail — simulating a run whose training
+	// succeeded but couldn't be turned into a servable model.
+	fuseErr error
+	fused   []string // baseModel|adapterDir|savePath for each Fuse call
 }
 
 func (f *fakeTrainer) Train(ctx context.Context, cfg Config, examples []registry.Example, onProgress func(ProgressPoint)) (Result, error) {
@@ -62,6 +71,11 @@ func (f *fakeTrainer) Train(ctx context.Context, cfg Config, examples []registry
 		return Result{}, ctx.Err()
 	}
 	return f.result, f.err
+}
+
+func (f *fakeTrainer) Fuse(ctx context.Context, baseModel, adapterDir, savePath string) error {
+	f.fused = append(f.fused, baseModel+"|"+adapterDir+"|"+savePath)
+	return f.fuseErr
 }
 
 func validConfig() Config {
@@ -109,6 +123,36 @@ func TestStartRunSucceeds(t *testing.T) {
 
 	if len(models.saved) != 1 || models.saved[0].Name != "my-finetune" || models.saved[0].Source != "mlx" {
 		t.Errorf("models.saved = %+v, want the trained model registered", models.saved)
+	}
+	wantPath := models.ModelDir("my-finetune")
+	if models.saved[0].Path != wantPath {
+		t.Errorf("models.saved[0].Path = %q, want the fused model directory %q, not the raw adapter dir", models.saved[0].Path, wantPath)
+	}
+	if len(trainer.fused) != 1 || trainer.fused[0] != "mlx-community/test-model|/tmp/adapter|"+wantPath {
+		t.Errorf("trainer.fused = %v, want one Fuse call from the adapter dir into the registry model dir", trainer.fused)
+	}
+}
+
+func TestStartRunFuseFailureMarksRunFailed(t *testing.T) {
+	trainer := &fakeTrainer{
+		result:  Result{OutputDir: "/tmp/adapter"},
+		fuseErr: errors.New("mlx_lm.fuse: unknown data type: U32"),
+	}
+	datasets := &fakeDatasets{examples: map[string][]registry.Example{"greetings": {{Input: "hi", Output: "hello!"}}}}
+	models := &fakeModelSaver{}
+	m := NewManager(context.Background(), t.TempDir(), eventbus.New(), datasets, models, trainer)
+
+	run, err := m.StartRun(validConfig())
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	finished := waitForStatus(t, m, run.ID, StatusFailed, time.Second)
+	if !strings.Contains(finished.Error, "unknown data type: U32") {
+		t.Errorf("finished.Error = %q, want it to include the underlying fuse error", finished.Error)
+	}
+	if len(models.saved) != 0 {
+		t.Errorf("models.saved = %+v, want no model registered when fusing fails", models.saved)
 	}
 }
 

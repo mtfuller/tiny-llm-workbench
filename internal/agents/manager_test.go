@@ -234,7 +234,7 @@ func TestSendMessageRequiresMessage(t *testing.T) {
 
 func TestSendMessageEngineErrorRecordsUserMessageOnly(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
-	llm := &fakeLLM{err: errors.New("ollama unreachable")}
+	llm := &fakeLLM{err: errors.New("model runner unreachable")}
 	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, eventbus.New())
 
 	run, err := m.StartRun("greeter")

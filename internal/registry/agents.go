@@ -23,7 +23,7 @@ type Position struct {
 // (de)serialization simple.
 type NodeData struct {
 	Label        string `json:"label,omitempty"`
-	Model        string `json:"model,omitempty"`        // prompt nodes: which Ollama model to call
+	Model        string `json:"model,omitempty"`        // prompt nodes: which MLX model to call
 	SystemPrompt string `json:"systemPrompt,omitempty"` // prompt nodes
 	Keyword      string `json:"keyword,omitempty"`      // decision nodes: substring to match
 	Command      string `json:"command,omitempty"`      // tool nodes: shell command; "{{input}}" is replaced with the prior node's output

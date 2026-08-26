@@ -123,12 +123,12 @@ export function TestCaseFields({ testCases, onChange }: TestCaseFieldsProps) {
               )}
             </div>
           ))}
-          <button type="button" onClick={() => addAssertion(tcIndex)}>
+          <button type="button" className="button-secondary" onClick={() => addAssertion(tcIndex)}>
             + Assertion
           </button>
         </div>
       ))}
-      <button type="button" onClick={addTestCase}>
+      <button type="button" className="button-secondary" onClick={addTestCase}>
         + Test case
       </button>
     </>

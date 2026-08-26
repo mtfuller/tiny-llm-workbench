@@ -1,41 +1,38 @@
 package server
 
 import (
-	"errors"
 	"net/http"
-
-	"github.com/mtfuller/tiny-llm-workbench/internal/models"
 )
 
-// listModelsHandler responds with every known model: TLW registry entries
-// merged with Ollama's locally-pulled models.
-func listModelsHandler(catalog modelCatalog) http.HandlerFunc {
+// modelJSON is a model as returned by GET /api/models — deliberately
+// slimmer than registry.Model (drops Path/CreatedAt, which are internal
+// filesystem details, not part of the public API).
+type modelJSON struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// listModelsHandler responds with every registry-tracked model.
+func listModelsHandler(models modelStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		list, err := catalog.List(r.Context())
+		list, err := models.ListModels()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if list == nil {
-			list = []models.Model{}
+
+		out := make([]modelJSON, len(list))
+		for i, m := range list {
+			out[i] = modelJSON{Name: m.Name, Source: m.Source}
 		}
-		writeJSON(w, http.StatusOK, list)
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 
-// deleteModelHandler removes a model, dispatching to Ollama or the registry
-// depending on the required "source" query param (a model's Source field, as
-// returned by GET /api/models) — the name alone doesn't say which backing
-// store owns it.
-func deleteModelHandler(catalog modelCatalog) http.HandlerFunc {
+// deleteModelHandler removes a registry-tracked model.
+func deleteModelHandler(models modelStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		source := r.URL.Query().Get("source")
-		if source == "" {
-			writeError(w, http.StatusBadRequest, errors.New("source query param is required"))
-			return
-		}
-
-		if err := catalog.Delete(r.Context(), r.PathValue("name"), source); err != nil {
+		if err := models.DeleteModel(r.PathValue("name")); err != nil {
 			writeError(w, http.StatusBadGateway, err)
 			return
 		}

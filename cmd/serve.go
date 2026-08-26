@@ -21,8 +21,7 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
 	"github.com/mtfuller/tiny-llm-workbench/internal/logger"
-	"github.com/mtfuller/tiny-llm-workbench/internal/models"
-	"github.com/mtfuller/tiny-llm-workbench/internal/ollama"
+	"github.com/mtfuller/tiny-llm-workbench/internal/mlxrunner"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/server"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
@@ -50,9 +49,12 @@ URL in a browser. Stop it with Ctrl+C.`,
 			return fmt.Errorf("open registry: %w", err)
 		}
 
-		ollamaClient := ollama.New(ollama.DefaultBaseURL)
-		catalog := models.NewCatalog(reg, ollamaClient)
-		generator := datasetgen.New(ollamaClient)
+		// runner's context (ctx, the whole server's lifetime) is deliberately
+		// not tied to any single HTTP request — a model's mlx_lm.server
+		// subprocess is started lazily and reused across many requests, and
+		// must outlive whichever request happened to trigger starting it.
+		runner := mlxrunner.New(ctx)
+		generator := datasetgen.New(runner)
 
 		// trainingMgr's context (ctx, not the per-request context an HTTP
 		// handler would otherwise capture) bounds how long a run can keep
@@ -77,24 +79,23 @@ URL in a browser. Stop it with Ctrl+C.`,
 		}
 		environmentsMgr := environments.NewManager(ctx, dockerClient, reg, bus)
 
-		agentsMgr := agents.NewManager(ctx, reg, ollamaClient, environmentsMgr, bus)
+		agentsMgr := agents.NewManager(ctx, reg, runner, environmentsMgr, bus)
 
 		evaluationsMgr := evaluations.NewManager(ctx, reg, agentsMgr, environmentsMgr, bus)
 
 		handler, err := server.New(server.Deps{
-			Bus:           bus,
-			Catalog:       catalog,
-			Datasets:      reg,
-			Generator:     generator,
-			Training:      trainingMgr,
-			Environments:  reg,
-			Instances:     environmentsMgr,
-			Agents:        reg,
-			AgentRuns:     agentsMgr,
-			Evaluations:   reg,
-			EvalRuns:      evaluationsMgr,
-			RegistryRoot:  reg.Root(),
-			OllamaBaseURL: ollama.DefaultBaseURL,
+			Bus:          bus,
+			Models:       reg,
+			Datasets:     reg,
+			Generator:    generator,
+			Training:     trainingMgr,
+			Environments: reg,
+			Instances:    environmentsMgr,
+			Agents:       reg,
+			AgentRuns:    agentsMgr,
+			Evaluations:  reg,
+			EvalRuns:     evaluationsMgr,
+			RegistryRoot: reg.Root(),
 		})
 		if err != nil {
 			return fmt.Errorf("build server: %w", err)

@@ -76,33 +76,99 @@ choice:
   bus's `/api/events` endpoint and the SPA handler (with an index.html fallback for client-side
   routing) together.
 - **MLX integration**: whether training shells out to a Python/MLX subprocess, or goes through cgo/FFI
-  bindings, and how progress/stats get reported back to the CLI (Phase 1).
-  **Decided:** shell out to a Python subprocess running an MLX training script. MLX's actively
-  maintained, stable surface is its Python API (`mlx`, `mlx-lm`); there's no Go-native binding and the
-  C++ core isn't a stable embedding target. `internal/training` orchestrates runs (`Manager`), and
-  `SubprocessTrainer` shells out to the embedded `internal/training/scripts/train.py`, which itself
-  drives `python -m mlx_lm.lora` as a subprocess and regex-parses its textual progress lines into JSON
-  lines on its own stdout; Go parses those and republishes them on `internal/eventbus`
-  (`training.progress` / `training.status`) for the Training page's SSE stream. Runs persist to
-  `<registry root>/runs/<id>.json` and survive a `tlw serve` restart; a successful run registers its
-  adapter as a model via `registry.SaveModel`. The "base model" a run trains from must be an MLX-format
-  model (a Hugging Face repo id, e.g. `mlx-community/Qwen2.5-0.5B-Instruct-4bit`, or a model already
-  registered from a prior TLW training run) — Ollama-pulled models are a different format and can't be
-  used directly as a training base; the Training page's UI says so.
-  **Caveat:** this was built without a working Python/MLX install in the dev sandbox (its `python3` at
-  `/opt/homebrew/bin/python3` was broken/shimmed — see [[project-phase1-architecture]] memory for
-  detail). The orchestration, error handling, persistence, and UI were verified end-to-end against that
-  broken `python3` (confirms the whole pipeline correctly surfaces a real subprocess failure), but the
-  happy path — an actual successful `mlx_lm.lora` run — is unverified, and `train.py`'s regex parsing of
-  mlx-lm's log format is a best-effort guess at its current output shape. Expect to iron out
-  `train.py` against a real install before relying on live progress being accurate.
+  bindings, and how progress/stats get reported back to the CLI (Phase 1). Later expanded to cover model
+  *inference* too, once Ollama (the original inference backend) turned out to be a dead end for anything
+  MLX-trained (see below).
+  **Decided:** mlx-lm is TLW's only model runtime, for both training and running models — no Python
+  involved on our side at all, and (as of the Ollama removal below) no second inference engine either.
+  - **Training**: `internal/training.SubprocessTrainer` execs `mlx_lm.lora` directly (resolved via PATH;
+    overridable via `Command`, mainly for tests) and regex-parses its textual stdout for
+    `Iter N: Train/Val loss ...` progress lines in Go (`subprocess_trainer.go`), republishing them on
+    `internal/eventbus` (`training.progress`/`training.status`). A successful run's LoRA adapter isn't
+    runnable on its own (see below), so `Manager` (`manager.go`) immediately fuses it into the base
+    model via `SubprocessTrainer.Fuse` (`mlx_lm.fuse --dequantize`, writing to `registry.ModelDir(name)`)
+    and only registers *that* as the model — a fuse failure fails the whole run, since a run that can't
+    produce something runnable didn't really succeed. Runs persist to `<registry root>/runs/<id>.json`
+    and survive a `tlw serve` restart.
+  - **Inference** (Agents' prompt nodes, dataset variation generation): `internal/mlxrunner.Runner`
+    manages a pool of on-demand `mlx_lm.server` subprocesses — one per distinct model actually in use,
+    started lazily on first request (a free port via a brief `:0` bind, then polled on `/v1/models`
+    until ready), reused across requests, and stopped after 15 minutes idle. It implements the same
+    `Generate(ctx, model, prompt) (string, error)` shape `ollama.Client` used to, so `internal/agents`
+    and `internal/datasetgen` needed zero code changes — only what gets injected in `cmd/serve.go`
+    changed. Talks to `mlx_lm.server`'s OpenAI-compatible `POST /v1/completions`, capping `max_tokens`
+    at `Runner.MaxTokens` (default 256, `mlxrunner.defaultMaxTokens`) — confirmed by hand that
+    `mlx_lm.server`'s own default (512, no repetition penalty engaged by default) routinely rambled into
+    long repetitive text for a short chat/dataset-gen prompt.
+  - The "model" string throughout is either a Hugging Face MLX repo id (e.g.
+    `mlx-community/Qwen2.5-0.5B-Instruct-4bit`, downloaded automatically on first use) or a registry
+    model's `Path` (a local, standalone, fused model directory) — both load the same way, so the
+    frontend doesn't need to distinguish them; model pickers are a free-text input + `<datalist>`
+    combobox seeded with registry models, not a restrictive `<select>`.
+
+  **A real upstream bug drove the fuse-not-adapter design**: `mlx_lm.server`'s `--adapter-path` flag
+  (and the request-body `"adapters"` override) is broken in the installed version (0.31.3, confirmed by
+  hand) — a base-model-path-remapping bug means the CLI-supplied adapter is silently never applied, so
+  the server just serves the un-fine-tuned base with no error. Fusing the adapter into a standalone model
+  first (via `mlx_lm.fuse`) sidesteps the buggy code path entirely. Two more things confirmed by hand
+  while building this fuse step, both load-bearing: `mlx_lm.fuse` needs `--dequantize` when the base
+  model is quantized, or it's a **silent no-op** (the fused model comes out behaviorally identical to
+  the un-fine-tuned base, no error/warning at all); and re-quantizing the dequantized result afterward
+  (to save disk space) can **wash out the fine-tuning signal** — verified against a real overfit adapter
+  where re-quantizing to 4-bit lost the trained behavior entirely. So fused models are deliberately left
+  dequantized (~3-4x the size of the original quantized base) rather than trying to shrink them back
+  down — reliability over disk space, and these are small models anyway.
+
+  **This went through three earlier shapes before landing here** — worth knowing if this ever needs
+  revisiting, since the same mistake (defaulting to a Python subprocess, or a second runtime, when a
+  direct CLI exec would do) happened more than once: (1) originally training was a Python subprocess
+  running a bundled `train.py` that itself drove `python -m mlx_lm.lora` and re-emitted JSON-lines
+  progress, reasoned as "MLX's actively maintained surface is its Python API" — true of the *library*,
+  irrelevant once the integration point is a CLI command; (2) after a real user hit
+  `No module named 'mlx_lm'` because their `python3` resolved to Xcode Command Line Tools' stub
+  interpreter, `train.py` was changed to invoke `mlx_lm.lora` as a standalone command instead of
+  `-m mlx_lm.lora`, plus a `TLW_PYTHON` env var — then, once `train.py` was CLI-only, it wasn't doing
+  anything Go's `os/exec`/`bufio.Scanner`/`regexp` couldn't do directly, so `train.py`, `embed.go`, and
+  `TLW_PYTHON` were all removed; (3) inference was originally Ollama (`internal/ollama.Client`,
+  `internal/models.Catalog` merging it with the registry) — reasonable for chat/dataset-gen against
+  small general-purpose models, until the user asked directly whether an MLX-trained model could be run
+  through Ollama. Verified by hand it can't, on two independent levels: a LoRA adapter alone isn't a
+  full model (`ollama create` fails with `open config.json: no such file or directory`), and even a full
+  MLX-format model fails GGUF conversion (`unknown data type: U32` — MLX's quantization packing isn't a
+  layout Ollama's converter recognizes). That made Ollama a dead end for the product's actual point
+  (train here, then run what you trained), so it — `internal/ollama`, `internal/models` — was removed
+  entirely in favor of `internal/mlxrunner`. **Don't reintroduce Ollama, or any Python layer, for either
+  training or inference** unless something genuinely needs a capability mlx-lm's own CLI/server can't
+  provide — every prior addition of a second runtime or language layer here turned out to be avoidable.
+
+  **Verified 2026-08-26** against a real `mlx-lm` install (Homebrew, Apple M1) — the full happy path
+  (`tlw serve` → `POST /api/training/runs` → `SubprocessTrainer` → real `mlx_lm.lora` → regex-parsed
+  progress → `internal/eventbus` → `registry.SaveModel`) was driven end-to-end multiple times (including
+  after the Go-only rewrite) and produced real LoRA adapters registered as models. That first real run
+  caught a real regex bug: the train-loss pattern folded `Tokens/sec`/`Peak mem` into the same pattern as
+  trailing *optional* groups separated by non-greedy `.*?` — which regex can (and did) satisfy by
+  matching zero characters, so the match always succeeded but silently returned nothing for both fields
+  even when the real log line had them. Fixed by matching `Tokens/sec`/`Peak mem` with their own
+  independent regexes instead of folding them into one pattern (see the comment above `trainLineRe` in
+  `subprocess_trainer.go`, and `TestParseProgressLineTrainLossWithTokensAndMem`). No unverified-happy-path
+  gap remains for this integration.
+
+  **A second real bug, found via a real user's dataset (2026-08-26):** training with 12 examples failed
+  with `Dataset must have at least batch_size=4 examples but only has 3` — `mlx_lm.lora`'s own default
+  `--batch-size` (4) doesn't adapt to dataset size, and `SubprocessTrainer`'s 80/20 train/valid split
+  (`splitExamples`) routinely produces a split smaller than 4 for datasets as small as 1-3 or anywhere
+  in the 5-15 range — a wide, realistic swath of exactly the tiny custom datasets this tool is for. Fixed
+  by always passing `--batch-size` explicitly, computed as `batchSizeFor(len(train), len(valid))` — the
+  largest size (capped at the default 4) both splits can actually support. Verified for real: the exact
+  reported 12-example case, plus 3 and 5 (both previously broken too), now train successfully end-to-end.
+  See `TestBatchSizeForShrinksToSmallestSplit` for the regression guard.
 - **Model & dataset storage**: on-disk layout/format for the model registry and datasets so the Models
   and Dataset pages have something concrete to list (Phase 1).
   **Decided:** a plain directory registry, no database. Root directory defaults to `~/.tlw` (overridable
-  via the `TLW_HOME` env var, mainly for tests) with `models/<name>/metadata.json` and
-  `datasets/<name>/metadata.json` + `data.jsonl`. Ollama models are *not* copied into this registry —
-  they're listed live from Ollama's local API (`http://localhost:11434`) and merged with registry-tracked
-  (MLX-trained or manually imported) models when the Models page asks for the list. See
+  via the `TLW_HOME` env var, mainly for tests) with `models/<name>/metadata.json` (plus the model's own
+  files alongside it — for a trained model, the fused output of `mlx_lm.fuse`, not a raw adapter) and
+  `datasets/<name>/metadata.json` + `data.jsonl`. Since the Ollama removal (see the MLX integration
+  entry above), the registry is the *only* model source — no external catalog to merge with. See
   `internal/registry`.
 - **Docker orchestration**: which client library, and the contract between an "Environment" definition
   and the container it launches — filesystem mounts, tool exposure, lifecycle (Phase 2).
@@ -135,7 +201,7 @@ choice:
   engine's `Run` call is itself synchronous end-to-end and needs the command's output before it can
   continue walking the graph. This is a deterministic, literal-shell-command mechanism, not an
   LLM-driven tool-calling loop — consistent with Decision nodes' keyword matching and Evaluations'
-  assertion checks, and chosen because tiny local Ollama models are unreliable at emitting
+  assertion checks, and chosen because tiny local models are unreliable at emitting
   structured/parseable tool-call syntax. The run's Environment instance is stopped when the chat ends
   (`agents.Manager.StopRun`, called by the frontend's chat modal `onClose`) — idempotent, and using a
   fresh `context.Background()` rather than the manager's own context so cleanup survives server
@@ -145,7 +211,8 @@ choice:
   edges distinguished by `sourceHandle` ("yes"/"no"). Running an agent is a synchronous chat turn
   (`internal/agents.Manager.SendMessage` walks the graph start-to-finish and returns the reply directly)
   rather than fire-and-forget-plus-poll like Phase 1/2's long-running jobs — a turn is only a couple of
-  local Ollama calls, fast enough to just await. Step-by-step execution is still published on the
+  local model calls, fast enough to just await (each capped at `mlxrunner.defaultMaxTokens` (256) to
+  bound latency — see the MLX integration entry above). Step-by-step execution is still published on the
   eventbus (`agent.step`) for the Run view's live event log even though the caller doesn't need to poll
   for the final result. Chat run history is in-memory only (not persisted to disk), same reasoning as
   Phase 2's execs. See `internal/agents`.

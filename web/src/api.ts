@@ -1,14 +1,15 @@
-export type ModelSource = 'ollama' | 'mlx' | 'binary' | string
+export type ModelSource = 'mlx' | 'binary' | string
 
 export interface Model {
   name: string
   source: ModelSource
-  size?: number
 }
 
 export interface Example {
   input: string
   output: string
+  description?: string
+  tags?: string[]
 }
 
 export interface DatasetSummary {
@@ -231,10 +232,8 @@ export function listModels(): Promise<Model[]> {
   return fetch('/api/models').then(json<Model[]>)
 }
 
-export function deleteModel(name: string, source: string): Promise<void> {
-  return fetch(`/api/models/${encodeURIComponent(name)}?source=${encodeURIComponent(source)}`, {
-    method: 'DELETE',
-  }).then(noContent)
+export function deleteModel(name: string): Promise<void> {
+  return fetch(`/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
 }
 
 export function listDatasets(): Promise<DatasetSummary[]> {
@@ -449,7 +448,6 @@ export function getEvaluationRun(id: string): Promise<EvaluationRun> {
 export interface SystemInfo {
   version: string
   registryRoot: string
-  ollamaBaseUrl: string
 }
 
 export function getSystemInfo(): Promise<SystemInfo> {

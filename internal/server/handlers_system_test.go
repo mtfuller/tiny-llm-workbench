@@ -10,7 +10,6 @@ import (
 func TestSystemInfo(t *testing.T) {
 	deps := testDeps()
 	deps.RegistryRoot = "/tmp/tlw-test"
-	deps.OllamaBaseURL = "http://localhost:11434"
 
 	handler, err := New(deps)
 	if err != nil {
@@ -29,8 +28,8 @@ func TestSystemInfo(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if got.RegistryRoot != "/tmp/tlw-test" || got.OllamaBaseURL != "http://localhost:11434" {
-		t.Errorf("GET /api/system body = %+v, want the configured registry root/Ollama URL", got)
+	if got.RegistryRoot != "/tmp/tlw-test" {
+		t.Errorf("GET /api/system body = %+v, want the configured registry root", got)
 	}
 	if got.Version == "" {
 		t.Error("GET /api/system Version = \"\", want a non-empty version string")

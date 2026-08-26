@@ -35,7 +35,8 @@ type StepEvent struct {
 	Output   string `json:"output"`
 }
 
-// llmClient is the subset of ollama.Client the engine needs.
+// llmClient is the subset of mlxrunner.Runner the engine needs to call a
+// model for a prompt node.
 type llmClient interface {
 	Generate(ctx context.Context, model, prompt string) (string, error)
 }

@@ -7,27 +7,26 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
-	"github.com/mtfuller/tiny-llm-workbench/internal/models"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
 )
 
-type fakeCatalog struct {
-	list      []models.Model
+type fakeModelStore struct {
+	list      []registry.Model
 	err       error
 	deleteErr error
 	deleted   []string
 }
 
-func (f *fakeCatalog) List(ctx context.Context) ([]models.Model, error) {
+func (f *fakeModelStore) ListModels() ([]registry.Model, error) {
 	return f.list, f.err
 }
 
-func (f *fakeCatalog) Delete(ctx context.Context, name, source string) error {
+func (f *fakeModelStore) DeleteModel(name string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
-	f.deleted = append(f.deleted, name+"/"+source)
+	f.deleted = append(f.deleted, name)
 	return nil
 }
 
@@ -364,7 +363,7 @@ func (f *fakeEvaluationManager) GetRun(id string) (*evaluations.Run, bool) {
 func testDeps() Deps {
 	return Deps{
 		Bus:          eventbus.New(),
-		Catalog:      &fakeCatalog{},
+		Models:       &fakeModelStore{},
 		Datasets:     newFakeDatasetStore(),
 		Generator:    &fakeGenerator{},
 		Training:     &fakeTrainingManager{},

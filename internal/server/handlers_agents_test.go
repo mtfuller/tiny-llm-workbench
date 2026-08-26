@@ -283,7 +283,7 @@ func TestSendAgentMessage(t *testing.T) {
 
 func TestSendAgentMessageError(t *testing.T) {
 	deps := testDeps()
-	deps.AgentRuns = &fakeAgentManager{messageErr: errors.New("ollama unreachable")}
+	deps.AgentRuns = &fakeAgentManager{messageErr: errors.New("model runner unreachable")}
 
 	handler, err := New(deps)
 	if err != nil {

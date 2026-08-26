@@ -11,6 +11,7 @@ import Home from './pages/Home'
 import Models from './pages/Models'
 import Settings from './pages/Settings'
 import Training from './pages/Training'
+import TrainingRunDetail from './pages/TrainingRunDetail'
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
         <Route path="datasets" element={<Datasets />} />
         <Route path="datasets/:name" element={<DatasetDetail />} />
         <Route path="training" element={<Training />} />
+        <Route path="training/:id" element={<TrainingRunDetail />} />
         <Route path="environments" element={<Environments />} />
         <Route path="agents" element={<Agents />} />
         <Route path="agents/:name" element={<AgentEditor />} />

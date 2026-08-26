@@ -53,6 +53,13 @@ func (r *Registry) modelDir(name string) string {
 	return filepath.Join(r.modelsDir(), name)
 }
 
+// ModelDir returns the directory a model named name lives in (or would live
+// in), so callers can write files there (e.g. a fused, servable model)
+// before calling SaveModel.
+func (r *Registry) ModelDir(name string) string {
+	return r.modelDir(name)
+}
+
 func (r *Registry) datasetDir(name string) string {
 	return filepath.Join(r.datasetsDir(), name)
 }

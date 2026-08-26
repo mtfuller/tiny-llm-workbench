@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -261,7 +262,7 @@ func TestGenerateVariationsRequiresModel(t *testing.T) {
 
 func TestGenerateVariationsGeneratorError(t *testing.T) {
 	deps := testDeps()
-	deps.Generator = &fakeGenerator{err: errors.New("ollama unreachable")}
+	deps.Generator = &fakeGenerator{err: errors.New("model runner unreachable")}
 
 	handler, err := New(deps)
 	if err != nil {
@@ -463,7 +464,30 @@ func TestExportDatasetCSV(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET .../export?format=csv status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	want := "input,output\nhi,hello!\n"
+	want := "input,output,description,tags\nhi,hello!,,\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("GET .../export?format=csv body = %q, want %q", got, want)
+	}
+}
+
+func TestExportDatasetCSVIncludesDescriptionAndTags(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	store.examples["greetings"] = []registry.Example{
+		{Input: "hi", Output: "hello!", Description: "a greeting", Tags: []string{"casual", "greeting"}},
+	}
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/datasets/greetings/export?format=csv", nil)
+	handler.ServeHTTP(rec, req)
+
+	want := "input,output,description,tags\nhi,hello!,a greeting,casual;greeting\n"
 	if got := rec.Body.String(); got != want {
 		t.Errorf("GET .../export?format=csv body = %q, want %q", got, want)
 	}
@@ -537,6 +561,60 @@ func TestImportDatasetCSV(t *testing.T) {
 	}
 	if len(store.appended["greetings"]) != 2 || store.appended["greetings"][1].Input != "hey, there" {
 		t.Errorf("store.appended[greetings] = %+v, want 2 examples with quoted commas preserved", store.appended["greetings"])
+	}
+}
+
+func TestImportDatasetCSVWithDescriptionAndTags(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(importDatasetRequest{
+		Format:  "csv",
+		Content: "input,output,description,tags\nhi,hello!,a greeting,casual;greeting\n",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/import", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST .../import (csv) status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	got := store.appended["greetings"]
+	if len(got) != 1 || got[0].Description != "a greeting" || !reflect.DeepEqual(got[0].Tags, []string{"casual", "greeting"}) {
+		t.Errorf("store.appended[greetings] = %+v, want description %q and tags [casual greeting]", got, "a greeting")
+	}
+}
+
+func TestImportDatasetCSVColumnOrderIndependent(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(importDatasetRequest{
+		Format:  "csv",
+		Content: "tags,output,input\ncasual,hello!,hi\n",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/import", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST .../import (csv) status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	got := store.appended["greetings"]
+	if len(got) != 1 || got[0].Input != "hi" || got[0].Output != "hello!" || !reflect.DeepEqual(got[0].Tags, []string{"casual"}) {
+		t.Errorf("store.appended[greetings] = %+v, want input=hi output=hello! tags=[casual] regardless of column order", got)
 	}
 }
 

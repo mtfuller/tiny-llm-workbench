@@ -1,6 +1,6 @@
 import { Activity, BarChart3, Box, ClipboardCheck, Container, Database, Settings, Workflow } from 'lucide-react'
 import type { ComponentType } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useEventStream } from './eventStream'
 import './index.css'
 
@@ -40,6 +40,7 @@ function connectionLabel(status: ReturnType<typeof useEventStream>['status']): s
 
 function Layout() {
   const { status } = useEventStream()
+  const location = useLocation()
 
   return (
     <div className="app-shell">
@@ -82,7 +83,9 @@ function Layout() {
 
       <div className="app-main">
         <main className="page-content">
-          <Outlet />
+          <div className="page-transition" key={location.pathname}>
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

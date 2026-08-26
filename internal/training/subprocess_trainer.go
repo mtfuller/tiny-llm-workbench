@@ -5,14 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
@@ -24,20 +23,38 @@ import (
 // usefully hold anything out.
 const minExamplesForSplit = 5
 
-// SubprocessTrainer runs training by shelling out to Python (mlx-lm's LoRA
-// trainer via the bundled train.py, see scripts/train.py) and parsing its
-// JSON-lines stdout.
-type SubprocessTrainer struct {
-	// Python is the interpreter to invoke. Defaults to "python3".
-	Python string
-	// ScriptPath overrides which script is run, mainly for tests. When
-	// empty, the embedded scripts/train.py is written to a temp file and
-	// reused for the lifetime of this SubprocessTrainer.
-	ScriptPath string
+// defaultBatchSize matches mlx_lm.lora's own default --batch-size. Passed
+// explicitly (see Train) rather than left to mlx_lm.lora's default because
+// that default doesn't adapt to a small dataset: confirmed against a real
+// run that a 12-example dataset (train=9/valid=3 after the 80/20 split
+// below) fails with "Dataset must have at least batch_size=4 examples but
+// only has 3" — mlx_lm.lora requires batch_size <= the smaller of the two
+// splits, and small-but-not-tiny datasets (as few as 5, or as many as 15,
+// examples) routinely produce a split smaller than 4 either way.
+const defaultBatchSize = 4
 
-	scriptOnce  sync.Once
-	scriptCache string
-	scriptErr   error
+// defaultCommand is the standalone mlx-lm CLI command SubprocessTrainer
+// invokes when Command is left empty. Deliberately not `<python> -m
+// mlx_lm.lora`: mlx-lm is commonly installed in a way that isn't importable
+// from an arbitrary Python (e.g. `brew install mlx-lm` vendors its own
+// isolated environment and only exposes the `mlx_lm.*` command wrappers on
+// PATH), so this only ever needs the command itself resolvable on PATH —
+// no Python interpreter involved at all.
+const defaultCommand = "mlx_lm.lora"
+
+// defaultFuseCommand is the mlx-lm CLI command Fuse invokes when FuseCommand
+// is left empty.
+const defaultFuseCommand = "mlx_lm.fuse"
+
+// SubprocessTrainer runs training by shelling out directly to mlx-lm's
+// `mlx_lm.lora` CLI command and regex-parsing its textual stdout.
+type SubprocessTrainer struct {
+	// Command overrides which executable to run, mainly for tests. Empty
+	// means defaultCommand, resolved via PATH.
+	Command string
+	// FuseCommand overrides which executable Fuse runs, mainly for tests.
+	// Empty means defaultFuseCommand, resolved via PATH.
+	FuseCommand string
 }
 
 // completionExample is the per-line JSON shape mlx-lm's "completions" data
@@ -47,20 +64,30 @@ type completionExample struct {
 	Completion string `json:"completion"`
 }
 
-// scriptMessage mirrors the JSON lines train.py emits on stdout.
-type scriptMessage struct {
-	Type         string   `json:"type"`
-	Iteration    int      `json:"iteration"`
-	TrainLoss    *float64 `json:"trainLoss"`
-	ValLoss      *float64 `json:"valLoss"`
-	PeakMemGB    *float64 `json:"peakMemGB"`
-	TokensPerSec *float64 `json:"tokensPerSec"`
-	Message      string   `json:"message"`
-}
+// Verified against a real `mlx_lm.lora` run (mlx-lm on an Apple M1, 2026-08).
+// Example lines:
+//
+//	"Iter 10: Train loss 1.242, Learning Rate 1.000e-05, It/sec 4.857, " +
+//	  "Tokens/sec 871.760, Trained Tokens 1795, Peak mem 1.106 GB"
+//	"Iter 10: Val loss 0.083, Val took 0.207s"
+//
+// Tokens/sec and Peak mem are matched with their own independent regexes
+// rather than folded into trainLineRe as trailing optional groups: an
+// earlier attempt did that with a single combined pattern using a
+// non-greedy `.*?` between optional groups, which regex is free to satisfy
+// by matching zero characters — so it matched successfully while never
+// actually reading those fields, always returning no match for them even
+// when the line had a value.
+var (
+	trainLineRe    = regexp.MustCompile(`Iter (\d+): Train loss ([\d.]+)`)
+	valLineRe      = regexp.MustCompile(`Iter (\d+): Val loss ([\d.]+)`)
+	tokensPerSecRe = regexp.MustCompile(`Tokens/sec ([\d.]+)`)
+	peakMemGBRe    = regexp.MustCompile(`Peak mem ([\d.]+) GB`)
+)
 
 // Train implements Trainer.
 func (t *SubprocessTrainer) Train(ctx context.Context, cfg Config, examples []registry.Example, onProgress func(ProgressPoint)) (Result, error) {
-	dataDir, err := writeDataset(examples)
+	dataDir, trainCount, validCount, err := writeDataset(examples)
 	if err != nil {
 		return Result{}, fmt.Errorf("write training dataset: %w", err)
 	}
@@ -71,54 +98,101 @@ func (t *SubprocessTrainer) Train(ctx context.Context, cfg Config, examples []re
 		return Result{}, fmt.Errorf("create output directory: %w", err)
 	}
 
-	scriptPath, err := t.scriptFile()
-	if err != nil {
-		return Result{}, fmt.Errorf("prepare training script: %w", err)
+	command := t.Command
+	if command == "" {
+		command = defaultCommand
 	}
 
-	python := t.Python
-	if python == "" {
-		python = "python3"
+	if err := lookPathOrFriendlyError(command); err != nil {
+		return Result{}, err
 	}
 
-	args := append([]string{scriptPath}, buildArgs(cfg, dataDir, outDir)...)
-	cmd := exec.CommandContext(ctx, python, args...)
-
+	batchSize := batchSizeFor(trainCount, validCount)
+	cmd := exec.CommandContext(ctx, command, buildArgs(cfg, dataDir, outDir, batchSize)...)
 	return runAndParse(cmd, outDir, onProgress)
 }
 
-// scriptFile returns the path to the training script to run, writing the
-// embedded copy to a temp file on first use.
-func (t *SubprocessTrainer) scriptFile() (string, error) {
-	if t.ScriptPath != "" {
-		return t.ScriptPath, nil
+// batchSizeFor picks the largest batch size (up to defaultBatchSize) that
+// both the train and validation splits can actually support — mlx_lm.lora
+// requires --batch-size <= len(split) for both.
+func batchSizeFor(trainCount, validCount int) int {
+	batchSize := defaultBatchSize
+	if trainCount < batchSize {
+		batchSize = trainCount
 	}
-
-	t.scriptOnce.Do(func() {
-		f, err := os.CreateTemp("", "tlw-train-*.py")
-		if err != nil {
-			t.scriptErr = err
-			return
-		}
-		defer f.Close()
-
-		if _, err := f.WriteString(trainScript); err != nil {
-			t.scriptErr = err
-			return
-		}
-		t.scriptCache = f.Name()
-	})
-
-	return t.scriptCache, t.scriptErr
+	if validCount < batchSize {
+		batchSize = validCount
+	}
+	if batchSize < 1 {
+		batchSize = 1
+	}
+	return batchSize
 }
 
-// buildArgs builds train.py's command-line arguments from cfg.
-func buildArgs(cfg Config, dataDir, outDir string) []string {
+// Fuse implements Trainer.
+func (t *SubprocessTrainer) Fuse(ctx context.Context, baseModel, adapterDir, savePath string) error {
+	command := t.FuseCommand
+	if command == "" {
+		command = defaultFuseCommand
+	}
+
+	if err := lookPathOrFriendlyError(command); err != nil {
+		return err
+	}
+
+	// --dequantize matters: fusing a LoRA adapter into an already-quantized
+	// base model without it is a silent no-op (confirmed against a real
+	// mlx-lm install — the fused model came out byte-for-byte behaviorally
+	// identical to the un-fine-tuned base, no error or warning). Re-quantizing
+	// the result afterward is deliberately not done here either: verified
+	// against a real (heavily overfit) adapter that re-quantizing to 4-bit
+	// can wash out the fine-tuning signal entirely. The tradeoff is a fused
+	// model roughly 3-4x the size of the original quantized base, which is
+	// worth it for actually reflecting what was trained.
+	args := []string{
+		"--model", baseModel,
+		"--adapter-path", adapterDir,
+		"--save-path", savePath,
+		"--dequantize",
+	}
+
+	cmd := exec.CommandContext(ctx, command, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("%s failed: %w: %s", command, err, detail)
+		}
+		return fmt.Errorf("%s failed: %w", command, err)
+	}
+
+	return nil
+}
+
+// lookPathOrFriendlyError checks that command is resolvable on PATH,
+// returning a clear, actionable error naming both common install methods
+// if not.
+func lookPathOrFriendlyError(command string) error {
+	if _, err := exec.LookPath(command); err != nil {
+		return fmt.Errorf(
+			"%s not found on PATH — install it with `pip install mlx-lm` or `brew install mlx-lm`, "+
+				"and make sure the environment tlw serve runs in has that installation's bin directory on PATH",
+			command,
+		)
+	}
+	return nil
+}
+
+// buildArgs builds mlx_lm.lora's command-line arguments from cfg.
+func buildArgs(cfg Config, dataDir, outDir string, batchSize int) []string {
 	args := []string{
 		"--model", cfg.BaseModel,
-		"--data-dir", dataDir,
-		"--output-dir", outDir,
+		"--train",
+		"--data", dataDir,
 		"--iters", strconv.Itoa(cfg.Iterations),
+		"--adapter-path", outDir,
+		"--batch-size", strconv.Itoa(batchSize),
 	}
 	if cfg.LearningRate > 0 {
 		args = append(args, "--learning-rate", strconv.FormatFloat(cfg.LearningRate, 'g', -1, 64))
@@ -127,23 +201,25 @@ func buildArgs(cfg Config, dataDir, outDir string) []string {
 }
 
 // writeDataset writes examples to a temp directory as train.jsonl and
-// valid.jsonl in mlx-lm's "completions" format.
-func writeDataset(examples []registry.Example) (string, error) {
-	dir, err := os.MkdirTemp("", "tlw-dataset-*")
+// valid.jsonl in mlx-lm's "completions" format, returning the directory and
+// how many examples ended up in each split (so Train can size --batch-size
+// to fit both).
+func writeDataset(examples []registry.Example) (dir string, trainCount, validCount int, err error) {
+	dir, err = os.MkdirTemp("", "tlw-dataset-*")
 	if err != nil {
-		return "", err
+		return "", 0, 0, err
 	}
 
 	train, valid := splitExamples(examples)
 
 	if err := writeJSONL(filepath.Join(dir, "train.jsonl"), train); err != nil {
-		return "", err
+		return "", 0, 0, err
 	}
 	if err := writeJSONL(filepath.Join(dir, "valid.jsonl"), valid); err != nil {
-		return "", err
+		return "", 0, 0, err
 	}
 
-	return dir, nil
+	return dir, len(train), len(valid), nil
 }
 
 // splitExamples carves out a validation slice for datasets large enough to
@@ -183,8 +259,39 @@ func writeJSONL(path string, examples []registry.Example) error {
 	return nil
 }
 
-// runAndParse starts cmd, parses its stdout as scriptMessage JSON lines
-// (see scripts/train.py), and reports the outcome.
+// parseProgressLine matches a single line of mlx_lm.lora's stdout against
+// the train/val progress patterns, returning the parsed point and whether
+// the line matched at all.
+func parseProgressLine(line string) (ProgressPoint, bool) {
+	if m := trainLineRe.FindStringSubmatch(line); m != nil {
+		iter, _ := strconv.Atoi(m[1])
+		trainLoss, _ := strconv.ParseFloat(m[2], 64)
+		point := ProgressPoint{Timestamp: time.Now().UTC(), Iteration: iter, TrainLoss: &trainLoss}
+		if tm := tokensPerSecRe.FindStringSubmatch(line); tm != nil {
+			tps, _ := strconv.ParseFloat(tm[1], 64)
+			point.TokensPerSec = &tps
+		}
+		if mm := peakMemGBRe.FindStringSubmatch(line); mm != nil {
+			mem, _ := strconv.ParseFloat(mm[1], 64)
+			point.PeakMemGB = &mem
+		}
+		return point, true
+	}
+
+	if m := valLineRe.FindStringSubmatch(line); m != nil {
+		iter, _ := strconv.Atoi(m[1])
+		valLoss, _ := strconv.ParseFloat(m[2], 64)
+		return ProgressPoint{Timestamp: time.Now().UTC(), Iteration: iter, ValLoss: &valLoss}, true
+	}
+
+	return ProgressPoint{}, false
+}
+
+// runAndParse starts cmd, regex-parses its stdout for mlx_lm.lora's
+// progress lines, and reports the outcome. A non-zero exit is reported with
+// cmd's stderr (mlx_lm.lora prints tracebacks/errors there, confirmed
+// against a real install) for real diagnostic detail instead of a bare exit
+// code.
 func runAndParse(cmd *exec.Cmd, outputDir string, onProgress func(ProgressPoint)) (Result, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -195,50 +302,22 @@ func runAndParse(cmd *exec.Cmd, outputDir string, onProgress func(ProgressPoint)
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return Result{}, fmt.Errorf("start training script: %w", err)
+		return Result{}, fmt.Errorf("start mlx_lm.lora: %w", err)
 	}
-
-	var scriptErr string
-	succeeded := false
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		var msg scriptMessage
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			continue // tolerate any non-JSON noise on stdout
-		}
-
-		switch msg.Type {
-		case "progress":
-			onProgress(ProgressPoint{
-				Timestamp:    time.Now().UTC(),
-				Iteration:    msg.Iteration,
-				TrainLoss:    msg.TrainLoss,
-				ValLoss:      msg.ValLoss,
-				PeakMemGB:    msg.PeakMemGB,
-				TokensPerSec: msg.TokensPerSec,
-			})
-		case "error":
-			scriptErr = msg.Message
-		case "done":
-			succeeded = true
+		if point, ok := parseProgressLine(scanner.Text()); ok {
+			onProgress(point)
 		}
 	}
 
-	waitErr := cmd.Wait()
-
-	if scriptErr != "" {
-		return Result{}, errors.New(scriptErr)
-	}
-	if waitErr != nil {
+	if waitErr := cmd.Wait(); waitErr != nil {
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			return Result{}, fmt.Errorf("training script failed: %w: %s", waitErr, detail)
+			return Result{}, fmt.Errorf("mlx_lm.lora failed: %w: %s", waitErr, detail)
 		}
-		return Result{}, fmt.Errorf("training script failed: %w", waitErr)
-	}
-	if !succeeded {
-		return Result{}, errors.New("training script exited without reporting completion")
+		return Result{}, fmt.Errorf("mlx_lm.lora failed: %w", waitErr)
 	}
 
 	return Result{OutputDir: outputDir}, nil

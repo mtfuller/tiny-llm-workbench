@@ -12,16 +12,16 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
-	"github.com/mtfuller/tiny-llm-workbench/internal/models"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
 	"github.com/mtfuller/tiny-llm-workbench/web"
 )
 
-// modelCatalog is the subset of models.Catalog the server needs.
-type modelCatalog interface {
-	List(ctx context.Context) ([]models.Model, error)
-	Delete(ctx context.Context, name, source string) error
+// modelStore is the subset of registry.Registry the server needs for model
+// endpoints.
+type modelStore interface {
+	ListModels() ([]registry.Model, error)
+	DeleteModel(name string) error
 }
 
 // datasetStore is the subset of registry.Registry the server needs for
@@ -103,7 +103,7 @@ type evaluationManager interface {
 // be swapped for fakes in tests.
 type Deps struct {
 	Bus          *eventbus.Bus
-	Catalog      modelCatalog
+	Models       modelStore
 	Datasets     datasetStore
 	Generator    variationGenerator
 	Training     trainingManager
@@ -114,10 +114,9 @@ type Deps struct {
 	Evaluations  evaluationStore
 	EvalRuns     evaluationManager
 
-	// RegistryRoot and OllamaBaseURL are plain config values (not behavior),
-	// shown read-only on the Settings page.
-	RegistryRoot  string
-	OllamaBaseURL string
+	// RegistryRoot is a plain config value (not behavior), shown read-only
+	// on the Settings page.
+	RegistryRoot string
 }
 
 // New builds the HTTP handler for the TLW webserver: the embedded browser UI
@@ -132,9 +131,9 @@ func New(deps Deps) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle("/", spaHandler(dist))
 	mux.HandleFunc("GET /api/events", sseHandler(deps.Bus))
-	mux.HandleFunc("GET /api/system", systemInfoHandler(deps.RegistryRoot, deps.OllamaBaseURL))
-	mux.HandleFunc("GET /api/models", listModelsHandler(deps.Catalog))
-	mux.HandleFunc("DELETE /api/models/{name}", deleteModelHandler(deps.Catalog))
+	mux.HandleFunc("GET /api/system", systemInfoHandler(deps.RegistryRoot))
+	mux.HandleFunc("GET /api/models", listModelsHandler(deps.Models))
+	mux.HandleFunc("DELETE /api/models/{name}", deleteModelHandler(deps.Models))
 	mux.HandleFunc("GET /api/datasets", listDatasetsHandler(deps.Datasets))
 	mux.HandleFunc("POST /api/datasets", createDatasetHandler(deps.Datasets))
 	mux.HandleFunc("GET /api/datasets/{name}", getDatasetHandler(deps.Datasets))

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -49,9 +50,30 @@ func TestAppendAndListExamples(t *testing.T) {
 		t.Fatalf("ListExamples() returned %d examples, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("ListExamples()[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestAppendAndListExamplesWithDescriptionAndTags(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings"); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+
+	want := Example{Input: "hi", Output: "hello!", Description: "a friendly greeting", Tags: []string{"casual", "greeting"}}
+	if err := reg.AppendExamples("greetings", []Example{want}); err != nil {
+		t.Fatalf("AppendExamples() error = %v", err)
+	}
+
+	got, err := reg.ListExamples("greetings")
+	if err != nil {
+		t.Fatalf("ListExamples() error = %v", err)
+	}
+	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Errorf("ListExamples() = %+v, want %+v", got, []Example{want})
 	}
 }
 

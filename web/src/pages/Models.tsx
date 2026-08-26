@@ -1,22 +1,16 @@
-import { useEffect, useState } from 'react'
+import { Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { useConfirm } from '../ConfirmDialog'
 import { deleteModel, listModels, type Model } from '../api'
-
-function formatSize(bytes?: number): string {
-  if (!bytes) return '—'
-  const gb = bytes / 1_000_000_000
-  if (gb >= 1) return `${gb.toFixed(1)} GB`
-  return `${(bytes / 1_000_000).toFixed(0)} MB`
-}
-
-function sourceBadgeClass(source: string): string {
-  if (source === 'ollama') return 'badge badge-blue'
-  if (source === 'mlx') return 'badge badge-purple'
-  return 'badge'
-}
+import { TableSkeleton } from '../Skeleton'
+import { useToast } from '../Toast'
 
 function Models() {
+  const confirm = useConfirm()
+  const showToast = useToast()
   const [models, setModels] = useState<Model[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
   const [deleting, setDeleting] = useState<string | null>(null)
 
   const reload = () => {
@@ -27,13 +21,20 @@ function Models() {
 
   useEffect(reload, [])
 
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return models ?? []
+    return (models ?? []).filter((m) => m.name.toLowerCase().includes(q))
+  }, [models, search])
+
   const handleDelete = async (model: Model) => {
-    if (!window.confirm(`Delete model "${model.name}"? This cannot be undone.`)) return
+    if (!(await confirm(`Delete model "${model.name}"? This cannot be undone.`))) return
 
     setDeleting(model.name)
     setError(null)
     try {
-      await deleteModel(model.name, model.source)
+      await deleteModel(model.name)
+      showToast(`Deleted model "${model.name}"`)
       reload()
     } catch (err) {
       setError((err as Error).message)
@@ -48,54 +49,76 @@ function Models() {
         <h2>Models</h2>
       </div>
       <p className="hint">
-        Local models pulled with Ollama, plus anything trained or imported into TLW's own registry.
+        Models trained in TLW. A Hugging Face MLX repo id (e.g.{' '}
+        <code>mlx-community/Qwen2.5-0.5B-Instruct-4bit</code>) can also be used anywhere a model is
+        picked, even before it appears here — it's downloaded automatically on first use.
       </p>
 
-      {error && <p className="error">Failed to load models: {error}</p>}
+      <div className="panel panel-flush">
+        <div className="list-toolbar panel-toolbar">
+          <input
+            type="search"
+            placeholder="Search models…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="list-search"
+          />
+        </div>
 
-      {!error && models === null && <p className="hint">Loading…</p>}
+        {error && (
+          <div className="panel-body">
+            <p className="error">Failed to load models: {error}</p>
+          </div>
+        )}
 
-      {models !== null && models.length === 0 && (
-        <p className="empty-state">
-          No models found. Pull one with Ollama (<code>ollama pull llama3.2</code>) or train one in TLW.
-        </p>
-      )}
+        {!error && models === null && (
+          <div className="panel-body">
+            <TableSkeleton columns={2} />
+          </div>
+        )}
 
-      {models !== null && models.length > 0 && (
-        <div className="panel panel-flush">
+        {models !== null && models.length === 0 && (
+          <div className="panel-body">
+            <p className="hint">No models yet. Train one on the Training page to get started.</p>
+          </div>
+        )}
+
+        {models !== null && models.length > 0 && filtered.length === 0 && (
+          <div className="panel-body">
+            <p className="hint">No models match your search.</p>
+          </div>
+        )}
+
+        {filtered.length > 0 && (
           <table className="data-table">
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Source</th>
-                <th>Size</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {models.map((model) => (
+              {filtered.map((model) => (
                 <tr key={model.name}>
                   <td>{model.name}</td>
-                  <td>
-                    <span className={sourceBadgeClass(model.source)}>{model.source}</span>
-                  </td>
-                  <td>{formatSize(model.size)}</td>
                   <td className="row-actions">
                     <button
                       type="button"
-                      className="danger-button"
+                      className="icon-button"
+                      title="Delete model"
+                      aria-label="Delete model"
                       disabled={deleting === model.name}
                       onClick={() => handleDelete(model)}
                     >
-                      {deleting === model.name ? 'Deleting…' : 'Delete'}
+                      <Trash2 size={15} />
                     </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
     </>
   )
 }

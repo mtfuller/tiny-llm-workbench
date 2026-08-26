@@ -1,5 +1,6 @@
 // Package datasetgen generates dataset variations from a single example
-// using a local LLM, so users don't have to hand-write every training pair.
+// using a local MLX model, so users don't have to hand-write every
+// training pair.
 package datasetgen
 
 import (
@@ -11,7 +12,7 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
-// llmClient is the subset of ollama.Client that Generator needs.
+// llmClient is the subset of mlxrunner.Runner that Generator needs.
 type llmClient interface {
 	Generate(ctx context.Context, model, prompt string) (string, error)
 }
@@ -27,7 +28,7 @@ func New(llm llmClient) *Generator {
 	return &Generator{llm: llm}
 }
 
-// Variations asks model (an Ollama model name) for n examples similar in
+// Variations asks model (an MLX model name) for n examples similar in
 // style to seed, and returns them parsed as Examples.
 func (g *Generator) Variations(ctx context.Context, model string, seed registry.Example, n int) ([]registry.Example, error) {
 	if n <= 0 {

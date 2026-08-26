@@ -1,13 +1,22 @@
-import { useEffect, useState } from 'react'
+import { Plus, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { createDataset, deleteDataset, listDatasets, type DatasetSummary } from '../api'
+import { useConfirm } from '../ConfirmDialog'
+import Modal from '../Modal'
+import { TableSkeleton } from '../Skeleton'
+import { useToast } from '../Toast'
 
 function Datasets() {
+  const confirm = useConfirm()
+  const showToast = useToast()
   const [datasets, setDatasets] = useState<DatasetSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [newName, setNewName] = useState('')
-  const [creating, setCreating] = useState(false)
+  const [search, setSearch] = useState('')
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
 
   const reload = () => {
     listDatasets()
@@ -17,30 +26,34 @@ function Datasets() {
 
   useEffect(reload, [])
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newName.trim()) return
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return datasets ?? []
+    return (datasets ?? []).filter((d) => d.name.toLowerCase().includes(q))
+  }, [datasets, search])
 
+  const handleCreate = async (name: string) => {
     setCreating(true)
-    setError(null)
+    setCreateError(null)
     try {
-      await createDataset(newName.trim())
-      setNewName('')
+      await createDataset(name)
+      setCreateOpen(false)
       reload()
     } catch (err) {
-      setError((err as Error).message)
+      setCreateError((err as Error).message)
     } finally {
       setCreating(false)
     }
   }
 
   const handleDelete = async (name: string) => {
-    if (!window.confirm(`Delete dataset "${name}"? This cannot be undone.`)) return
+    if (!(await confirm(`Delete dataset "${name}"? This cannot be undone.`))) return
 
     setDeleting(name)
     setError(null)
     try {
       await deleteDataset(name)
+      showToast(`Deleted dataset "${name}"`)
       reload()
     } catch (err) {
       setError((err as Error).message)
@@ -56,28 +69,47 @@ function Datasets() {
       </div>
       <p className="hint">Input/output training pairs used to fine-tune a model.</p>
 
-      <form className="inline-form" onSubmit={handleCreate}>
-        <input
-          type="text"
-          placeholder="New dataset name"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-        />
-        <button type="submit" disabled={creating || !newName.trim()}>
-          {creating ? 'Creating…' : 'Create dataset'}
-        </button>
-      </form>
+      <div className="panel panel-flush">
+        <div className="list-toolbar panel-toolbar">
+          <input
+            type="search"
+            placeholder="Search datasets…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="list-search"
+          />
+          <div className="list-toolbar-actions">
+            <button type="button" className="icon-button" title="New dataset" aria-label="New dataset" onClick={() => setCreateOpen(true)}>
+              <Plus size={16} />
+            </button>
+          </div>
+        </div>
 
-      {error && <p className="error">{error}</p>}
+        {error && (
+          <div className="panel-body">
+            <p className="error">{error}</p>
+          </div>
+        )}
 
-      {!error && datasets === null && <p className="hint">Loading…</p>}
+        {!error && datasets === null && (
+          <div className="panel-body">
+            <TableSkeleton columns={3} />
+          </div>
+        )}
 
-      {datasets !== null && datasets.length === 0 && (
-        <p className="empty-state">No datasets yet. Create one above to get started.</p>
-      )}
+        {datasets !== null && datasets.length === 0 && (
+          <div className="panel-body">
+            <p className="hint">No datasets yet. Create one above to get started.</p>
+          </div>
+        )}
 
-      {datasets !== null && datasets.length > 0 && (
-        <div className="panel panel-flush">
+        {datasets !== null && datasets.length > 0 && filtered.length === 0 && (
+          <div className="panel-body">
+            <p className="hint">No datasets match your search.</p>
+          </div>
+        )}
+
+        {filtered.length > 0 && (
           <table className="data-table">
             <thead>
               <tr>
@@ -87,7 +119,7 @@ function Datasets() {
               </tr>
             </thead>
             <tbody>
-              {datasets.map((dataset) => (
+              {filtered.map((dataset) => (
                 <tr key={dataset.name}>
                   <td>
                     <Link to={`/datasets/${encodeURIComponent(dataset.name)}`}>{dataset.name}</Link>
@@ -96,20 +128,68 @@ function Datasets() {
                   <td className="row-actions">
                     <button
                       type="button"
-                      className="danger-button"
+                      className="icon-button"
+                      title="Delete dataset"
+                      aria-label="Delete dataset"
                       disabled={deleting === dataset.name}
                       onClick={() => handleDelete(dataset.name)}
                     >
-                      {deleting === dataset.name ? 'Deleting…' : 'Delete'}
+                      <Trash2 size={15} />
                     </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        )}
+      </div>
+
+      {createOpen && (
+        <CreateDatasetModal
+          creating={creating}
+          error={createError}
+          onCreate={handleCreate}
+          onClose={() => setCreateOpen(false)}
+        />
       )}
     </>
+  )
+}
+
+interface CreateDatasetModalProps {
+  creating: boolean
+  error: string | null
+  onCreate: (name: string) => void
+  onClose: () => void
+}
+
+function CreateDatasetModal({ creating, error, onCreate, onClose }: CreateDatasetModalProps) {
+  const [name, setName] = useState('')
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) return
+    onCreate(name.trim())
+  }
+
+  return (
+    <Modal title="New dataset" onClose={onClose}>
+      <form className="stacked-form" onSubmit={handleSubmit}>
+        <label>
+          Name
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+        {error && <p className="error">{error}</p>}
+        <div className="row-actions confirm-actions">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" disabled={creating || !name.trim()}>
+            {creating ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 

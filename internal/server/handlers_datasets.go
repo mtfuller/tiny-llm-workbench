@@ -206,11 +206,12 @@ func exportDatasetHandler(datasets datasetStore) http.HandlerFunc {
 			w.Header().Set("Content-Type", "text/csv")
 			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.csv"`, name))
 			cw := csv.NewWriter(w)
-			if err := cw.Write([]string{"input", "output"}); err != nil {
+			if err := cw.Write([]string{"input", "output", "description", "tags"}); err != nil {
 				return
 			}
 			for _, example := range examples {
-				if err := cw.Write([]string{example.Input, example.Output}); err != nil {
+				row := []string{example.Input, example.Output, example.Description, strings.Join(example.Tags, ";")}
+				if err := cw.Write(row); err != nil {
 					return
 				}
 			}
@@ -270,9 +271,12 @@ func importDatasetHandler(datasets datasetStore) http.HandlerFunc {
 	}
 }
 
-// parseCSVExamples parses content as CSV with an "input,output" header
-// (case-insensitive; any other column order or extra columns are rejected
-// so a malformed file fails loudly instead of silently importing garbage).
+// parseCSVExamples parses content as CSV. The header must include "input"
+// and "output" columns (case-insensitive, any order); optional "description"
+// and "tags" columns are picked up if present ("tags" is semicolon-separated
+// within its cell, since commas are already CSV's own separator). Missing
+// "input"/"output" columns are rejected so a malformed file fails loudly
+// instead of silently importing garbage.
 func parseCSVExamples(content string) ([]registry.Example, error) {
 	reader := csv.NewReader(strings.NewReader(content))
 	rows, err := reader.ReadAll()
@@ -283,19 +287,53 @@ func parseCSVExamples(content string) ([]registry.Example, error) {
 		return nil, errors.New("CSV file is empty")
 	}
 
-	header := rows[0]
-	if len(header) < 2 || !strings.EqualFold(header[0], "input") || !strings.EqualFold(header[1], "output") {
-		return nil, errors.New(`CSV header must be "input,output"`)
+	col := make(map[string]int, len(rows[0]))
+	for i, name := range rows[0] {
+		col[strings.ToLower(strings.TrimSpace(name))] = i
+	}
+	inputCol, hasInput := col["input"]
+	outputCol, hasOutput := col["output"]
+	if !hasInput || !hasOutput {
+		return nil, errors.New(`CSV header must include "input" and "output" columns`)
+	}
+	descriptionCol, hasDescription := col["description"]
+	tagsCol, hasTags := col["tags"]
+
+	get := func(row []string, i int) string {
+		if i < len(row) {
+			return row[i]
+		}
+		return ""
 	}
 
 	examples := make([]registry.Example, 0, len(rows)-1)
 	for _, row := range rows[1:] {
-		if len(row) < 2 {
-			continue
+		example := registry.Example{Input: get(row, inputCol), Output: get(row, outputCol)}
+		if hasDescription {
+			example.Description = get(row, descriptionCol)
 		}
-		examples = append(examples, registry.Example{Input: row[0], Output: row[1]})
+		if hasTags {
+			example.Tags = splitTags(get(row, tagsCol))
+		}
+		examples = append(examples, example)
 	}
 	return examples, nil
+}
+
+// splitTags parses a semicolon-separated tags cell into a trimmed,
+// non-empty tag list (nil if the cell is blank).
+func splitTags(cell string) []string {
+	if strings.TrimSpace(cell) == "" {
+		return nil
+	}
+	var tags []string
+	for _, t := range strings.Split(cell, ";") {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }
 
 // parseJSONLExamples parses content as newline-delimited JSON objects.
