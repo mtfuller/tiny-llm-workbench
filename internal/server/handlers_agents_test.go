@@ -124,6 +124,33 @@ func TestSaveAgentIncludesEnvironment(t *testing.T) {
 	}
 }
 
+func TestSaveAgentIncludesDescription(t *testing.T) {
+	deps := testDeps()
+	store := &fakeAgentStore{}
+	deps.Agents = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(saveAgentRequest{
+		Name:        "researcher",
+		Description: "Looks things up on the web.",
+		Graph:       registry.Graph{Nodes: []registry.Node{{ID: "1", Type: "input"}}},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/agents status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if len(store.saved) != 1 || store.saved[0].Description != "Looks things up on the web." {
+		t.Errorf("store.saved = %+v, want Description=%q", store.saved, "Looks things up on the web.")
+	}
+}
+
 func TestSaveAgentRequiresName(t *testing.T) {
 	deps := testDeps()
 

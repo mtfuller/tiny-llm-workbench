@@ -43,7 +43,7 @@ function ToolNode({ data }: NodeProps<FlowNode>) {
     <div className="flow-node flow-node-tool">
       <Handle type="target" position={Position.Left} />
       <div className="flow-node-title">Tool</div>
-      <div className="flow-node-sub">{data.command || 'no command set'}</div>
+      <div className="flow-node-sub">{data.toolName || 'no tool selected'}</div>
       <Handle type="source" position={Position.Right} />
     </div>
   )

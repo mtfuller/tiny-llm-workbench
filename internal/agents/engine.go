@@ -1,9 +1,8 @@
 // Package agents executes agent workflow graphs (registry.Graph) as chat
 // turns: starting at the graph's input node, calling a local LLM for each
 // prompt node, branching at decision nodes on a keyword match against the
-// prior output, running a literal shell command for each tool node inside
-// the agent's bound Environment, and returning whatever text reaches the
-// output node.
+// prior output, running a named Tool from the agent's bound Environment for
+// each tool node, and returning whatever text reaches the output node.
 package agents
 
 import (
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
@@ -65,8 +65,11 @@ func NewEngine(llm llmClient, tools toolRunner) *Engine {
 // conversation so far (not including userMessage), used to give prompt
 // nodes context. instanceID is the agent's launched Environment instance
 // (empty if the agent has none configured) — required by any tool node in
-// the graph. onStep, if non-nil, is called for every node visited.
-func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMessage, userMessage, instanceID string, onStep func(StepEvent)) (string, error) {
+// the graph. tools is the bound Environment's declared Tool definitions (a
+// tool node's ToolName resolves against this list); empty if the agent has
+// no Environment configured. onStep, if non-nil, is called for every node
+// visited.
+func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMessage, userMessage, instanceID string, tools []registry.Tool, onStep func(StepEvent)) (string, error) {
 	nodesByID := make(map[string]registry.Node, len(graph.Nodes))
 	var inputNode *registry.Node
 	for i := range graph.Nodes {
@@ -136,7 +139,26 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 			if instanceID == "" {
 				return "", fmt.Errorf("tool node %q requires an Environment to be configured for this agent", current.ID)
 			}
-			command := strings.ReplaceAll(current.Data.Command, "{{input}}", output)
+			if current.Data.ToolName == "" {
+				return "", fmt.Errorf("tool node %q has no tool selected", current.ID)
+			}
+			tool, ok := findTool(tools, current.Data.ToolName)
+			if !ok {
+				return "", fmt.Errorf("tool node %q: tool %q not found on this agent's environment", current.ID, current.Data.ToolName)
+			}
+
+			args := make(map[string]string, len(current.Data.ToolArgs)+1)
+			for k, v := range current.Data.ToolArgs {
+				args[k] = v
+			}
+			if current.Data.ToolInputParam != "" {
+				args[current.Data.ToolInputParam] = output
+			}
+
+			command, err := environments.RenderToolCommand(tool, args)
+			if err != nil {
+				return "", fmt.Errorf("tool node %q: %w", current.ID, err)
+			}
 			result, err := e.tools.RunToolSync(ctx, instanceID, command)
 			if err != nil {
 				return "", fmt.Errorf("tool node %q: %w", current.ID, err)
@@ -170,6 +192,16 @@ func findEdge(edges []registry.Edge, nodeID, handle string) *registry.Edge {
 		}
 	}
 	return nil
+}
+
+// findTool returns the tool with the given name, if any.
+func findTool(tools []registry.Tool, name string) (registry.Tool, bool) {
+	for _, t := range tools {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return registry.Tool{}, false
 }
 
 // buildPrompt renders a plain-text completion prompt from a prompt node's

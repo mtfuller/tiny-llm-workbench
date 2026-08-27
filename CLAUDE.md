@@ -314,6 +314,55 @@ choice:
   `@xyflow/react`'s own code references, breaking the production build). Don't let a routine
   `npm update`/`npm install @xyflow/react@latest` drift onto it; check the release notes/changelog for a
   fix before upgrading past 12.10.2.
+
+  **2026-08-27 addendum — structured Tool node picker, settings modal, redesigned inspector:** the user
+  asked for the Tool node to let you "select a tool" rather than type a raw shell command, for Agent
+  settings to move out of the always-visible right sidebar into a settings button + modal on the left
+  workspace sidebar, and for the node inspector to look and feel like a professional configuration panel.
+  Three design decisions were surfaced via `AskUserQuestion` (all "Recommended" options): the list view
+  gained Environment/Created columns (matching Evaluations' pattern), the settings modal holds
+  Environment + a new free-text `registry.Agent.Description` field, and — the big one — the Tool node
+  became a **structured picker**, not a cosmetic-only restyle or a "insert template into a raw field"
+  hybrid.
+
+  `registry.NodeData.Command` (a raw shell string + `{{input}}` templating) was removed entirely and
+  replaced with `ToolName string`, `ToolArgs map[string]string`, and `ToolInputParam string` — the same
+  simple-typed-parameter-list schema `registry.Tool` already uses for the Environments workspace's
+  Playground tab. A tool node now names one of the bound Environment's real tools; `ToolArgs` holds a
+  literal value per parameter; `ToolInputParam`, if set, names the *one* parameter that instead receives
+  the previous node's output at run time (the UI enforces "at most one bound parameter" with a radio
+  button per parameter, labeled "Use previous output"). `internal/agents.Engine.Run` gained a
+  `tools []registry.Tool` parameter (the bound Environment's declared tools) and its tool-node case now
+  resolves `ToolName` against that list, merges `ToolArgs` with `{ToolInputParam: previousOutput}`, and
+  renders the command via `environments.RenderToolCommand` — the exact same validating/quoting function
+  the Environments Playground already uses — before calling `RunToolSync`, instead of a bare
+  `strings.ReplaceAll(command, "{{input}}", output)`. `agents.Manager` gained a new `environmentReader`
+  dependency (`GetEnvironment(name) (registry.Environment, error)`, satisfied by `registry.Registry`
+  itself, wired in `cmd/serve.go`) so `SendMessage` can look up the bound Environment's tools before
+  calling `Engine.Run` — `internal/agents` importing `internal/environments` for `RenderToolCommand`
+  introduced no cycle (environments doesn't know about agents). This was a clean cutover with no
+  backward-compat shim for old `Command`-shaped tool nodes — acceptable at this stage since there are no
+  real users' saved agents to migrate, only local dev/test data.
+
+  While adding the Created column, the same pre-existing "never actually sets CreatedAt" bug already
+  found and fixed in Benchmarks/Evaluations was found in `saveAgentHandler`/`SaveAgent` too and fixed the
+  same way: `SaveAgent` now preserves an existing agent's `CreatedAt` on overwrite and sets it to now on
+  first save, rather than leaving it perpetually zero.
+
+  The frontend's `AgentEditor.tsx` right sidebar was rebuilt: a node-type-colored header bar (reusing the
+  exact same border colors as the canvas's own `.flow-node-*` classes, so the inspector visually matches
+  whatever's selected on the canvas), a scrollable body, and a pinned-to-bottom "Delete node" footer,
+  replacing the old flat "h3 + raw fields" layout. The always-visible "Agent settings" block (Environment
+  select) was removed from the inspector entirely; a gear-icon "Agent settings" button was added to the
+  bottom of the left node palette instead, opening an `AgentSettingsModal` (Environment + Description) —
+  changes there are held in the same component state the main Save button already persists, so nothing
+  new to wire up for saving. Fully verified live end-to-end against a real Docker container and the real
+  DuckDuckGo API: built an Input → Tool(`web_search`, `query` bound to previous output) → Output agent
+  bound to the `WebSearch` environment, ran a real chat turn, and confirmed the tool node correctly
+  substituted the user's message into the `query` parameter, executed inside the real launched container,
+  and returned genuine API JSON to the output node — the exact case a raw-`{{input}}`-string design would
+  have handled anyway, but now going through the same validated, safely-quoted rendering path everywhere
+  a tool runs in the app (Environments Playground, Agent tool nodes) instead of two divergent mechanisms.
 - **Evaluation runner**: how assertions are expressed and checked against agent output, and how
   environment starting state is set up per-test (Phase 4).
   **Decided:** assertions are deterministic rules — `contains` / `not_contains` / `regex` — checked

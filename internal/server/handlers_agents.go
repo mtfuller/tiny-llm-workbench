@@ -42,6 +42,7 @@ func listAgentsHandler(store agentStore) http.HandlerFunc {
 type saveAgentRequest struct {
 	Name        string         `json:"name"`
 	Environment string         `json:"environment,omitempty"`
+	Description string         `json:"description,omitempty"`
 	Graph       registry.Graph `json:"graph"`
 }
 
@@ -58,7 +59,7 @@ func saveAgentHandler(store agentStore) http.HandlerFunc {
 			return
 		}
 
-		agent := registry.Agent{Name: req.Name, Environment: req.Environment, Graph: req.Graph}
+		agent := registry.Agent{Name: req.Name, Environment: req.Environment, Description: req.Description, Graph: req.Graph}
 		if err := store.SaveAgent(agent); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

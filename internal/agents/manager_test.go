@@ -53,9 +53,27 @@ func (f *fakeEnvironmentRunner) RunToolSync(ctx context.Context, instanceID, com
 	return f.toolOutput, f.toolErr
 }
 
+// fakeEnvironmentReader resolves an Environment's Tool definitions for
+// Manager's environmentReader dependency, keyed by environment name.
+type fakeEnvironmentReader struct {
+	envs map[string]registry.Environment
+	err  error
+}
+
+func (f *fakeEnvironmentReader) GetEnvironment(name string) (registry.Environment, error) {
+	if f.err != nil {
+		return registry.Environment{}, f.err
+	}
+	env, ok := f.envs[name]
+	if !ok {
+		return registry.Environment{}, errors.New("not found")
+	}
+	return env, nil
+}
+
 func TestStartRunSuccess(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
-	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, eventbus.New())
 
 	run, err := m.StartRun("greeter")
 	if err != nil {
@@ -74,7 +92,7 @@ func TestStartRunSuccess(t *testing.T) {
 
 func TestStartRunUnknownAgent(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{}}
-	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, eventbus.New())
 
 	if _, err := m.StartRun("does-not-exist"); err == nil {
 		t.Error("StartRun() error = nil, want an error for an unknown agent")
@@ -86,7 +104,7 @@ func TestStartRunLaunchesEnvironment(t *testing.T) {
 		"researcher": {Name: "researcher", Environment: "WebSearch", Graph: linearGraph()},
 	}}
 	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}}
-	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, &fakeEnvironmentReader{}, eventbus.New())
 
 	run, err := m.StartRun("researcher")
 	if err != nil {
@@ -105,7 +123,7 @@ func TestStartRunEnvironmentLaunchFailure(t *testing.T) {
 		"researcher": {Name: "researcher", Environment: "WebSearch", Graph: linearGraph()},
 	}}
 	envs := &fakeEnvironmentRunner{launchErr: errors.New("docker daemon unreachable")}
-	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, &fakeEnvironmentReader{}, eventbus.New())
 
 	if _, err := m.StartRun("researcher"); err == nil {
 		t.Error("StartRun() error = nil, want the launch error to propagate")
@@ -117,7 +135,7 @@ func TestStopRunStopsEnvironment(t *testing.T) {
 		"researcher": {Name: "researcher", Environment: "WebSearch", Graph: linearGraph()},
 	}}
 	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}}
-	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, &fakeEnvironmentReader{}, eventbus.New())
 
 	run, err := m.StartRun("researcher")
 	if err != nil {
@@ -139,7 +157,7 @@ func TestStopRunStopsEnvironment(t *testing.T) {
 func TestStopRunWithoutEnvironmentDoesNothing(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
 	envs := &fakeEnvironmentRunner{}
-	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, &fakeEnvironmentReader{}, eventbus.New())
 
 	run, err := m.StartRun("greeter")
 	if err != nil {
@@ -155,7 +173,7 @@ func TestStopRunWithoutEnvironmentDoesNothing(t *testing.T) {
 }
 
 func TestStopRunUnknownRunIsNotAnError(t *testing.T) {
-	m := NewManager(context.Background(), &fakeAgentReader{}, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+	m := NewManager(context.Background(), &fakeAgentReader{}, &fakeLLM{}, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, eventbus.New())
 
 	if err := m.StopRun("does-not-exist"); err != nil {
 		t.Errorf("StopRun() error = %v, want nil for an unknown run (idempotent cleanup)", err)
@@ -165,7 +183,7 @@ func TestStopRunUnknownRunIsNotAnError(t *testing.T) {
 func TestSendMessageSuccess(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
 	llm := &fakeLLM{responses: []string{"hello there!"}}
-	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, eventbus.New())
+	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, eventbus.New())
 
 	run, err := m.StartRun("greeter")
 	if err != nil {
@@ -191,10 +209,26 @@ func TestSendMessageSuccess(t *testing.T) {
 
 func TestSendMessageUsesRunInstanceForToolNodes(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{
-		"researcher": {Name: "researcher", Environment: "WebSearch", Graph: toolGraph("curl -s example.com")},
+		"researcher": {
+			Name:        "researcher",
+			Environment: "WebSearch",
+			Graph:       toolGraph(registry.NodeData{ToolName: "web_search", ToolInputParam: "query"}),
+		},
 	}}
 	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}, toolOutput: "search results"}
-	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, eventbus.New())
+	envReader := &fakeEnvironmentReader{envs: map[string]registry.Environment{
+		"WebSearch": {
+			Name: "WebSearch",
+			Tools: []registry.Tool{
+				{
+					Name:       "web_search",
+					Command:    "curl -s {{query}}",
+					Parameters: []registry.ToolParameter{{Name: "query", Type: registry.ToolParamString, Required: true}},
+				},
+			},
+		},
+	}}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, envReader, eventbus.New())
 
 	run, err := m.StartRun("researcher")
 	if err != nil {
@@ -210,8 +244,25 @@ func TestSendMessageUsesRunInstanceForToolNodes(t *testing.T) {
 	}
 }
 
+func TestSendMessageUnknownEnvironment(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{
+		"researcher": {Name: "researcher", Environment: "does-not-exist", Graph: linearGraph()},
+	}}
+	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, &fakeEnvironmentReader{}, eventbus.New())
+
+	run, err := m.StartRun("researcher")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	if _, err := m.SendMessage(run.ID, "hi"); err == nil {
+		t.Error("SendMessage() error = nil, want an error when the agent's Environment can't be resolved")
+	}
+}
+
 func TestSendMessageUnknownRun(t *testing.T) {
-	m := NewManager(context.Background(), &fakeAgentReader{}, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+	m := NewManager(context.Background(), &fakeAgentReader{}, &fakeLLM{}, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, eventbus.New())
 
 	if _, err := m.SendMessage("does-not-exist", "hi"); err == nil {
 		t.Error("SendMessage() error = nil, want an error for an unknown run")
@@ -220,7 +271,7 @@ func TestSendMessageUnknownRun(t *testing.T) {
 
 func TestSendMessageRequiresMessage(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
-	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, eventbus.New())
+	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, eventbus.New())
 
 	run, err := m.StartRun("greeter")
 	if err != nil {
@@ -235,7 +286,7 @@ func TestSendMessageRequiresMessage(t *testing.T) {
 func TestSendMessageEngineErrorRecordsUserMessageOnly(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
 	llm := &fakeLLM{err: errors.New("model runner unreachable")}
-	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, eventbus.New())
+	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, eventbus.New())
 
 	run, err := m.StartRun("greeter")
 	if err != nil {
@@ -258,7 +309,7 @@ func TestSendMessageEngineErrorRecordsUserMessageOnly(t *testing.T) {
 func TestSendMessageIncludesPriorHistory(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
 	llm := &fakeLLM{responses: []string{"first reply", "second reply"}}
-	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, eventbus.New())
+	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, eventbus.New())
 
 	run, err := m.StartRun("greeter")
 	if err != nil {

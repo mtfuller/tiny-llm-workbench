@@ -13,8 +13,22 @@ import {
   type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { GitBranch, MessageSquare, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, SquareArrowOutUpRight, Terminal } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import {
+  GitBranch,
+  LogIn,
+  MessageSquare,
+  MousePointerClick,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Play,
+  Settings,
+  SquareArrowOutUpRight,
+  Terminal,
+  Trash2,
+} from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type DragEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   getAgent,
@@ -30,6 +44,7 @@ import {
   type Environment,
   type Model,
   type NodeType,
+  type Tool,
 } from '../api'
 import { nodeTypes } from '../agentNodes'
 import { useEventStream } from '../eventStream'
@@ -38,30 +53,41 @@ import { suggestedModels } from '../suggestedModels'
 
 type FlowNode = Node<AgentNodeData>
 
-// Mirrors the .flow-node-* border colors in index.css so the minimap reads
-// as a shrunk-down view of the same graph.
+// Mirrors the .flow-node-* border colors in index.css so the minimap (and
+// the inspector's node-type header) reads as the same graph, just recolored
+// consistently everywhere it appears.
+const NODE_COLORS: Record<string, string> = {
+  prompt: '#2f6fd6',
+  tool: '#2f8f6d',
+  output: '#d0447a',
+}
+
 function minimapNodeColor(node: FlowNode): string {
   const root = getComputedStyle(document.documentElement)
   switch (node.type) {
-    case 'prompt':
-      return '#2f6fd6'
     case 'decision':
       return root.getPropertyValue('--warn').trim() || '#b8792f'
-    case 'tool':
-      return '#2f8f6d'
-    case 'output':
-      return '#d0447a'
-    default:
+    case 'input':
       return root.getPropertyValue('--accent').trim() || '#c1633f'
+    default:
+      return NODE_COLORS[node.type ?? ''] ?? (root.getPropertyValue('--accent').trim() || '#c1633f')
   }
 }
 
-const PALETTE: { type: NodeType; label: string; icon: typeof MessageSquare }[] = [
-  { type: 'prompt', label: 'Prompt', icon: MessageSquare },
-  { type: 'decision', label: 'Decision', icon: GitBranch },
-  { type: 'tool', label: 'Tool', icon: Terminal },
-  { type: 'output', label: 'Output', icon: SquareArrowOutUpRight },
-]
+interface NodeMeta {
+  label: string
+  icon: ComponentType<{ size?: number }>
+}
+
+const NODE_META: Record<NodeType, NodeMeta> = {
+  input: { label: 'Input', icon: LogIn },
+  prompt: { label: 'Prompt', icon: MessageSquare },
+  decision: { label: 'Decision', icon: GitBranch },
+  tool: { label: 'Tool', icon: Terminal },
+  output: { label: 'Output', icon: SquareArrowOutUpRight },
+}
+
+const PALETTE: NodeType[] = ['prompt', 'decision', 'tool', 'output']
 
 let nodeCounter = 0
 function newNodeId(type: string): string {
@@ -89,12 +115,14 @@ function AgentEditorWorkspace() {
   const [models, setModels] = useState<Model[]>([])
   const [environments, setEnvironments] = useState<Environment[]>([])
   const [environment, setEnvironment] = useState('')
+  const [description, setDescription] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(true)
   const [inspectorOpen, setInspectorOpen] = useState(true)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const [chatOpen, setChatOpen] = useState(false)
   const [runId, setRunId] = useState<string | null>(null)
@@ -110,6 +138,7 @@ function AgentEditorWorkspace() {
         setNodes(agent.graph.nodes as FlowNode[])
         setEdges(agent.graph.edges as Edge[])
         setEnvironment(agent.environment ?? '')
+        setDescription(agent.description ?? '')
         setLoaded(true)
       })
       .catch((err: Error) => setError(err.message))
@@ -188,6 +217,26 @@ function AgentEditorWorkspace() {
     return Array.from(new Set([...trained, ...suggestedModels]))
   }, [models])
 
+  const boundEnvironment = useMemo(() => environments.find((e) => e.name === environment), [environments, environment])
+  const availableTools = boundEnvironment?.tools ?? []
+
+  const selectedTool: Tool | undefined = useMemo(
+    () => availableTools.find((t) => t.name === selectedNode?.data.toolName),
+    [availableTools, selectedNode],
+  )
+
+  const handleToolChange = (toolName: string) => {
+    updateSelectedNodeData({ toolName, toolArgs: {}, toolInputParam: undefined })
+  }
+
+  const handleToolArgChange = (paramName: string, value: string) => {
+    updateSelectedNodeData({ toolArgs: { ...(selectedNode?.data.toolArgs ?? {}), [paramName]: value } })
+  }
+
+  const handleBindInputParam = (paramName: string) => {
+    updateSelectedNodeData({ toolInputParam: paramName })
+  }
+
   const handleSave = async () => {
     setSaving(true)
     setError(null)
@@ -199,6 +248,7 @@ function AgentEditorWorkspace() {
           edges: edges.map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle ?? undefined, target: e.target })),
         },
         environment || undefined,
+        description || undefined,
       )
       setSavedAt(Date.now())
     } catch (err) {
@@ -291,19 +341,28 @@ function AgentEditorWorkspace() {
         {paletteOpen && (
           <aside className="agent-palette">
             <div className="agent-palette-label">Nodes</div>
-            {PALETTE.map(({ type, label, icon: Icon }) => (
-              <div
-                key={type}
-                className="palette-item"
-                draggable
-                onDragStart={(e) => onDragStart(e, type)}
-                onClick={() => addNode(type)}
-              >
-                <Icon size={15} />
-                {label}
-              </div>
-            ))}
+            {PALETTE.map((type) => {
+              const { label, icon: Icon } = NODE_META[type]
+              return (
+                <div
+                  key={type}
+                  className="palette-item"
+                  draggable
+                  onDragStart={(e) => onDragStart(e, type)}
+                  onClick={() => addNode(type)}
+                >
+                  <Icon size={15} />
+                  {label}
+                </div>
+              )
+            })}
             <p className="hint">Drag onto the canvas, or click to add.</p>
+
+            <div className="agent-palette-footer">
+              <button type="button" className="palette-settings-button" onClick={() => setSettingsOpen(true)}>
+                <Settings size={15} /> Agent settings
+              </button>
+            </div>
           </aside>
         )}
 
@@ -334,107 +393,184 @@ function AgentEditorWorkspace() {
 
         {inspectorOpen && (
           <aside className="agent-inspector">
-            <div className="agent-settings">
-              <div className="agent-palette-label">Agent settings</div>
-              <label>
-                Environment
-                <select value={environment} onChange={(e) => setEnvironment(e.target.value)}>
-                  <option value="">None</option>
-                  {environments.map((env) => (
-                    <option key={env.name} value={env.name}>
-                      {env.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {environment && (
-                <p className="hint">
-                  Tools available: {environments.find((env) => env.name === environment)?.tools.join(', ') || 'none'}
-                </p>
-              )}
-            </div>
-            {!selectedNode && <p className="hint">Select a node on the canvas to configure it.</p>}
+            {!selectedNode && (
+              <div className="inspector-empty">
+                <MousePointerClick size={28} />
+                <p>Select a node on the canvas to configure it.</p>
+              </div>
+            )}
             {selectedNode && (
               <>
-                <h3>{selectedNode.type} node</h3>
-                {selectedNode.type === 'prompt' && (
-                  <div className="stacked-form">
+                <div className={`inspector-node-header inspector-node-header-${selectedNode.type}`}>
+                  {(() => {
+                    const Icon = NODE_META[selectedNode.type as NodeType]?.icon ?? MessageSquare
+                    return <Icon size={16} />
+                  })()}
+                  <span>{NODE_META[selectedNode.type as NodeType]?.label ?? selectedNode.type} node</span>
+                </div>
+
+                <div className="inspector-body">
+                  {selectedNode.type === 'prompt' && (
+                    <>
+                      <label>
+                        Model
+                        <input
+                          type="text"
+                          list="agent-model-options"
+                          placeholder="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+                          value={selectedNode.data.model ?? ''}
+                          onChange={(e) => updateSelectedNodeData({ model: e.target.value })}
+                        />
+                        <datalist id="agent-model-options">
+                          {modelOptions.map((m) => (
+                            <option key={m} value={m} />
+                          ))}
+                        </datalist>
+                      </label>
+                      <label>
+                        System prompt
+                        <textarea
+                          rows={5}
+                          placeholder="You are a helpful assistant…"
+                          value={selectedNode.data.systemPrompt ?? ''}
+                          onChange={(e) => updateSelectedNodeData({ systemPrompt: e.target.value })}
+                        />
+                      </label>
+                    </>
+                  )}
+
+                  {selectedNode.type === 'decision' && (
                     <label>
-                      Model
+                      Keyword
                       <input
                         type="text"
-                        list="agent-model-options"
-                        placeholder="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-                        value={selectedNode.data.model ?? ''}
-                        onChange={(e) => updateSelectedNodeData({ model: e.target.value })}
-                      />
-                      <datalist id="agent-model-options">
-                        {modelOptions.map((name) => (
-                          <option key={name} value={name} />
-                        ))}
-                      </datalist>
-                    </label>
-                    <label>
-                      System prompt
-                      <textarea
-                        rows={4}
-                        value={selectedNode.data.systemPrompt ?? ''}
-                        onChange={(e) => updateSelectedNodeData({ systemPrompt: e.target.value })}
-                      />
-                    </label>
-                  </div>
-                )}
-                {selectedNode.type === 'decision' && (
-                  <div className="stacked-form">
-                    <label>
-                      Keyword (routes to "yes" if the previous output contains it)
-                      <input
-                        type="text"
+                        placeholder="e.g. weather"
                         value={selectedNode.data.keyword ?? ''}
                         onChange={(e) => updateSelectedNodeData({ keyword: e.target.value })}
                       />
+                      <span className="field-hint">Routes to "yes" if the previous node's output contains this.</span>
                     </label>
-                  </div>
-                )}
-                {selectedNode.type === 'tool' && (
-                  <div className="stacked-form">
-                    <label>
-                      Command
-                      <textarea
-                        rows={3}
-                        value={selectedNode.data.command ?? ''}
-                        onChange={(e) => updateSelectedNodeData({ command: e.target.value })}
-                        placeholder="e.g. cat {{input}}"
-                      />
-                    </label>
-                    <p className="hint">
-                      Runs inside the agent's Environment. Use <code>{'{{input}}'}</code> to insert the previous
-                      node's output.
-                    </p>
-                  </div>
-                )}
-                {(selectedNode.type === 'input' || selectedNode.type === 'output') && (
-                  <div className="stacked-form">
+                  )}
+
+                  {selectedNode.type === 'tool' && (
+                    <>
+                      {!environment && (
+                        <p className="hint">
+                          This agent has no Environment configured —{' '}
+                          <button type="button" className="link-button" onClick={() => setSettingsOpen(true)}>
+                            set one in Agent settings
+                          </button>{' '}
+                          to give it tools to run.
+                        </p>
+                      )}
+
+                      {environment && (
+                        <label>
+                          Tool
+                          <select value={selectedNode.data.toolName ?? ''} onChange={(e) => handleToolChange(e.target.value)}>
+                            <option value="">Select a tool…</option>
+                            {availableTools.map((t) => (
+                              <option key={t.name} value={t.name}>
+                                {t.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+
+                      {environment && selectedNode.data.toolName && !selectedTool && (
+                        <p className="error">
+                          Tool "{selectedNode.data.toolName}" isn't on the "{environment}" environment anymore — pick another.
+                        </p>
+                      )}
+
+                      {selectedTool && (
+                        <div className="tool-arg-list">
+                          {selectedTool.description && <p className="hint">{selectedTool.description}</p>}
+                          <div className="inspector-section-label">Parameters</div>
+                          {selectedTool.parameters.length === 0 && <p className="hint">This tool takes no parameters.</p>}
+                          {selectedTool.parameters.map((p) => {
+                            const bound = selectedNode.data.toolInputParam === p.name
+                            return (
+                              <div className={`tool-arg-row${bound ? ' tool-arg-row-bound' : ''}`} key={p.name}>
+                                <div className="tool-arg-row-header">
+                                  <span>
+                                    {p.name}
+                                    {p.required ? ' *' : ''}
+                                  </span>
+                                  <label className="tool-arg-bind-toggle" title="Fill this parameter from the previous node's output">
+                                    <input
+                                      type="radio"
+                                      name={`bind-${selectedNode.id}`}
+                                      checked={bound}
+                                      onChange={() => handleBindInputParam(p.name)}
+                                    />
+                                    Use previous output
+                                  </label>
+                                </div>
+                                {p.description && <span className="field-hint">{p.description}</span>}
+                                {!bound &&
+                                  (p.type === 'boolean' ? (
+                                    <select
+                                      value={selectedNode.data.toolArgs?.[p.name] ?? ''}
+                                      onChange={(e) => handleToolArgChange(p.name, e.target.value)}
+                                    >
+                                      <option value="">—</option>
+                                      <option value="true">true</option>
+                                      <option value="false">false</option>
+                                    </select>
+                                  ) : (
+                                    <input
+                                      type={p.type === 'number' ? 'number' : 'text'}
+                                      placeholder={p.name}
+                                      value={selectedNode.data.toolArgs?.[p.name] ?? ''}
+                                      onChange={(e) => handleToolArgChange(p.name, e.target.value)}
+                                    />
+                                  ))}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {(selectedNode.type === 'input' || selectedNode.type === 'output') && (
                     <label>
                       Label
                       <input
                         type="text"
+                        placeholder={selectedNode.type === 'input' ? 'Input' : 'Output'}
                         value={selectedNode.data.label ?? ''}
                         onChange={(e) => updateSelectedNodeData({ label: e.target.value })}
                       />
                     </label>
-                  </div>
-                )}
+                  )}
+                </div>
+
                 {selectedNode.type !== 'input' && (
-                  <button type="button" className="danger-button" onClick={deleteSelectedNode}>
-                    Delete node
-                  </button>
+                  <div className="inspector-footer">
+                    <button type="button" className="danger-button" onClick={deleteSelectedNode}>
+                      <Trash2 size={14} /> Delete node
+                    </button>
+                  </div>
                 )}
               </>
             )}
           </aside>
         )}
       </div>
+
+      {settingsOpen && (
+        <AgentSettingsModal
+          environment={environment}
+          environmentOptions={environments}
+          description={description}
+          onChangeEnvironment={setEnvironment}
+          onChangeDescription={setDescription}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
 
       {chatOpen && (
         <Modal title={`Chat with ${name}`} onClose={closeChat}>
@@ -483,6 +619,65 @@ function AgentEditorWorkspace() {
         </Modal>
       )}
     </div>
+  )
+}
+
+interface AgentSettingsModalProps {
+  environment: string
+  environmentOptions: Environment[]
+  description: string
+  onChangeEnvironment: (value: string) => void
+  onChangeDescription: (value: string) => void
+  onClose: () => void
+}
+
+function AgentSettingsModal({
+  environment,
+  environmentOptions,
+  description,
+  onChangeEnvironment,
+  onChangeDescription,
+  onClose,
+}: AgentSettingsModalProps) {
+  const selected = environmentOptions.find((e) => e.name === environment)
+
+  return (
+    <Modal title="Agent settings" onClose={onClose}>
+      <div className="stacked-form">
+        <label>
+          Environment
+          <select value={environment} onChange={(e) => onChangeEnvironment(e.target.value)}>
+            <option value="">None</option>
+            {environmentOptions.map((env) => (
+              <option key={env.name} value={env.name}>
+                {env.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selected && (
+          <p className="hint">
+            Tools available: {selected.tools.length > 0 ? selected.tools.map((t) => t.name).join(', ') : 'none'}
+          </p>
+        )}
+
+        <label>
+          Description
+          <textarea
+            rows={3}
+            placeholder="What does this agent do?"
+            value={description}
+            onChange={(e) => onChangeDescription(e.target.value)}
+          />
+        </label>
+
+        <div className="row-actions confirm-actions">
+          <button type="button" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 

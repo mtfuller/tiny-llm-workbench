@@ -57,6 +57,49 @@ func TestSaveAgentOverwrites(t *testing.T) {
 	}
 }
 
+func TestSaveAgentSetsCreatedAtOnFirstSave(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveAgent(Agent{Name: "greeter", Graph: testGraph()}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	got, err := reg.GetAgent("greeter")
+	if err != nil {
+		t.Fatalf("GetAgent() error = %v", err)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("GetAgent().CreatedAt is zero, want it set on first save")
+	}
+}
+
+func TestSaveAgentPreservesCreatedAtOnOverwrite(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveAgent(Agent{Name: "greeter", Graph: testGraph()}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	first, err := reg.GetAgent("greeter")
+	if err != nil {
+		t.Fatalf("GetAgent() error = %v", err)
+	}
+
+	if err := reg.SaveAgent(Agent{Name: "greeter", Description: "updated", Graph: testGraph()}); err != nil {
+		t.Fatalf("SaveAgent() (update) error = %v", err)
+	}
+	second, err := reg.GetAgent("greeter")
+	if err != nil {
+		t.Fatalf("GetAgent() error = %v", err)
+	}
+
+	if !second.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("CreatedAt changed on overwrite: first = %v, second = %v", first.CreatedAt, second.CreatedAt)
+	}
+	if second.Description != "updated" {
+		t.Errorf("Description = %q, want %q", second.Description, "updated")
+	}
+}
+
 func TestGetAgentUnknown(t *testing.T) {
 	reg := New(t.TempDir())
 

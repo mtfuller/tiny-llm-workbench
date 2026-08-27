@@ -82,7 +82,7 @@ URL in a browser. Stop it with Ctrl+C.`,
 		}
 		environmentsMgr := environments.NewManager(ctx, dockerClient, reg, bus)
 
-		agentsMgr := agents.NewManager(ctx, reg, runner, environmentsMgr, bus)
+		agentsMgr := agents.NewManager(ctx, reg, runner, environmentsMgr, reg, bus)
 
 		evaluationsMgr := evaluations.NewManager(ctx, reg, agentsMgr, environmentsMgr, bus)
 

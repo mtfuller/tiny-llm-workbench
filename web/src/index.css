@@ -1103,6 +1103,31 @@ textarea {
   overflow-y: auto;
 }
 
+.agent-palette-footer {
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.palette-settings-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: inherit;
+}
+
+.palette-settings-button:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
 .agent-palette-label {
   font-size: 0.7rem;
   text-transform: uppercase;
@@ -1197,27 +1222,165 @@ textarea {
 }
 
 .agent-inspector {
-  width: 280px;
+  width: 300px;
   flex-shrink: 0;
   border-left: 1px solid var(--border);
-  padding: 1rem;
   overflow-y: auto;
   background: color-mix(in srgb, var(--text) 2.5%, var(--surface));
-}
-
-.agent-inspector h3 {
-  margin-top: 0;
-  font-size: 0.9rem;
-  text-transform: capitalize;
-}
-
-.agent-settings {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding-bottom: 0.85rem;
-  margin-bottom: 0.85rem;
+}
+
+.inspector-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  padding: 3rem 1.25rem;
+  text-align: center;
+  color: color-mix(in srgb, var(--text) 40%, transparent);
+  flex: 1;
+}
+
+.inspector-empty p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.inspector-node-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.85rem 1rem;
   border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 0.85rem;
+  text-transform: capitalize;
+  flex-shrink: 0;
+  --node-color: var(--accent);
+  color: var(--node-color);
+  background: color-mix(in srgb, var(--node-color) 8%, transparent);
+}
+
+.inspector-node-header svg {
+  flex-shrink: 0;
+}
+
+.inspector-node-header-prompt {
+  --node-color: #2f6fd6;
+}
+
+.inspector-node-header-decision {
+  --node-color: var(--warn);
+}
+
+.inspector-node-header-tool {
+  --node-color: #2f8f6d;
+}
+
+.inspector-node-header-output {
+  --node-color: #d0447a;
+}
+
+.inspector-body {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.inspector-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--text) 75%, transparent);
+}
+
+.field-hint {
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--text) 50%, transparent);
+  font-weight: 400;
+}
+
+.inspector-section-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--text) 50%, transparent);
+  margin-top: 0.2rem;
+}
+
+.inspector-footer {
+  padding: 0.85rem 1rem;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.inspector-footer button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+
+.tool-arg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.tool-arg-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.tool-arg-row-bound {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+.tool-arg-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.tool-arg-bind-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: color-mix(in srgb, var(--text) 60%, transparent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tool-arg-bind-toggle input {
+  width: auto;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
 }
 
 /* Modal */

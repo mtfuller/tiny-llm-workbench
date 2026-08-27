@@ -105,7 +105,7 @@ function Agents() {
 
         {!error && agents === null && (
           <div className="panel-body">
-            <TableSkeleton columns={3} />
+            <TableSkeleton columns={5} />
           </div>
         )}
 
@@ -126,7 +126,9 @@ function Agents() {
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Environment</th>
                 <th>Nodes</th>
+                <th>Created</th>
                 <th></th>
               </tr>
             </thead>
@@ -136,7 +138,9 @@ function Agents() {
                   <td>
                     <Link to={`/agents/${encodeURIComponent(agent.name)}`}>{agent.name}</Link>
                   </td>
+                  <td>{agent.environment || '—'}</td>
                   <td>{agent.graph.nodes.length}</td>
+                  <td>{new Date(agent.createdAt).toLocaleDateString()}</td>
                   <td className="row-actions">
                     <button
                       type="button"

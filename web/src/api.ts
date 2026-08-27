@@ -167,7 +167,13 @@ export interface AgentNodeData extends Record<string, unknown> {
   model?: string
   systemPrompt?: string
   keyword?: string
-  command?: string
+  // Tool nodes: toolName names a Tool declared on the agent's bound
+  // Environment (see registry.Tool); toolArgs holds a literal value per
+  // parameter name; toolInputParam, if set, names the one parameter that
+  // instead receives the previous node's output at run time.
+  toolName?: string
+  toolArgs?: Record<string, string>
+  toolInputParam?: string
 }
 
 export interface AgentNode {
@@ -192,6 +198,7 @@ export interface AgentGraph {
 export interface Agent {
   name: string
   environment?: string
+  description?: string
   graph: AgentGraph
   createdAt: string
 }
@@ -597,11 +604,11 @@ export function listAgents(): Promise<Agent[]> {
   return fetch('/api/agents').then(json<Agent[]>)
 }
 
-export function saveAgent(name: string, graph: AgentGraph, environment?: string): Promise<Agent> {
+export function saveAgent(name: string, graph: AgentGraph, environment?: string, description?: string): Promise<Agent> {
   return fetch('/api/agents', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, graph, environment }),
+    body: JSON.stringify({ name, graph, environment, description }),
   }).then(json<Agent>)
 }
 

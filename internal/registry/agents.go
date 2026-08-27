@@ -21,12 +21,22 @@ type Position struct {
 // matter depends on the node's Type. Keeping this flat (rather than one
 // struct per node type) matches React Flow's own node data shape and keeps
 // (de)serialization simple.
+//
+// Tool nodes name a real Tool (see environments.go) declared on the agent's
+// bound Environment, rather than embedding a raw shell command — the same
+// structured-parameter-list schema the Environments workspace's Playground
+// tab already uses to run a tool. ToolArgs holds a literal value per
+// parameter name; ToolInputParam, if set, names the one parameter that
+// instead receives the previous node's output at run time (see
+// internal/agents.Engine's tool-node handling).
 type NodeData struct {
-	Label        string `json:"label,omitempty"`
-	Model        string `json:"model,omitempty"`        // prompt nodes: which MLX model to call
-	SystemPrompt string `json:"systemPrompt,omitempty"` // prompt nodes
-	Keyword      string `json:"keyword,omitempty"`      // decision nodes: substring to match
-	Command      string `json:"command,omitempty"`      // tool nodes: shell command; "{{input}}" is replaced with the prior node's output
+	Label          string            `json:"label,omitempty"`
+	Model          string            `json:"model,omitempty"`          // prompt nodes: which MLX model to call
+	SystemPrompt   string            `json:"systemPrompt,omitempty"`   // prompt nodes
+	Keyword        string            `json:"keyword,omitempty"`        // decision nodes: substring to match
+	ToolName       string            `json:"toolName,omitempty"`       // tool nodes: name of a Tool on the agent's Environment
+	ToolArgs       map[string]string `json:"toolArgs,omitempty"`       // tool nodes: literal value per parameter name
+	ToolInputParam string            `json:"toolInputParam,omitempty"` // tool nodes: parameter name bound to the previous node's output
 }
 
 // Node is one node in an agent's graph. Type is one of "input", "prompt",
@@ -58,10 +68,12 @@ type Graph struct {
 // optional — it's the Environment (see environments.go) a run launches an
 // instance of for the run's duration, giving the graph's Tool nodes
 // something to execute commands in. An agent with no Tool nodes doesn't
-// need one.
+// need one. Description is free-text, shown on the list/detail pages —
+// purely informational, no behavior depends on it.
 type Agent struct {
 	Name        string    `json:"name"`
 	Environment string    `json:"environment,omitempty"`
+	Description string    `json:"description,omitempty"`
 	Graph       Graph     `json:"graph"`
 	CreatedAt   time.Time `json:"createdAt"`
 }
@@ -75,8 +87,17 @@ func (r *Registry) agentsDir() string {
 }
 
 // SaveAgent writes agent's definition, creating or overwriting it — used
-// for both creating a new agent and saving edits to its graph.
+// for both creating a new agent and saving edits to its graph. CreatedAt is
+// set on first save and preserved on every later overwrite, regardless of
+// what the caller passed in (mirrors the same fix in SaveBenchmark/
+// SaveEvaluation).
 func (r *Registry) SaveAgent(agent Agent) error {
+	if existing, err := r.GetAgent(agent.Name); err == nil {
+		agent.CreatedAt = existing.CreatedAt
+	} else if agent.CreatedAt.IsZero() {
+		agent.CreatedAt = time.Now().UTC()
+	}
+
 	dir := r.agentDir(agent.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create agent directory: %w", err)

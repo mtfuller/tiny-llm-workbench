@@ -30,6 +30,12 @@ type environmentRunner interface {
 	RunToolSync(ctx context.Context, instanceID, command string) (string, error)
 }
 
+// environmentReader is the subset of registry.Registry Manager needs to
+// resolve a Tool node's named tool against its agent's bound Environment.
+type environmentReader interface {
+	GetEnvironment(name string) (registry.Environment, error)
+}
+
 // Run is a chat session against one agent. History is in-memory only —
 // unlike Phase 1's training runs, losing it on a `tlw serve` restart isn't
 // costly enough to warrant persisting to disk. InstanceID is set for the
@@ -46,11 +52,12 @@ type Run struct {
 // Manager starts chat runs against saved agents and drives each turn
 // through the Engine.
 type Manager struct {
-	ctx    context.Context
-	agents agentReader
-	envs   environmentRunner
-	engine *Engine
-	bus    *eventbus.Bus
+	ctx       context.Context
+	agents    agentReader
+	envs      environmentRunner
+	envReader environmentReader
+	engine    *Engine
+	bus       *eventbus.Bus
 
 	mu   sync.Mutex
 	runs map[string]*Run
@@ -60,15 +67,17 @@ type Manager struct {
 // a turn makes; SendMessage itself is synchronous, so in practice this just
 // needs to outlive individual HTTP requests, but using the server's
 // lifetime context (not a request context) keeps this consistent with
-// Phase 1/2's managers.
-func NewManager(ctx context.Context, agentsReader agentReader, llm llmClient, envs environmentRunner, bus *eventbus.Bus) *Manager {
+// Phase 1/2's managers. envReader resolves an agent's bound Environment
+// (its declared Tools) so a turn's tool nodes can look up what they name.
+func NewManager(ctx context.Context, agentsReader agentReader, llm llmClient, envs environmentRunner, envReader environmentReader, bus *eventbus.Bus) *Manager {
 	return &Manager{
-		ctx:    ctx,
-		agents: agentsReader,
-		envs:   envs,
-		engine: NewEngine(llm, envs),
-		bus:    bus,
-		runs:   make(map[string]*Run),
+		ctx:       ctx,
+		agents:    agentsReader,
+		envs:      envs,
+		envReader: envReader,
+		engine:    NewEngine(llm, envs),
+		bus:       bus,
+		runs:      make(map[string]*Run),
 	}
 }
 
@@ -148,7 +157,16 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 		return ChatMessage{}, fmt.Errorf("look up agent %q: %w", run.AgentName, err)
 	}
 
-	reply, err := m.engine.Run(m.ctx, agent.Graph, history, message, run.InstanceID, func(step StepEvent) {
+	var tools []registry.Tool
+	if agent.Environment != "" {
+		env, err := m.envReader.GetEnvironment(agent.Environment)
+		if err != nil {
+			return ChatMessage{}, fmt.Errorf("look up environment %q: %w", agent.Environment, err)
+		}
+		tools = env.Tools
+	}
+
+	reply, err := m.engine.Run(m.ctx, agent.Graph, history, message, run.InstanceID, tools, func(step StepEvent) {
 		m.publishStep(runID, step)
 	})
 

@@ -68,12 +68,16 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
   - [x] Add an Agents page to the navbar
   - [x] Visual canvas for building agent workflows (input, prompt, output, decision, tool nodes) — built
         with React Flow. Decision branches on a simple keyword match against the prior node's output,
-        not an LLM call. An agent can target a specific Environment in its settings; a tool node runs a
-        literal shell command (with `{{input}}` templating) inside that Environment's running instance
-        — deterministic, not an LLM-driven tool-calling loop. Fully verified live: a real Docker
-        container was launched, a tool node's command executed inside it and its output flowed to the
-        next node, and the container was cleaned up when the chat closed. No memory/knowledge nodes yet
-        — that's future work.
+        not an LLM call. Agent settings (which Environment it targets, plus a free-text description) live
+        in a settings modal opened from the left node palette, not an always-visible sidebar block. A
+        professional-looking, node-type-colored right-sidebar inspector configures each selected node; a
+        tool node picks one of the bound Environment's real tools from a dropdown and fills in a
+        generated form for its typed parameters, with one parameter markable as "use previous output" to
+        receive the prior node's result at run time — deterministic, not an LLM-driven tool-calling loop.
+        Fully verified live: a real Docker container was launched, a tool node's chosen tool (a real
+        DuckDuckGo web search) executed inside it with the previous node's output correctly bound to its
+        query parameter, and the container was cleaned up when the chat closed. No memory/knowledge nodes
+        yet — that's future work.
   - [x] Run view: watch agent events live and chat with a running agent — fully verified live with a
         real local MLX model (served via `mlx_lm.server`, TLW's inference backend — see CLAUDE.md's MLX
         integration note): canvas building, saving, chatting, and the live step-by-step execution log
