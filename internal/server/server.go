@@ -119,6 +119,13 @@ type agentManager interface {
 	StopRun(runID string) error
 	SendMessage(runID, message string) (agents.ChatMessage, error)
 	GetRun(id string) (*agents.Run, bool)
+
+	StartDebugRun(agentName string, graph registry.Graph, environment string) (*agents.DebugState, error)
+	SendDebugMessage(id, message string) (*agents.DebugState, error)
+	StepDebugRun(id string) (*agents.DebugState, error)
+	RetryDebugRun(id string) (*agents.DebugState, error)
+	StopDebugRun(id string) error
+	GetDebugRun(id string) (*agents.DebugState, bool)
 }
 
 // evaluationStore is the subset of registry.Registry the server needs for
@@ -264,6 +271,12 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/agents/runs/{id}/messages", sendAgentMessageHandler(deps.AgentRuns))
 	mux.HandleFunc("GET /api/agents/runs/{id}", getAgentRunHandler(deps.AgentRuns))
 	mux.HandleFunc("POST /api/agents/runs/{id}/stop", stopAgentRunHandler(deps.AgentRuns))
+	mux.HandleFunc("POST /api/agents/{name}/debug", startDebugRunHandler(deps.AgentRuns))
+	mux.HandleFunc("POST /api/agents/debug/{id}/messages", sendDebugMessageHandler(deps.AgentRuns))
+	mux.HandleFunc("POST /api/agents/debug/{id}/step", stepDebugRunHandler(deps.AgentRuns))
+	mux.HandleFunc("POST /api/agents/debug/{id}/retry", retryDebugRunHandler(deps.AgentRuns))
+	mux.HandleFunc("GET /api/agents/debug/{id}", getDebugRunHandler(deps.AgentRuns))
+	mux.HandleFunc("POST /api/agents/debug/{id}/stop", stopDebugRunHandler(deps.AgentRuns))
 	mux.HandleFunc("GET /api/evaluations", listEvaluationsHandler(deps.Evaluations))
 	mux.HandleFunc("POST /api/evaluations", saveEvaluationHandler(deps.Evaluations))
 	mux.HandleFunc("GET /api/evaluations/{name}", getEvaluationHandler(deps.Evaluations))

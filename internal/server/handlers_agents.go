@@ -167,3 +167,100 @@ func stopAgentRunHandler(mgr agentManager) http.HandlerFunc {
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
+
+// startDebugRunRequest is the POST /api/agents/{name}/debug request body.
+// The graph (and environment binding) come straight from the caller rather
+// than the agent's saved definition, so a session can debug the canvas's
+// current, possibly unsaved edits without round-tripping through Save.
+type startDebugRunRequest struct {
+	Graph       registry.Graph `json:"graph"`
+	Environment string         `json:"environment,omitempty"`
+}
+
+// startDebugRunHandler begins a new paused debug session.
+func startDebugRunHandler(mgr agentManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req startDebugRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+
+		state, err := mgr.StartDebugRun(r.PathValue("name"), req.Graph, req.Environment)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, state)
+	}
+}
+
+// sendDebugMessageHandler starts a new turn in a debug session: the input
+// node becomes pending, ready for the first step.
+func sendDebugMessageHandler(mgr agentManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+
+		var req sendAgentMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+
+		state, err := mgr.SendDebugMessage(id, req.Message)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	}
+}
+
+// stepDebugRunHandler executes the session's pending node and responds with
+// the resulting state.
+func stepDebugRunHandler(mgr agentManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		state, err := mgr.StepDebugRun(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	}
+}
+
+// retryDebugRunHandler re-executes the session's most recently stepped node.
+func retryDebugRunHandler(mgr agentManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		state, err := mgr.RetryDebugRun(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	}
+}
+
+// getDebugRunHandler responds with a debug session's current state.
+func getDebugRunHandler(mgr agentManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		state, ok := mgr.GetDebugRun(r.PathValue("id"))
+		if !ok {
+			writeError(w, http.StatusNotFound, errors.New("no such debug run"))
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	}
+}
+
+// stopDebugRunHandler ends a debug session, stopping its Environment
+// instance (if any). Idempotent, like stopAgentRunHandler.
+func stopDebugRunHandler(mgr agentManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := mgr.StopDebugRun(r.PathValue("id")); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}

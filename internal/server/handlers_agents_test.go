@@ -433,3 +433,245 @@ func TestStopAgentRunError(t *testing.T) {
 		t.Errorf("POST .../stop (error) status = %d, want %d", rec.Code, http.StatusBadGateway)
 	}
 }
+
+func TestStartDebugRun(t *testing.T) {
+	deps := testDeps()
+	mgr := &fakeAgentManager{debugStartResult: &agents.DebugState{ID: "agentdebug-1", AgentName: "greeter"}}
+	deps.AgentRuns = mgr
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(startDebugRunRequest{Graph: registry.Graph{Nodes: []registry.Node{{ID: "in", Type: "input"}}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/greeter/debug", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/agents/greeter/debug status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if len(mgr.debugStarted) != 1 || mgr.debugStarted[0] != "greeter" {
+		t.Errorf("mgr.debugStarted = %v, want [greeter]", mgr.debugStarted)
+	}
+}
+
+func TestStartDebugRunError(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{debugStartErr: errors.New("graph has no input node")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(startDebugRunRequest{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/greeter/debug", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../debug (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestSendDebugMessage(t *testing.T) {
+	deps := testDeps()
+	mgr := &fakeAgentManager{debugMessageResult: &agents.DebugState{ID: "agentdebug-1", PendingNodeID: "in", PendingNodeType: "input"}}
+	deps.AgentRuns = mgr
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(sendAgentMessageRequest{Message: "hi"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/debug/agentdebug-1/messages", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST .../debug/.../messages status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(mgr.debugMessages) != 1 || mgr.debugMessages[0] != "hi" {
+		t.Errorf("mgr.debugMessages = %v, want [hi]", mgr.debugMessages)
+	}
+}
+
+func TestSendDebugMessageError(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{debugMessageErr: errors.New("a turn is already in progress")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(sendAgentMessageRequest{Message: "hi"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/debug/agentdebug-1/messages", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../messages (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestStepDebugRun(t *testing.T) {
+	deps := testDeps()
+	mgr := &fakeAgentManager{debugStepResult: &agents.DebugState{ID: "agentdebug-1", LastStep: &agents.StepEvent{NodeID: "in", NodeType: "input", Output: "hi"}}}
+	deps.AgentRuns = mgr
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/debug/agentdebug-1/step", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST .../step status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got agents.DebugState
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if got.LastStep == nil || got.LastStep.Output != "hi" {
+		t.Errorf("got = %+v, want LastStep.Output = %q", got, "hi")
+	}
+}
+
+func TestStepDebugRunError(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{debugStepErr: errors.New("model runner unreachable")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/debug/agentdebug-1/step", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("POST .../step (error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestRetryDebugRun(t *testing.T) {
+	deps := testDeps()
+	mgr := &fakeAgentManager{debugRetryResult: &agents.DebugState{ID: "agentdebug-1", LastStep: &agents.StepEvent{Output: "second try"}}}
+	deps.AgentRuns = mgr
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/debug/agentdebug-1/retry", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST .../retry status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestRetryDebugRunError(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{debugRetryErr: errors.New("nothing to retry yet")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/debug/agentdebug-1/retry", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("POST .../retry (error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestGetDebugRun(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{debugGetResult: &agents.DebugState{ID: "agentdebug-1"}, debugGetOK: true}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/debug/agentdebug-1", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/agents/debug/agentdebug-1 status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestGetDebugRunNotFound(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{debugGetOK: false}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/debug/missing", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /api/agents/debug/missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestStopDebugRun(t *testing.T) {
+	deps := testDeps()
+	mgr := &fakeAgentManager{}
+	deps.AgentRuns = mgr
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/debug/agentdebug-1/stop", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST .../stop status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(mgr.debugStoppedRuns) != 1 || mgr.debugStoppedRuns[0] != "agentdebug-1" {
+		t.Errorf("mgr.debugStoppedRuns = %v, want [agentdebug-1]", mgr.debugStoppedRuns)
+	}
+}
+
+func TestStopDebugRunError(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{debugStopErr: errors.New("docker daemon unreachable")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/debug/agentdebug-1/stop", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("POST .../stop (error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}

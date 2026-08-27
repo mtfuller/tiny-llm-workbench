@@ -183,7 +183,10 @@ export interface Exec {
   error?: string
 }
 
-export type NodeType = 'input' | 'prompt' | 'decision' | 'tool' | 'knowledge' | 'output'
+// There's no "output" node type — any node with no outgoing edge is simply
+// where a turn ends, and its own output becomes the reply (see
+// internal/agents.Engine).
+export type NodeType = 'input' | 'prompt' | 'decision' | 'tool' | 'knowledge'
 
 export interface AgentNodeData extends Record<string, unknown> {
   // name is a stable, user-editable, unique-within-the-graph display name —
@@ -192,6 +195,12 @@ export interface AgentNodeData extends Record<string, unknown> {
   // {{name.property}} for a property of it if outputSchema made that output
   // parseable JSON. A node with no name isn't referenceable at all.
   name?: string
+
+  // debugHighlight is set locally by AgentEditor while a debug session is
+  // active (see DebugState below) to outline the pending/most-recently-
+  // executed node on the canvas — purely a rendering flag, never sent to
+  // or read from the backend.
+  debugHighlight?: 'pending' | 'executed'
 
   model?: string
   systemPrompt?: string
@@ -271,6 +280,30 @@ export interface AgentStepEvent {
   nodeId: string
   nodeType: string
   output: string
+}
+
+export interface AgentStepResult {
+  nodeId: string
+  nodeType: string
+  output: string
+}
+
+// DebugState is a paused, step-by-step chat session's current snapshot —
+// Debug's counterpart to AgentRun. pendingNodeId/pendingNodeType name the
+// node the next "step" call will execute (unset once finished, or before
+// the first message is sent); lastStep is the most recently executed
+// node's own result (undefined until at least one step has run) — the
+// same one "retry" would redo.
+export interface DebugState {
+  id: string
+  agentName: string
+  instanceId?: string
+  messages: ChatMessage[]
+  pendingNodeId?: string
+  pendingNodeType?: string
+  lastStep?: AgentStepResult
+  finished: boolean
+  createdAt: string
 }
 
 export type AssertionType = 'contains' | 'not_contains' | 'regex' | 'json_schema' | 'similarity'
@@ -820,6 +853,46 @@ export function stopAgentRun(runId: string): Promise<void> {
 
 export function getAgentRun(id: string): Promise<AgentRun> {
   return fetch(`/api/agents/runs/${encodeURIComponent(id)}`).then(json<AgentRun>)
+}
+
+// startAgentDebugRun begins a paused debug session. graph/environment come
+// straight from the canvas's current (possibly unsaved) state rather than
+// the agent's saved definition, so debugging never requires saving first.
+export function startAgentDebugRun(name: string, graph: AgentGraph, environment?: string): Promise<DebugState> {
+  return fetch(`/api/agents/${encodeURIComponent(name)}/debug`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ graph, environment }),
+  }).then(json<DebugState>)
+}
+
+// sendAgentDebugMessage starts a new turn: the input node becomes pending,
+// ready for the first stepAgentDebugRun call.
+export function sendAgentDebugMessage(id: string, message: string): Promise<DebugState> {
+  return fetch(`/api/agents/debug/${encodeURIComponent(id)}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  }).then(json<DebugState>)
+}
+
+// stepAgentDebugRun executes the session's pending node.
+export function stepAgentDebugRun(id: string): Promise<DebugState> {
+  return fetch(`/api/agents/debug/${encodeURIComponent(id)}/step`, { method: 'POST' }).then(json<DebugState>)
+}
+
+// retryAgentDebugRun re-executes the session's most recently stepped node
+// with the exact input it saw, discarding what that attempt produced.
+export function retryAgentDebugRun(id: string): Promise<DebugState> {
+  return fetch(`/api/agents/debug/${encodeURIComponent(id)}/retry`, { method: 'POST' }).then(json<DebugState>)
+}
+
+export function getAgentDebugRun(id: string): Promise<DebugState> {
+  return fetch(`/api/agents/debug/${encodeURIComponent(id)}`).then(json<DebugState>)
+}
+
+export function stopAgentDebugRun(id: string): Promise<void> {
+  return fetch(`/api/agents/debug/${encodeURIComponent(id)}/stop`, { method: 'POST' }).then(() => undefined)
 }
 
 export function listEvaluations(): Promise<Evaluation[]> {

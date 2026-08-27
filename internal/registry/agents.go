@@ -61,7 +61,10 @@ type NodeData struct {
 }
 
 // Node is one node in an agent's graph. Type is one of "input", "prompt",
-// "decision", "tool", "knowledge", "output".
+// "decision", "tool", "knowledge". There's no dedicated "output" type — a
+// node with no outgoing edge for the handle it produces is simply where a
+// turn ends (see internal/agents.Engine), so any node type can be a
+// graph's terminal.
 type Node struct {
 	ID       string   `json:"id"`
 	Type     string   `json:"type"`

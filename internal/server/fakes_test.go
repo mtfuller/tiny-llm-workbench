@@ -493,6 +493,21 @@ type fakeAgentManager struct {
 
 	getResult *agents.Run
 	getOK     bool
+
+	debugStartResult   *agents.DebugState
+	debugStartErr      error
+	debugStarted       []string
+	debugMessageResult *agents.DebugState
+	debugMessageErr    error
+	debugMessages      []string
+	debugStepResult    *agents.DebugState
+	debugStepErr       error
+	debugRetryResult   *agents.DebugState
+	debugRetryErr      error
+	debugGetResult     *agents.DebugState
+	debugGetOK         bool
+	debugStopErr       error
+	debugStoppedRuns   []string
 }
 
 func (f *fakeAgentManager) StartRun(agentName string) (*agents.Run, error) {
@@ -512,6 +527,33 @@ func (f *fakeAgentManager) SendMessage(runID, message string) (agents.ChatMessag
 
 func (f *fakeAgentManager) GetRun(id string) (*agents.Run, bool) {
 	return f.getResult, f.getOK
+}
+
+func (f *fakeAgentManager) StartDebugRun(agentName string, graph registry.Graph, environment string) (*agents.DebugState, error) {
+	f.debugStarted = append(f.debugStarted, agentName)
+	return f.debugStartResult, f.debugStartErr
+}
+
+func (f *fakeAgentManager) SendDebugMessage(id, message string) (*agents.DebugState, error) {
+	f.debugMessages = append(f.debugMessages, message)
+	return f.debugMessageResult, f.debugMessageErr
+}
+
+func (f *fakeAgentManager) StepDebugRun(id string) (*agents.DebugState, error) {
+	return f.debugStepResult, f.debugStepErr
+}
+
+func (f *fakeAgentManager) RetryDebugRun(id string) (*agents.DebugState, error) {
+	return f.debugRetryResult, f.debugRetryErr
+}
+
+func (f *fakeAgentManager) GetDebugRun(id string) (*agents.DebugState, bool) {
+	return f.debugGetResult, f.debugGetOK
+}
+
+func (f *fakeAgentManager) StopDebugRun(id string) error {
+	f.debugStoppedRuns = append(f.debugStoppedRuns, id)
+	return f.debugStopErr
 }
 
 type fakeEvaluationStore struct {

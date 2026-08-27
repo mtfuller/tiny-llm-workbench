@@ -72,8 +72,9 @@ type Manager struct {
 	engine    *Engine
 	bus       *eventbus.Bus
 
-	mu   sync.Mutex
-	runs map[string]*Run
+	mu        sync.Mutex
+	runs      map[string]*Run
+	debugRuns map[string]*debugRun
 }
 
 // NewManager builds a Manager. ctx bounds the lifetime of the LLM/tool calls
@@ -94,6 +95,7 @@ func NewManager(ctx context.Context, agentsReader agentReader, llm llmClient, en
 		engine:    NewEngine(llm, envs, kb),
 		bus:       bus,
 		runs:      make(map[string]*Run),
+		debugRuns: make(map[string]*debugRun),
 	}
 }
 
@@ -202,22 +204,9 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 		return ChatMessage{}, fmt.Errorf("look up agent %q: %w", run.AgentName, err)
 	}
 
-	var tools []registry.Tool
-	if agent.Environment != "" {
-		env, err := m.envReader.GetEnvironment(agent.Environment)
-		if err != nil {
-			return ChatMessage{}, fmt.Errorf("look up environment %q: %w", agent.Environment, err)
-		}
-		// A tool name the environment references but that's since been
-		// deleted from the catalog is skipped here, not an error — the
-		// engine's own "tool not found" reporting for a node that actually
-		// tries to use it is the same graceful-degradation path a tool
-		// removed from the environment already goes through.
-		for _, toolName := range env.Tools {
-			if tool, err := m.toolStore.GetTool(toolName); err == nil {
-				tools = append(tools, tool)
-			}
-		}
+	tools, err := m.resolveTools(agent.Environment)
+	if err != nil {
+		return ChatMessage{}, err
 	}
 
 	reply, err := m.engine.Run(m.ctx, agent.Graph, history, message, run.InstanceID, tools, func(step StepEvent) {
@@ -238,6 +227,33 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 	m.mu.Unlock()
 
 	return assistantMsg, nil
+}
+
+// resolveTools returns the real Tool catalog entries the named Environment
+// makes available (empty if environment is ""), — shared by SendMessage and
+// the step-by-step debugger (see debug.go) so both resolve tools identically.
+func (m *Manager) resolveTools(environment string) ([]registry.Tool, error) {
+	if environment == "" {
+		return nil, nil
+	}
+
+	env, err := m.envReader.GetEnvironment(environment)
+	if err != nil {
+		return nil, fmt.Errorf("look up environment %q: %w", environment, err)
+	}
+
+	var tools []registry.Tool
+	// A tool name the environment references but that's since been deleted
+	// from the catalog is skipped here, not an error — the engine's own
+	// "tool not found" reporting for a node that actually tries to use it
+	// is the same graceful-degradation path a tool removed from the
+	// environment already goes through.
+	for _, toolName := range env.Tools {
+		if tool, err := m.toolStore.GetTool(toolName); err == nil {
+			tools = append(tools, tool)
+		}
+	}
+	return tools, nil
 }
 
 // GetRun returns the run with the given ID, if any.

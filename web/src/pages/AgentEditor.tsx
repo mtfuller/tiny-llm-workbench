@@ -15,6 +15,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import {
   BookOpen,
+  Bug,
   GitBranch,
   LogIn,
   MessageSquare,
@@ -24,12 +25,14 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Play,
+  RotateCcw,
   Settings,
-  SquareArrowOutUpRight,
+  SkipForward,
+  Square,
   Terminal,
   Trash2,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type DragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type DragEvent, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   getAgent,
@@ -37,13 +40,20 @@ import {
   listKnowledgeBases,
   listModels,
   listTools,
+  retryAgentDebugRun,
   saveAgent,
   sendAgentMessage,
+  sendAgentDebugMessage,
+  startAgentDebugRun,
   startAgentRun,
+  stepAgentDebugRun,
+  stopAgentDebugRun,
   stopAgentRun,
+  type AgentGraph,
   type AgentNodeData,
   type AgentStepEvent,
   type ChatMessage,
+  type DebugState,
   type Environment,
   type KnowledgeBase,
   type Model,
@@ -65,7 +75,6 @@ const NODE_COLORS: Record<string, string> = {
   prompt: '#2f6fd6',
   tool: '#2f8f6d',
   knowledge: '#7c5cbf',
-  output: '#d0447a',
 }
 
 function minimapNodeColor(node: FlowNode): string {
@@ -91,10 +100,9 @@ const NODE_META: Record<NodeType, NodeMeta> = {
   decision: { label: 'Decision', icon: GitBranch },
   tool: { label: 'Tool', icon: Terminal },
   knowledge: { label: 'Knowledge', icon: BookOpen },
-  output: { label: 'Output', icon: SquareArrowOutUpRight },
 }
 
-const PALETTE: NodeType[] = ['prompt', 'decision', 'tool', 'knowledge', 'output']
+const PALETTE: NodeType[] = ['prompt', 'decision', 'tool', 'knowledge']
 
 let nodeCounter = 0
 function newNodeId(type: string): string {
@@ -130,6 +138,7 @@ function AgentEditorWorkspace() {
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(true)
+  const [leftTab, setLeftTab] = useState<'nodes' | 'debug'>('nodes')
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -140,6 +149,24 @@ function AgentEditorWorkspace() {
   const [sending, setSending] = useState(false)
   const [steps, setSteps] = useState<AgentStepEvent[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  const [debugState, setDebugState] = useState<DebugState | null>(null)
+  const [debugInput, setDebugInput] = useState('')
+  const [debugBusy, setDebugBusy] = useState(false)
+  const [debugStarting, setDebugStarting] = useState(false)
+  const [debugError, setDebugError] = useState<string | null>(null)
+  // Tracks the latest debugState for the unmount-cleanup effect below,
+  // which otherwise would only ever see the (always null) value captured
+  // when the effect itself was first set up.
+  const debugStateRef = useRef<DebugState | null>(null)
+  useEffect(() => {
+    debugStateRef.current = debugState
+  }, [debugState])
+  useEffect(() => {
+    return () => {
+      if (debugStateRef.current) void stopAgentDebugRun(debugStateRef.current.id).catch(() => {})
+    }
+  }, [])
 
   // Refs for the templatable fields the "insert variable" picker writes
   // into at the current cursor position. toolArgRefs is keyed by parameter
@@ -275,9 +302,22 @@ function AgentEditorWorkspace() {
     updateSelectedNodeData({ toolArgs: { ...(selectedNode?.data.toolArgs ?? {}), [paramName]: value } })
   }
 
-  const handleSave = async () => {
+  // buildGraphPayload maps the canvas's live React Flow state into the
+  // plain AgentGraph shape the backend expects — shared by Save and
+  // StartDebugRun (the latter deliberately debugs this exact, possibly
+  // unsaved, in-progress graph rather than requiring a save first).
+  const buildGraphPayload = (): AgentGraph => ({
+    nodes: nodes.map((n) => ({ id: n.id, type: n.type as NodeType, position: n.position, data: n.data })),
+    edges: edges.map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle ?? undefined, target: e.target })),
+  })
+
+  const findDuplicateNodeName = (): string | undefined => {
     const names = nodes.map((n) => n.data.name?.trim()).filter((n): n is string => !!n)
-    const duplicate = names.find((n, i) => names.indexOf(n) !== i)
+    return names.find((n, i) => names.indexOf(n) !== i)
+  }
+
+  const handleSave = async () => {
+    const duplicate = findDuplicateNodeName()
     if (duplicate) {
       setError(`Node names must be unique — "${duplicate}" is used more than once.`)
       return
@@ -286,15 +326,7 @@ function AgentEditorWorkspace() {
     setSaving(true)
     setError(null)
     try {
-      await saveAgent(
-        name,
-        {
-          nodes: nodes.map((n) => ({ id: n.id, type: n.type as NodeType, position: n.position, data: n.data })),
-          edges: edges.map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle ?? undefined, target: e.target })),
-        },
-        environment || undefined,
-        description || undefined,
-      )
+      await saveAgent(name, buildGraphPayload(), environment || undefined, description || undefined)
       setSavedAt(Date.now())
     } catch (err) {
       setError((err as Error).message)
@@ -347,6 +379,94 @@ function AgentEditorWorkspace() {
     }
   }
 
+  const openDebug = () => {
+    setPaletteOpen(true)
+    setLeftTab('debug')
+    if (!debugState) void handleStartDebug()
+  }
+
+  const stopDebugging = () => {
+    if (debugState) void stopAgentDebugRun(debugState.id).catch(() => {})
+    setDebugState(null)
+    setDebugInput('')
+    setDebugError(null)
+  }
+
+  const handleStartDebug = async () => {
+    const duplicate = findDuplicateNodeName()
+    if (duplicate) {
+      setDebugError(`Node names must be unique — "${duplicate}" is used more than once.`)
+      return
+    }
+
+    setDebugStarting(true)
+    setDebugError(null)
+    try {
+      const state = await startAgentDebugRun(name, buildGraphPayload(), environment || undefined)
+      setDebugState(state)
+    } catch (err) {
+      setDebugError((err as Error).message)
+    } finally {
+      setDebugStarting(false)
+    }
+  }
+
+  const handleSendDebugMessage = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!debugState || !debugInput.trim()) return
+
+    setDebugBusy(true)
+    setDebugError(null)
+    try {
+      const state = await sendAgentDebugMessage(debugState.id, debugInput.trim())
+      setDebugState(state)
+      setDebugInput('')
+    } catch (err) {
+      setDebugError((err as Error).message)
+    } finally {
+      setDebugBusy(false)
+    }
+  }
+
+  const handleDebugStep = async () => {
+    if (!debugState) return
+    setDebugBusy(true)
+    setDebugError(null)
+    try {
+      setDebugState(await stepAgentDebugRun(debugState.id))
+    } catch (err) {
+      setDebugError((err as Error).message)
+    } finally {
+      setDebugBusy(false)
+    }
+  }
+
+  const handleDebugRetry = async () => {
+    if (!debugState) return
+    setDebugBusy(true)
+    setDebugError(null)
+    try {
+      setDebugState(await retryAgentDebugRun(debugState.id))
+    } catch (err) {
+      setDebugError((err as Error).message)
+    } finally {
+      setDebugBusy(false)
+    }
+  }
+
+  // nodesForCanvas overlays the active debug session's pending/last-executed
+  // node onto a copy of the real canvas nodes, purely for rendering — Save
+  // and StartDebugRun both read from `nodes` directly, so this highlight
+  // flag never reaches the backend.
+  const nodesForCanvas = useMemo(() => {
+    if (!debugState) return nodes
+    return nodes.map((n) => {
+      const debugHighlight: 'pending' | 'executed' | undefined =
+        debugState.pendingNodeId === n.id ? 'pending' : debugState.lastStep?.nodeId === n.id ? 'executed' : undefined
+      return debugHighlight ? { ...n, data: { ...n.data, debugHighlight } } : n
+    })
+  }, [nodes, debugState])
+
   return (
     <div className="agent-editor">
       <div className="agent-editor-header">
@@ -374,6 +494,9 @@ function AgentEditorWorkspace() {
             {saving ? 'Saving…' : 'Save'}
           </button>
           {savedAt && <span className="hint">Saved</span>}
+          <button type="button" onClick={openDebug}>
+            <Bug size={14} /> Debug
+          </button>
           <button type="button" className="button-primary" onClick={openChat}>
             <Play size={14} /> Run
           </button>
@@ -384,37 +507,137 @@ function AgentEditorWorkspace() {
 
       <div className="agent-workspace">
         {paletteOpen && (
-          <aside className="agent-palette">
-            <div className="agent-palette-label">Nodes</div>
-            {PALETTE.map((type) => {
-              const { label, icon: Icon } = NODE_META[type]
-              return (
-                <div
-                  key={type}
-                  className="palette-item"
-                  draggable
-                  onDragStart={(e) => onDragStart(e, type)}
-                  onClick={() => addNode(type)}
-                >
-                  <Icon size={15} />
-                  {label}
-                </div>
-              )
-            })}
-            <p className="hint">Drag onto the canvas, or click to add.</p>
-
-            <div className="agent-palette-footer">
-              <button type="button" className="palette-settings-button" onClick={() => setSettingsOpen(true)}>
-                <Settings size={15} /> Agent settings
+          <aside className={`agent-palette${leftTab === 'debug' ? ' agent-palette-wide' : ''}`}>
+            <div className="tab-bar">
+              <button
+                type="button"
+                className={`tab-button${leftTab === 'nodes' ? ' tab-button-active' : ''}`}
+                onClick={() => setLeftTab('nodes')}
+              >
+                Nodes
+              </button>
+              <button type="button" className={`tab-button${leftTab === 'debug' ? ' tab-button-active' : ''}`} onClick={openDebug}>
+                Debug
               </button>
             </div>
+
+            {leftTab === 'nodes' && (
+              <>
+                {PALETTE.map((type) => {
+                  const { label, icon: Icon } = NODE_META[type]
+                  return (
+                    <div
+                      key={type}
+                      className="palette-item"
+                      draggable
+                      onDragStart={(e) => onDragStart(e, type)}
+                      onClick={() => addNode(type)}
+                    >
+                      <Icon size={15} />
+                      {label}
+                    </div>
+                  )
+                })}
+                <p className="hint">Drag onto the canvas, or click to add.</p>
+
+                <div className="agent-palette-footer">
+                  <button type="button" className="palette-settings-button" onClick={() => setSettingsOpen(true)}>
+                    <Settings size={15} /> Agent settings
+                  </button>
+                </div>
+              </>
+            )}
+
+            {leftTab === 'debug' && (
+              <div className="agent-debug-panel">
+                {!debugState && debugStarting && <p className="hint">Starting a debug session…</p>}
+                {!debugState && !debugStarting && (
+                  <button type="button" className="button-primary" onClick={handleStartDebug}>
+                    <Bug size={14} /> Start debugging
+                  </button>
+                )}
+                {debugError && <p className="error">{debugError}</p>}
+                {debugState && (
+                  <>
+                    <div className="chat-log agent-debug-log">
+                      {debugState.messages.length === 0 && (
+                        <p className="hint">Send a message to start a turn, then Step through each node to watch it play out.</p>
+                      )}
+                      {debugState.messages.map((m, i) => (
+                        <div key={i} className={`chat-message chat-message-${m.role}`}>
+                          <span className="chat-role">{m.role}</span>
+                          <span>{m.content}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <form className="stacked-form" onSubmit={handleSendDebugMessage}>
+                      <input
+                        type="text"
+                        placeholder="Type a message…"
+                        value={debugInput}
+                        onChange={(e) => setDebugInput(e.target.value)}
+                        disabled={debugBusy || !!debugState.pendingNodeId}
+                      />
+                      <button type="submit" disabled={debugBusy || !debugInput.trim() || !!debugState.pendingNodeId}>
+                        {debugBusy ? 'Sending…' : 'Send'}
+                      </button>
+                    </form>
+
+                    {debugState.pendingNodeId && (
+                      <p className="field-hint">
+                        Next: <code>{debugState.pendingNodeType}</code> — highlighted with a dashed outline on the canvas.
+                      </p>
+                    )}
+                    {!debugState.pendingNodeId && debugState.lastStep && debugState.messages.length > 0 && (
+                      <p className="field-hint">Turn finished — send another message, or retry the last node for a different reply.</p>
+                    )}
+
+                    <div className="row-actions">
+                      {debugState.lastStep && (
+                        <button
+                          type="button"
+                          className="icon-button"
+                          title={`Retry ${debugState.lastStep.nodeType}`}
+                          aria-label="Retry last node"
+                          onClick={handleDebugRetry}
+                          disabled={debugBusy}
+                        >
+                          <RotateCcw size={15} />
+                        </button>
+                      )}
+                      {debugState.pendingNodeId && (
+                        <button type="button" className="button-primary" onClick={handleDebugStep} disabled={debugBusy}>
+                          <SkipForward size={14} /> Step
+                        </button>
+                      )}
+                    </div>
+
+                    {debugState.lastStep && (
+                      <>
+                        <div className="agent-palette-label">
+                          Last step — {debugState.lastStep.nodeType}
+                        </div>
+                        <pre className="exec-output agent-debug-output">{debugState.lastStep.output || '(empty output)'}</pre>
+                      </>
+                    )}
+
+                    <div className="agent-palette-footer">
+                      <button type="button" className="palette-settings-button" onClick={stopDebugging}>
+                        <Square size={15} /> Stop debugging
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </aside>
         )}
 
         <div className="agent-canvas-area" ref={canvasRef} onDragOver={onDragOver} onDrop={onDrop}>
           {loaded && (
             <ReactFlow
-              nodes={nodes}
+              nodes={nodesForCanvas}
               edges={edges}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
@@ -797,6 +1020,7 @@ function AgentEditorWorkspace() {
           )}
         </Modal>
       )}
+
     </div>
   )
 }

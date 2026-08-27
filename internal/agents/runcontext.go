@@ -46,6 +46,18 @@ func (rc *runContext) set(name, raw string, parsed any) {
 	rc.results[name] = nodeResult{raw: raw, parsed: parsed}
 }
 
+// clone returns an independent copy of rc — used by the step-by-step
+// debugger (see debug.go) to snapshot the accumulated context right before
+// a node runs, so Retry can restore exactly that state and re-run the node
+// fresh, discarding whatever that attempt contributed.
+func (rc *runContext) clone() *runContext {
+	results := make(map[string]nodeResult, len(rc.results))
+	for k, v := range rc.results {
+		results[k] = v
+	}
+	return &runContext{results: results}
+}
+
 // templateExprPattern matches a single {{...}} placeholder, capturing its
 // inner text verbatim (further split on the first "." by render) — this
 // intentionally avoids a more elaborate regex trying to parse the name and

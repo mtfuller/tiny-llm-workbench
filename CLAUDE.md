@@ -523,6 +523,104 @@ choice:
   Responder's actual prompt had `{{Classifier.city}}` correctly resolved to "Paris" (the final reply was
   specifically about Parisian food, not a generic answer) — the core cross-node-reference and
   schema-property-access mechanism working end-to-end against a real model's real output, not a mock.
+
+  **2026-08-27 addendum — dedicated "output" node type removed; step-by-step debugger added:** the user
+  asked for three visual/structural cleanups to the canvas (no colored shadows on nodes, no "back
+  rectangle" border around input/output nodes, and outright removing the Output node type/disallowing it
+  from drag-and-drop) plus a new debug feature to pause and step through a run node-by-node, retrying a
+  node's execution to iterate quickly.
+
+  The "back rectangle" turned out to be a real, previously-unnoticed CSS bug, not a styling preference:
+  xyflow's own base stylesheet re-declares `--xy-node-border-default`/`--xy-node-background-color-default`
+  (etc.) directly on the `.react-flow` element itself, not just `:root` — so this project's existing
+  override on the ANCESTOR `.agent-canvas-area` was being inherited away the moment it reached `.react-flow`,
+  and every node wrapper fell back to xyflow's own hardcoded white background/dark border/box-shadow
+  underneath this project's own `.flow-node` box. Fixed by redeclaring those custom properties on
+  `.agent-canvas-area .react-flow` itself (the element that actually needs to win the cascade), not merely
+  an ancestor. `.flow-node`'s own subtle box-shadow was also removed, and the `.selected` state's
+  accent-colored box-shadow ring was replaced with a `border-color` change instead — no `box-shadow`
+  anywhere on a flow node now.
+
+  The dedicated "output" node type was removed from the taxonomy entirely (registry doc comment, the
+  frontend palette/`NODE_META`/`NODE_COLORS`, `agentNodes.tsx`'s `nodeTypes` map, the CSS
+  `.flow-node-output`/`.inspector-node-header-output` rules) — a clean cutover, no back-compat shim, per
+  this project's established precedent for design changes with no real user data to migrate.
+  `internal/agents.Engine.Run`'s termination condition changed from "reached a node of type output" to "the
+  current node has no outgoing edge for the handle it produced" — any node type can now be a graph's
+  terminal simply by not connecting its output handle to anything, so a user never has to remember to wire
+  up a trailing node just to mark "this is the end." This is a strict generalization, not a special case:
+  the engine's per-node-type switch was refactored into a `runNode` helper returning
+  `(output, handle, error)`, with `Run`'s loop doing the edge lookup and either continuing or returning
+  once for every node type uniformly. A genuine, previously-undiagnosed bug surfaced and was fixed in the
+  same pass: `StepEvent.Output` used to report the value flowing INTO a node (captured before that node's
+  own logic ran), not what the node itself produced — confirmed by re-reading a live verification trace
+  from an earlier session (the Knowledge-node addendum above) that had quietly relied on this off-by-one
+  without recognizing it as a bug. `runNode`'s restructuring fixed this as a side effect: `onStep` now
+  fires with each node's own output. New agents no longer seed a default Output node
+  (`web/src/pages/Agents.tsx`'s create flow now creates just the Input node).
+
+  Went looking for the "output check" the user asked to remove from Evaluations' UI/logic specifically
+  (per their request) and found none — Evaluations has never had an explicit "does this agent reach an
+  Output node" validation anywhere in `internal/evaluations` or its frontend; the only related failure
+  mode was the ENGINE erroring on any dead-end node (regardless of type), which the termination-semantics
+  change above already eliminates at the source. Nothing further to remove there — flagged rather than
+  silently assumed away, in case the user meant something this session didn't find.
+
+  **The debugger's design went through one real revision, live, mid-implementation:** the user first
+  asked (via `AskUserQuestion`, "Recommended" chosen both times) for a separate "Debug" entry point rather
+  than augmenting the existing Run/chat modal, and for the currently-executing node to be highlighted on
+  the canvas — but after seeing the first working version as a `<Modal>` popup, the user interrupted
+  mid-turn to ask for it to live as a new tab on the left workspace sidebar instead, "so you can watch it
+  play out and watch events" alongside the canvas rather than in a popup covering it. Rebuilt accordingly:
+  the left sidebar (`.agent-palette`) gained a `Nodes`/`Debug` segmented-pill tab pair (reusing the
+  existing `.tab-bar`/`.tab-button` minimal-UI component), widening itself only while the Debug tab is
+  active (`.agent-palette-wide`) to fit a compact chat log, message input, Step/Retry controls, and the
+  last step's raw output — all inline, with the canvas and the node inspector still fully visible and
+  usable at the same time (you can click a different node on canvas to inspect it on the right while a
+  debug turn is paused on the left). The header's own "Debug" button still exists as a shortcut that opens
+  the sidebar and switches to the tab if it's collapsed or showing Nodes.
+
+  Backend: `internal/agents/debug.go` adds a `DebugRun` (internal) / `DebugState` (exported JSON view)
+  session type and six `Manager` methods — `StartDebugRun`, `SendDebugMessage`, `StepDebugRun`,
+  `RetryDebugRun`, `StopDebugRun`, `GetDebugRun` — tracked in their own `debugRuns` map alongside the
+  existing `runs` map. Two real design decisions were made explicitly rather than assumed:
+  - **Debugging targets the canvas's current, possibly-unsaved graph, not the agent's saved definition.**
+    `StartDebugRun(agentName, graph, environment)` takes the graph/environment straight from the request
+    body — the frontend sends its live React Flow `nodes`/`edges` state — so trying out an in-progress edit
+    never requires a Save round-trip first. This is a natural extension of "make it as easy as possible to
+    iterate and experiment," decided without a separate question since it was clearly implied by that
+    framing and costs nothing extra to build (the same graph-to-payload mapping `handleSave` already did
+    was just factored out into a shared `buildGraphPayload()` helper).
+  - **Retry re-runs only the single most-recently-executed node**, not everything downstream of some
+    earlier point — matching "retry a node's execution" literally, and far simpler to reason about than a
+    partial-replay model. Implemented via two `runContext` snapshots on the session: `rc` (the live,
+    accumulating context) and `rcBeforeLast` (a clone taken immediately before the last-executed node ran,
+    via the new `runContext.clone()`). `Retry` restores `rc = rcBeforeLast.clone()` and re-runs that same
+    node with the same recorded input, so a retried prompt node's fresh (possibly different) reply
+    correctly propagates to whatever runs after it, while never re-touching anything upstream. A retried
+    tool node's command genuinely re-executes for real — documented as an inherent limit of debugging live
+    side effects, not something papered over.
+
+  A node with no outgoing edge is a valid turn-ending step in a debug session too (same as in a real Run);
+  reaching one via Step or Retry marks the session `Finished` and appends the turn's assistant message.
+  Retrying an already-finished turn's terminal node replaces that trailing assistant message with the
+  fresh output rather than leaving the discarded attempt's text in history (a real bug caught by a unit
+  test before it ever reached the browser — the first draft of `applyStepResult` only appended a message
+  the *first* time a turn finished, silently no-op'ing on a post-finish retry).
+
+  A real UX bug was also caught live, not just in code review: after clicking "Stop debugging," the panel
+  kept showing "Starting a debug session…" indefinitely with no way to begin again, because that message's
+  visibility condition (`!debugState && !debugError`) doesn't distinguish "a start request is in flight"
+  from "idle after an explicit stop." Fixed by adding a dedicated `debugStarting` boolean and an explicit
+  "Start debugging" button for the idle state, verified by reproducing the stuck state live and confirming
+  the fix restores a working start/stop/restart cycle.
+
+  Fully verified live against a real local MLX model, end-to-end, no mocks: sent "Tell me a fun fact." in
+  a debug session with no Output node in the graph, watched the Input node's canvas outline change from
+  dashed (pending) to solid green (executed) as each Step ran, confirmed the Prompt node's own reply (not
+  the input passed into it) appeared as its step's output, retried that same node and got a genuinely
+  different sampled reply that correctly replaced the finished turn's assistant message in place, and
+  confirmed Stop → Start correctly tears down and relaunches a fresh session.
 - **Evaluation runner**: how assertions are expressed and checked against agent output, and how
   environment starting state is set up per-test (Phase 4).
   **Decided:** assertions are deterministic rules — `contains` / `not_contains` / `regex` — checked

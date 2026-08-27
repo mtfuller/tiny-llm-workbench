@@ -31,8 +31,11 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
 - **Knowledge** — Define named knowledge bases of title/content records an agent can query. Matching is
   a deterministic keyword search (every query word must appear in the record), not embeddings or a
   vector store — consistent with the rest of TLW's deterministic, non-LLM-graded decision points.
-- **Agents** — Design agents visually on a canvas: connect prompt, model, tool, knowledge, decision, and
-  input/output nodes into a workflow. Each agent can target a specific Environment (for its tool nodes).
+- **Agents** — Design agents visually on a canvas: connect input, prompt, tool, knowledge, and decision
+  nodes into a workflow — any node with nothing connected downstream of it is simply where a turn ends, so
+  there's no separate "output" node to remember to wire up. Each agent can target a specific Environment
+  (for its tool nodes). A step-by-step debugger lets you pause a turn, Step through one node at a time to
+  see exactly what it produced, and Retry a node to get a fresh result before deciding to move on.
 - **Evaluations** — Define versioned test suites against your agents: a prompt, optional setup commands
   to prepare a realistic scenario (seed files, init a repo) in the agent's own Environment before its
   turn, assertions on the reply, and optional verify commands checking the environment's resulting state
@@ -80,8 +83,9 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         "knowledge" canvas node queries one directly.
 - [x] **Phase 3 — Agents**
   - [x] Add an Agents page to the navbar
-  - [x] Visual canvas for building agent workflows (input, prompt, output, decision, tool, knowledge
-        nodes) — built with React Flow. Agent settings (which Environment it targets, plus a free-text
+  - [x] Visual canvas for building agent workflows (input, prompt, decision, tool, knowledge nodes — no
+        separate "output" node type; any node with nothing connected downstream of it is simply where a
+        turn ends) — built with React Flow. Agent settings (which Environment it targets, plus a free-text
         description) live
         in a settings modal opened from the left node palette, not an always-visible sidebar block. A
         professional-looking, node-type-colored right-sidebar inspector configures each selected node; a
@@ -109,6 +113,13 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         real local MLX model (served via `mlx_lm.server`, TLW's inference backend — see CLAUDE.md's MLX
         integration note): canvas building, saving, chatting, and the live step-by-step execution log
         all work end-to-end.
+  - [x] Step-by-step debugger — a "Debug" tab alongside the node palette lets you pause a turn and Step
+        through it one node at a time, watching the pending/most-recently-executed node highlighted live
+        on the canvas, with a Retry to re-sample a node's result before moving on. Debugs the canvas's
+        current, possibly-unsaved graph — no need to Save first. Fully verified live end-to-end with a
+        real local MLX model: stepped through a turn, retried a prompt node to get a genuinely different
+        reply that correctly replaced the finished turn's message, and confirmed the canvas highlight and
+        stop/restart lifecycle all work correctly.
 - [x] **Phase 4 — Evaluations**
   - [x] Add an Evaluations page to the navbar
   - [x] Define tests (prompt, assertions) against a set of agents in one environment — assertions are

@@ -56,17 +56,17 @@ func (f *fakeKnowledgeReader) GetKnowledgeBase(name string) (registry.KnowledgeB
 	return kb, nil
 }
 
-// linearGraph is input -> prompt -> output.
+// linearGraph is input -> prompt, with the prompt node left as a dead
+// end — there's no dedicated "output" node type; a node with no outgoing
+// edge is simply where the turn ends.
 func linearGraph() registry.Graph {
 	return registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input"},
 			{ID: "p1", Type: "prompt", Data: registry.NodeData{Model: "qwen2.5:0.5b", SystemPrompt: "Be nice."}},
-			{ID: "out", Type: "output"},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "p1"},
-			{ID: "e2", Source: "p1", Target: "out"},
 		},
 	}
 }
@@ -83,8 +83,11 @@ func TestRunLinearGraph(t *testing.T) {
 	if reply != "hello there!" {
 		t.Errorf("Run() = %q, want %q", reply, "hello there!")
 	}
-	if len(steps) != 3 || steps[0].NodeType != "input" || steps[1].NodeType != "prompt" || steps[2].NodeType != "output" {
-		t.Errorf("steps = %+v, want input, prompt, output in order", steps)
+	if len(steps) != 2 || steps[0].NodeType != "input" || steps[1].NodeType != "prompt" {
+		t.Errorf("steps = %+v, want input, prompt in order", steps)
+	}
+	if steps[1].Output != "hello there!" {
+		t.Errorf("steps[1].Output = %q, want the prompt node's own reply (%q), not the input passed into it", steps[1].Output, "hello there!")
 	}
 	if len(llm.calls) != 1 || !strings.Contains(llm.calls[0], "Be nice.") || !strings.Contains(llm.calls[0], "USER: hi") {
 		t.Errorf("llm.calls = %v, want a single prompt containing the system prompt and user message", llm.calls)
@@ -106,7 +109,7 @@ func TestRunIncludesHistory(t *testing.T) {
 }
 
 // decisionGraph is input -> decision (yes: prompt "matched", no: prompt
-// "unmatched") -> output.
+// "unmatched"), with each branch's prompt node left as a dead end.
 func decisionGraph(keyword string) registry.Graph {
 	return registry.Graph{
 		Nodes: []registry.Node{
@@ -114,14 +117,11 @@ func decisionGraph(keyword string) registry.Graph {
 			{ID: "d1", Type: "decision", Data: registry.NodeData{Keyword: keyword}},
 			{ID: "yes", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "matched branch"}},
 			{ID: "no", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "unmatched branch"}},
-			{ID: "out", Type: "output"},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "d1"},
 			{ID: "e2", Source: "d1", SourceHandle: "yes", Target: "yes"},
 			{ID: "e3", Source: "d1", SourceHandle: "no", Target: "no"},
-			{ID: "e4", Source: "yes", Target: "out"},
-			{ID: "e5", Source: "no", Target: "out"},
 		},
 	}
 }
@@ -172,7 +172,7 @@ func TestRunDecisionKeywordCaseInsensitive(t *testing.T) {
 }
 
 func TestRunNoInputNode(t *testing.T) {
-	graph := registry.Graph{Nodes: []registry.Node{{ID: "out", Type: "output"}}}
+	graph := registry.Graph{Nodes: []registry.Node{{ID: "p1", Type: "prompt"}}}
 	engine := NewEngine(&fakeLLM{}, &fakeTools{}, &fakeKnowledgeReader{})
 
 	if _, err := engine.Run(context.Background(), graph, nil, "hi", "", nil, nil); err == nil {
@@ -189,15 +189,21 @@ func TestRunMultipleInputNodes(t *testing.T) {
 	}
 }
 
-func TestRunDeadEndNode(t *testing.T) {
+func TestRunDeadEndNodeIsAValidTerminal(t *testing.T) {
+	// There's no dedicated "output" node type — any node with no outgoing
+	// edge is simply where the turn ends, and its own output is the reply.
 	graph := registry.Graph{
 		Nodes: []registry.Node{{ID: "in", Type: "input"}, {ID: "p1", Type: "prompt"}},
 		Edges: []registry.Edge{{ID: "e1", Source: "in", Target: "p1"}},
 	}
 	engine := NewEngine(&fakeLLM{responses: []string{"reply"}}, &fakeTools{}, &fakeKnowledgeReader{})
 
-	if _, err := engine.Run(context.Background(), graph, nil, "hi", "", nil, nil); err == nil {
-		t.Error("Run() error = nil, want an error when a non-output node has no outgoing edge")
+	reply, err := engine.Run(context.Background(), graph, nil, "hi", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want a dead-end node to terminate the turn successfully", err)
+	}
+	if reply != "reply" {
+		t.Errorf("Run() = %q, want %q", reply, "reply")
 	}
 }
 
@@ -234,11 +240,9 @@ func TestRunDuplicateNodeNames(t *testing.T) {
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Step"}},
 			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Step", Model: "m"}},
-			{ID: "out", Type: "output"},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "p1"},
-			{ID: "e2", Source: "p1", Target: "out"},
 		},
 	}
 	engine := NewEngine(&fakeLLM{responses: []string{"reply"}}, &fakeTools{}, &fakeKnowledgeReader{})
@@ -248,18 +252,16 @@ func TestRunDuplicateNodeNames(t *testing.T) {
 	}
 }
 
-// toolGraph is input(named "Input") -> tool -> output, with the tool node
-// configured by data.
+// toolGraph is input(named "Input") -> tool, with the tool node configured
+// by data and left as a dead end.
 func toolGraph(data registry.NodeData) registry.Graph {
 	return registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
 			{ID: "t1", Type: "tool", Data: data},
-			{ID: "out", Type: "output"},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "t1"},
-			{ID: "e2", Source: "t1", Target: "out"},
 		},
 	}
 }
@@ -411,19 +413,18 @@ func TestRunToolNodeError(t *testing.T) {
 
 // schemaChainGraph is input(named "Input") -> prompt(named "Classifier",
 // OutputSchema requiring a "city" string) -> prompt(named "Responder",
-// PromptTemplate referencing {{Classifier.city}}) -> output.
+// PromptTemplate referencing {{Classifier.city}}), with Responder left as a
+// dead end.
 func schemaChainGraph(outputSchema, promptTemplate string) registry.Graph {
 	return registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
 			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Classifier", Model: "m", OutputSchema: outputSchema}},
 			{ID: "p2", Type: "prompt", Data: registry.NodeData{Name: "Responder", Model: "m", PromptTemplate: promptTemplate}},
-			{ID: "out", Type: "output"},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "p1"},
 			{ID: "e2", Source: "p1", Target: "p2"},
-			{ID: "e3", Source: "p2", Target: "out"},
 		},
 	}
 }
@@ -506,15 +507,12 @@ func TestRunDecisionMatchTemplateChecksNamedNodeProperty(t *testing.T) {
 			{ID: "d1", Type: "decision", Data: registry.NodeData{Keyword: "positive", MatchTemplate: "{{Analyzer.sentiment}}"}},
 			{ID: "yes", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "happy branch"}},
 			{ID: "no", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "sad branch"}},
-			{ID: "out", Type: "output"},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "p1"},
 			{ID: "e2", Source: "p1", Target: "d1"},
 			{ID: "e3", Source: "d1", SourceHandle: "yes", Target: "yes"},
 			{ID: "e4", Source: "d1", SourceHandle: "no", Target: "no"},
-			{ID: "e5", Source: "yes", Target: "out"},
-			{ID: "e6", Source: "no", Target: "out"},
 		},
 	}
 	llm := &fakeLLM{responses: []string{`{"sentiment": "positive", "confidence": 0.9}`, "took happy branch"}}
@@ -532,18 +530,16 @@ func TestRunDecisionMatchTemplateChecksNamedNodeProperty(t *testing.T) {
 	}
 }
 
-// knowledgeGraph is input(named "Input") -> knowledge -> output, with the
-// knowledge node configured by data.
+// knowledgeGraph is input(named "Input") -> knowledge, with the knowledge
+// node configured by data and left as a dead end.
 func knowledgeGraph(data registry.NodeData) registry.Graph {
 	return registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
 			{ID: "k1", Type: "knowledge", Data: data},
-			{ID: "out", Type: "output"},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "k1"},
-			{ID: "e2", Source: "k1", Target: "out"},
 		},
 	}
 }
@@ -648,12 +644,10 @@ func TestRunKnowledgeNodeDownstreamReference(t *testing.T) {
 			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
 			{ID: "k1", Type: "knowledge", Data: registry.NodeData{Name: "KB", KnowledgeBaseName: "faq", KnowledgeQuery: "{{Input}}"}},
 			{ID: "p1", Type: "prompt", Data: registry.NodeData{Model: "m", PromptTemplate: "Answer using this context: {{KB}}"}},
-			{ID: "out", Type: "output"},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "k1"},
 			{ID: "e2", Source: "k1", Target: "p1"},
-			{ID: "e3", Source: "p1", Target: "out"},
 		},
 	}
 	llm := &fakeLLM{responses: []string{"final reply"}}
