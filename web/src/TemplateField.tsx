@@ -1,7 +1,7 @@
 import { Braces } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AgentNodeData } from './api'
+import { usePopoverMenu } from './usePopoverMenu'
 
 export interface VariableOption {
   insert: string // e.g. "Classifier" or "Classifier.city" — goes inside {{...}}
@@ -99,47 +99,14 @@ interface VariableMenuButtonProps {
 
 // VariableMenuButton is a small icon button that opens a popover listing
 // every {{...}} reference available at this point in the graph, inserting
-// the chosen one at the caller's field's cursor position on click. Mirrors
-// FilterMenu's portal-to-body popover pattern.
+// the chosen one at the caller's field's cursor position on click.
 export function VariableMenuButton({ options, onInsert }: VariableMenuButtonProps) {
-  const [open, setOpen] = useState(false)
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null)
-  const buttonRef = useRef<HTMLButtonElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const rect = buttonRef.current?.getBoundingClientRect()
-    // Anchor from the button's right edge, not its left: this button
-    // typically sits at the right edge of the (narrow, fixed-width)
-    // inspector sidebar, where a left-anchored popover would overflow the
-    // viewport — right-anchoring against a coordinate that's always
-    // on-screen guarantees the menu never gets clipped.
-    if (rect) setMenuPos({ top: rect.bottom + 6, right: window.innerWidth - rect.right })
-
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return
-      setOpen(false)
-    }
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    const handleScroll = () => setOpen(false)
-    document.addEventListener('mousedown', handleClick)
-    document.addEventListener('keydown', handleKey)
-    window.addEventListener('scroll', handleScroll, true)
-    return () => {
-      document.removeEventListener('mousedown', handleClick)
-      document.removeEventListener('keydown', handleKey)
-      window.removeEventListener('scroll', handleScroll, true)
-    }
-  }, [open])
+  const { open, setOpen, position, triggerRef, menuRef } = usePopoverMenu()
 
   return (
-    <div className="variable-menu-anchor">
+    <div className="dropdown-menu-anchor">
       <button
-        ref={buttonRef}
+        ref={triggerRef}
         type="button"
         className="icon-button"
         title="Insert a reference to an earlier node's output"
@@ -149,15 +116,15 @@ export function VariableMenuButton({ options, onInsert }: VariableMenuButtonProp
         <Braces size={14} />
       </button>
       {open &&
-        menuPos &&
+        position &&
         createPortal(
-          <div className="variable-menu" ref={menuRef} style={{ top: menuPos.top, right: menuPos.right }}>
-            {options.length === 0 && <p className="variable-menu-empty">No named upstream nodes yet.</p>}
+          <div className="dropdown-menu" ref={menuRef} style={{ top: position.top, right: position.right }}>
+            {options.length === 0 && <p className="dropdown-menu-empty">No named upstream nodes yet.</p>}
             {options.map((opt) => (
               <button
                 key={opt.insert}
                 type="button"
-                className="variable-menu-item"
+                className="dropdown-menu-item dropdown-menu-item-mono"
                 onClick={() => {
                   onInsert(`{{${opt.insert}}}`)
                   setOpen(false)

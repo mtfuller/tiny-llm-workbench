@@ -9,6 +9,12 @@
   --warn: #b8792f;
   --danger: #b6482f;
   --minimap-mask: rgba(43, 35, 24, 0.06);
+  /* A custom-property holding the whole url(...) value (not a color
+     fragment spliced into one — CSS can't interpolate a var() inside a
+     quoted data-URI string) is how a <select>'s decorative chevron stays
+     theme-aware without a JS-driven redraw: swap the entire value per
+     theme block, same selectors as every other themed token here. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238a7f6a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 
   font: 15px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
   color-scheme: light dark;
@@ -25,6 +31,7 @@
     --accent: #e0916d;
     --accent-soft: rgba(224, 145, 109, 0.16);
     --minimap-mask: rgba(0, 0, 0, 0.35);
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a89c8a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
     color-scheme: dark;
   }
 }
@@ -39,6 +46,7 @@
   --accent: #e0916d;
   --accent-soft: rgba(224, 145, 109, 0.16);
   --minimap-mask: rgba(0, 0, 0, 0.35);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a89c8a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
 
@@ -683,7 +691,7 @@ a.nav-item:hover {
    popover in place of one chip per tag, so the toolbar stays a fixed width
    no matter how many tags a dataset has. */
 
-.filter-menu-anchor {
+.dropdown-menu-anchor {
   position: relative;
 }
 
@@ -708,23 +716,27 @@ a.nav-item:hover {
   text-align: center;
 }
 
-.filter-menu {
+/* Shared shell for every button-triggered popover in the app (FilterMenu,
+   VariableMenuButton) — one place to keep them looking and behaving alike,
+   rather than each owning a near-duplicate of the same block. */
+.dropdown-menu {
   position: fixed;
   z-index: 1000;
   min-width: 180px;
+  max-width: 280px;
   max-height: 320px;
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 0.4rem;
+  padding: 0.35rem;
   box-shadow: 0 4px 16px color-mix(in srgb, var(--text) 14%, transparent);
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
 }
 
-.filter-menu-group-title {
+.dropdown-menu-group-title {
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -732,30 +744,51 @@ a.nav-item:hover {
   padding: 0.3rem 0.4rem 0.15rem;
 }
 
-.filter-menu-divider {
+.dropdown-menu-divider {
   border-top: 1px solid var(--border);
   margin: 0.3rem 0;
 }
 
-.filter-menu-item {
+/* Base item look, shared by a checkbox row (FilterMenu) and a plain action
+   button (VariableMenuButton) — the two modifiers below only change what
+   has to differ (a <label>+checkbox vs. a <button>, monospace for a
+   {{...}} snippet vs. plain text for a tag name). */
+.dropdown-menu-item {
   display: flex;
   align-items: center;
+  width: 100%;
   gap: 0.5rem;
-  padding: 0.3rem 0.4rem;
+  padding: 0.35rem 0.5rem;
+  border: none;
   border-radius: 6px;
+  background: none;
+  color: inherit;
   font-size: 0.85rem;
+  text-align: left;
   cursor: pointer;
 }
 
-.filter-menu-item:hover {
+.dropdown-menu-item:hover {
   background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
-.filter-menu-item input {
+.dropdown-menu-item-checkbox input {
   width: auto;
 }
 
-.filter-menu-clear {
+.dropdown-menu-item-mono {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+}
+
+.dropdown-menu-empty {
+  margin: 0;
+  padding: 0.5rem;
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--text) 50%, transparent);
+}
+
+.dropdown-menu-clear {
   background: none;
   color: var(--accent);
   border: none;
@@ -768,7 +801,7 @@ a.nav-item:hover {
   text-align: left;
 }
 
-.filter-menu-clear:hover {
+.dropdown-menu-clear:hover {
   filter: none;
   background: color-mix(in srgb, var(--text) 6%, transparent);
 }
@@ -936,6 +969,20 @@ select {
   border-radius: 8px;
   padding: 0.45rem 0.65rem;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+/* Every native <select> in the app gets the same custom chevron instead of
+   whatever the browser/OS draws by default — one of the few remaining
+   spots where a form control didn't match the rest of the app's own
+   (lucide-icon-driven) visual language. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 15px;
+  padding-right: 2.1rem;
 }
 
 input:focus-visible,
@@ -1445,50 +1492,12 @@ textarea {
   flex-shrink: 0;
 }
 
-.variable-menu-anchor {
+/* VariableMenuButton's anchor needs to disappear from layout entirely here
+   (its icon-button becomes a direct flex child of the row, alongside the
+   textarea/input) rather than the plain positioning box .dropdown-menu-anchor
+   is everywhere else it's used. */
+.template-field-row .dropdown-menu-anchor {
   display: contents;
-}
-
-.variable-menu {
-  position: fixed;
-  z-index: 1000;
-  min-width: 200px;
-  max-width: 280px;
-  max-height: 260px;
-  overflow-y: auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.35rem;
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 12%, transparent);
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-}
-
-.variable-menu-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 0.35rem 0.5rem;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  font-size: 0.82rem;
-  font-family: var(--font-mono, monospace);
-  cursor: pointer;
-  color: inherit;
-}
-
-.variable-menu-item:hover {
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-}
-
-.variable-menu-empty {
-  margin: 0;
-  padding: 0.5rem;
-  font-size: 0.8rem;
-  color: color-mix(in srgb, var(--text) 50%, transparent);
 }
 
 .link-button {
