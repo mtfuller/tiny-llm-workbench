@@ -1,8 +1,12 @@
 // Package agents executes agent workflow graphs (registry.Graph) as chat
 // turns: starting at the graph's input node, calling a local LLM for each
-// prompt node, branching at decision nodes on a keyword match against the
-// prior output, running a named Tool from the agent's bound Environment for
-// each tool node, and returning whatever text reaches the output node.
+// prompt node, branching at decision nodes on a keyword match, running a
+// named Tool from the agent's bound Environment for each tool node, and
+// returning whatever text reaches the output node. Every node's output is
+// kept (by its user-chosen Name) for the rest of the turn, so a downstream
+// node's template can reference any earlier node's output — not just its
+// immediate predecessor — and, for a prompt node with a declared output
+// JSON Schema, a specific property of it. See runcontext.go.
 package agents
 
 import (
@@ -12,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mtfuller/tiny-llm-workbench/internal/assertions"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
@@ -69,8 +74,15 @@ func NewEngine(llm llmClient, tools toolRunner) *Engine {
 // tool node's ToolName resolves against this list); empty if the agent has
 // no Environment configured. onStep, if non-nil, is called for every node
 // visited.
+//
+// Every node that declares a Name (registry.NodeData.Name) becomes
+// referenceable in a later node's template fields (PromptTemplate,
+// MatchTemplate, ToolArgs values) as {{Name}} (its raw text output) or, if
+// it's a prompt node with OutputSchema configured, {{Name.property}} for a
+// specific property of its validated JSON reply — see runcontext.go.
 func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMessage, userMessage, instanceID string, tools []registry.Tool, onStep func(StepEvent)) (string, error) {
 	nodesByID := make(map[string]registry.Node, len(graph.Nodes))
+	seenNames := make(map[string]bool, len(graph.Nodes))
 	var inputNode *registry.Node
 	for i := range graph.Nodes {
 		node := graph.Nodes[i]
@@ -81,11 +93,18 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 			}
 			inputNode = &node
 		}
+		if node.Data.Name != "" {
+			if seenNames[node.Data.Name] {
+				return "", fmt.Errorf("more than one node is named %q — node names must be unique to be referenced in templates", node.Data.Name)
+			}
+			seenNames[node.Data.Name] = true
+		}
 	}
 	if inputNode == nil {
 		return "", errors.New("graph has no input node")
 	}
 
+	rc := newRunContext()
 	current := inputNode
 	output := userMessage
 
@@ -105,6 +124,8 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 		var nextID string
 		switch current.Type {
 		case "input":
+			rc.set(current.Data.Name, output, nil)
+
 			edge := findEdge(graph.Edges, current.ID, "")
 			if edge == nil {
 				return "", fmt.Errorf("input node %q has no outgoing edge", current.ID)
@@ -112,11 +133,30 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 			nextID = edge.Target
 
 		case "prompt":
-			reply, err := e.llm.Generate(ctx, current.Data.Model, buildPrompt(current.Data.SystemPrompt, history, output))
+			userTurn := output
+			if current.Data.PromptTemplate != "" {
+				rendered, err := rc.render(current.Data.PromptTemplate)
+				if err != nil {
+					return "", fmt.Errorf("prompt node %q: %w", current.ID, err)
+				}
+				userTurn = rendered
+			}
+
+			reply, err := e.llm.Generate(ctx, current.Data.Model, buildPrompt(current.Data.SystemPrompt, history, userTurn))
 			if err != nil {
 				return "", fmt.Errorf("prompt node %q: %w", current.ID, err)
 			}
+
+			var parsed any
+			if current.Data.OutputSchema != "" {
+				parsed, err = assertions.ValidateJSONSchema(current.Data.OutputSchema, reply)
+				if err != nil {
+					return "", fmt.Errorf("prompt node %q: reply did not satisfy its output schema: %w", current.ID, err)
+				}
+			}
+
 			output = reply
+			rc.set(current.Data.Name, output, parsed)
 
 			edge := findEdge(graph.Edges, current.ID, "")
 			if edge == nil {
@@ -125,10 +165,21 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 			nextID = edge.Target
 
 		case "decision":
+			matchText := output
+			if current.Data.MatchTemplate != "" {
+				rendered, err := rc.render(current.Data.MatchTemplate)
+				if err != nil {
+					return "", fmt.Errorf("decision node %q: %w", current.ID, err)
+				}
+				matchText = rendered
+			}
+
 			handle := "no"
-			if current.Data.Keyword != "" && strings.Contains(strings.ToLower(output), strings.ToLower(current.Data.Keyword)) {
+			if current.Data.Keyword != "" && strings.Contains(strings.ToLower(matchText), strings.ToLower(current.Data.Keyword)) {
 				handle = "yes"
 			}
+			rc.set(current.Data.Name, output, nil)
+
 			edge := findEdge(graph.Edges, current.ID, handle)
 			if edge == nil {
 				return "", fmt.Errorf("decision node %q has no %q edge", current.ID, handle)
@@ -147,12 +198,13 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 				return "", fmt.Errorf("tool node %q: tool %q not found on this agent's environment", current.ID, current.Data.ToolName)
 			}
 
-			args := make(map[string]string, len(current.Data.ToolArgs)+1)
+			args := make(map[string]string, len(current.Data.ToolArgs))
 			for k, v := range current.Data.ToolArgs {
-				args[k] = v
-			}
-			if current.Data.ToolInputParam != "" {
-				args[current.Data.ToolInputParam] = output
+				rendered, err := rc.render(v)
+				if err != nil {
+					return "", fmt.Errorf("tool node %q: parameter %q: %w", current.ID, k, err)
+				}
+				args[k] = rendered
 			}
 
 			command, err := environments.RenderToolCommand(tool, args)
@@ -164,6 +216,7 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 				return "", fmt.Errorf("tool node %q: %w", current.ID, err)
 			}
 			output = result
+			rc.set(current.Data.Name, output, nil)
 
 			edge := findEdge(graph.Edges, current.ID, "")
 			if edge == nil {

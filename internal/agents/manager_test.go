@@ -212,7 +212,7 @@ func TestSendMessageUsesRunInstanceForToolNodes(t *testing.T) {
 		"researcher": {
 			Name:        "researcher",
 			Environment: "WebSearch",
-			Graph:       toolGraph(registry.NodeData{ToolName: "web_search", ToolInputParam: "query"}),
+			Graph:       toolGraph(registry.NodeData{ToolName: "web_search", ToolArgs: map[string]string{"query": "{{Input}}"}}),
 		},
 	}}
 	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}, toolOutput: "search results"}

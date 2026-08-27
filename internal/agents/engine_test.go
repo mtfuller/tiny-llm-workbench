@@ -215,11 +215,31 @@ func TestRunPromptNodeLLMError(t *testing.T) {
 	}
 }
 
-// toolGraph is input -> tool -> output, with the tool node configured by data.
+func TestRunDuplicateNodeNames(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Step"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Step", Model: "m"}},
+			{ID: "out", Type: "output"},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "p1"},
+			{ID: "e2", Source: "p1", Target: "out"},
+		},
+	}
+	engine := NewEngine(&fakeLLM{responses: []string{"reply"}}, &fakeTools{})
+
+	if _, err := engine.Run(context.Background(), graph, nil, "hi", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want an error when two nodes share a name")
+	}
+}
+
+// toolGraph is input(named "Input") -> tool -> output, with the tool node
+// configured by data.
 func toolGraph(data registry.NodeData) registry.Graph {
 	return registry.Graph{
 		Nodes: []registry.Node{
-			{ID: "in", Type: "input"},
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
 			{ID: "t1", Type: "tool", Data: data},
 			{ID: "out", Type: "output"},
 		},
@@ -251,7 +271,7 @@ func TestRunToolNode(t *testing.T) {
 	}
 }
 
-func TestRunToolNodeBindsInputParam(t *testing.T) {
+func TestRunToolNodeTemplateReferencesInputNode(t *testing.T) {
 	tools := &fakeTools{output: "done"}
 	toolDefs := []registry.Tool{
 		{
@@ -262,18 +282,18 @@ func TestRunToolNodeBindsInputParam(t *testing.T) {
 	}
 	engine := NewEngine(&fakeLLM{}, tools)
 
-	graph := toolGraph(registry.NodeData{ToolName: "fetch", ToolInputParam: "url"})
+	graph := toolGraph(registry.NodeData{ToolName: "fetch", ToolArgs: map[string]string{"url": "{{Input}}"}})
 	_, err := engine.Run(context.Background(), graph, nil, "https://example.com", "container-1", toolDefs, nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	want := "curl -s 'https://example.com'"
 	if len(tools.calls) != 1 || tools.calls[0] != want {
-		t.Errorf("tools.calls = %v, want [%s] (previous node's output bound to the url parameter)", tools.calls, want)
+		t.Errorf("tools.calls = %v, want [%s]", tools.calls, want)
 	}
 }
 
-func TestRunToolNodeStaticArgsAndBoundInputTogether(t *testing.T) {
+func TestRunToolNodeStaticAndTemplatedArgsTogether(t *testing.T) {
 	tools := &fakeTools{output: "done"}
 	toolDefs := []registry.Tool{
 		{
@@ -288,9 +308,8 @@ func TestRunToolNodeStaticArgsAndBoundInputTogether(t *testing.T) {
 	engine := NewEngine(&fakeLLM{}, tools)
 
 	graph := toolGraph(registry.NodeData{
-		ToolName:       "write_file",
-		ToolArgs:       map[string]string{"path": "/tmp/out.txt"},
-		ToolInputParam: "content",
+		ToolName: "write_file",
+		ToolArgs: map[string]string{"path": "/tmp/out.txt", "content": "{{Input}}"},
 	})
 	_, err := engine.Run(context.Background(), graph, nil, "hello world", "container-1", toolDefs, nil)
 	if err != nil {
@@ -299,6 +318,19 @@ func TestRunToolNodeStaticArgsAndBoundInputTogether(t *testing.T) {
 	want := "printf '%s' 'hello world' > '/tmp/out.txt'"
 	if len(tools.calls) != 1 || tools.calls[0] != want {
 		t.Errorf("tools.calls = %v, want [%s]", tools.calls, want)
+	}
+}
+
+func TestRunToolNodeUnresolvedTemplateReference(t *testing.T) {
+	tools := &fakeTools{output: "done"}
+	toolDefs := []registry.Tool{
+		{Name: "fetch", Command: "curl -s {{url}}", Parameters: []registry.ToolParameter{{Name: "url", Type: registry.ToolParamString, Required: true}}},
+	}
+	engine := NewEngine(&fakeLLM{}, tools)
+
+	graph := toolGraph(registry.NodeData{ToolName: "fetch", ToolArgs: map[string]string{"url": "{{NoSuchNode}}"}})
+	if _, err := engine.Run(context.Background(), graph, nil, "hi", "container-1", toolDefs, nil); err == nil {
+		t.Error("Run() error = nil, want an error for a template referencing an unknown node")
 	}
 }
 
@@ -342,7 +374,7 @@ func TestRunToolNodeMissingRequiredParameter(t *testing.T) {
 	}
 	engine := NewEngine(&fakeLLM{}, tools)
 
-	// No ToolArgs and no ToolInputParam — "path" is required but never supplied.
+	// No ToolArgs at all — "path" is required but never supplied.
 	graph := toolGraph(registry.NodeData{ToolName: "read_file"})
 	if _, err := engine.Run(context.Background(), graph, nil, "hi", "container-1", toolDefs, nil); err == nil {
 		t.Error("Run() error = nil, want the missing-required-parameter error to propagate")
@@ -360,5 +392,128 @@ func TestRunToolNodeError(t *testing.T) {
 	graph := toolGraph(registry.NodeData{ToolName: "echo_tool"})
 	if _, err := engine.Run(context.Background(), graph, nil, "hi", "container-1", toolDefs, nil); err == nil {
 		t.Error("Run() error = nil, want the tool error to propagate")
+	}
+}
+
+// schemaChainGraph is input(named "Input") -> prompt(named "Classifier",
+// OutputSchema requiring a "city" string) -> prompt(named "Responder",
+// PromptTemplate referencing {{Classifier.city}}) -> output.
+func schemaChainGraph(outputSchema, promptTemplate string) registry.Graph {
+	return registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Classifier", Model: "m", OutputSchema: outputSchema}},
+			{ID: "p2", Type: "prompt", Data: registry.NodeData{Name: "Responder", Model: "m", PromptTemplate: promptTemplate}},
+			{ID: "out", Type: "output"},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "p1"},
+			{ID: "e2", Source: "p1", Target: "p2"},
+			{ID: "e3", Source: "p2", Target: "out"},
+		},
+	}
+}
+
+func TestRunPromptNodeOutputSchemaExposesPropertyDownstream(t *testing.T) {
+	schema := `{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}`
+	llm := &fakeLLM{responses: []string{`{"city": "Paris"}`, "final reply"}}
+	engine := NewEngine(llm, &fakeTools{})
+
+	graph := schemaChainGraph(schema, "please solve user problem: {{Classifier.city}}")
+	reply, err := engine.Run(context.Background(), graph, nil, "where should I go?", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "final reply" {
+		t.Errorf("Run() = %q, want %q", reply, "final reply")
+	}
+	if len(llm.calls) != 2 || !strings.Contains(llm.calls[1], "USER: please solve user problem: Paris") {
+		t.Errorf("llm.calls[1] = %q, want it to include the resolved city property", llm.calls[1])
+	}
+}
+
+func TestRunPromptNodeOutputSchemaValidationFailureFailsTurn(t *testing.T) {
+	schema := `{"type":"object","required":["city"]}`
+	llm := &fakeLLM{responses: []string{"sorry, I can't help with that"}}
+	engine := NewEngine(llm, &fakeTools{})
+
+	graph := schemaChainGraph(schema, "")
+	if _, err := engine.Run(context.Background(), graph, nil, "where should I go?", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want the turn to fail when the reply doesn't satisfy the output schema")
+	}
+}
+
+func TestRunPromptTemplateUnknownPropertyErrors(t *testing.T) {
+	schema := `{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}`
+	llm := &fakeLLM{responses: []string{`{"city": "Paris"}`}}
+	engine := NewEngine(llm, &fakeTools{})
+
+	graph := schemaChainGraph(schema, "population of {{Classifier.population}}")
+	if _, err := engine.Run(context.Background(), graph, nil, "where should I go?", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want an error for a template referencing an undeclared property")
+	}
+}
+
+func TestRunPromptTemplateDotPathWithoutSchemaErrors(t *testing.T) {
+	// Classifier has no OutputSchema, so .city can't be resolved even though
+	// the plain {{Classifier}} raw-text reference would work fine.
+	llm := &fakeLLM{responses: []string{"Paris is nice this time of year", "final reply"}}
+	engine := NewEngine(llm, &fakeTools{})
+
+	graph := schemaChainGraph("", "population of {{Classifier.city}}")
+	if _, err := engine.Run(context.Background(), graph, nil, "where should I go?", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want an error referencing a property on a node with no output schema")
+	}
+}
+
+func TestRunPromptTemplateEmptyFallsBackToPreviousOutput(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"Paris is nice this time of year", "final reply"}}
+	engine := NewEngine(llm, &fakeTools{})
+
+	graph := schemaChainGraph("", "") // no schema, no template: legacy pass-through behavior
+	reply, err := engine.Run(context.Background(), graph, nil, "where should I go?", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "final reply" {
+		t.Errorf("Run() = %q, want %q", reply, "final reply")
+	}
+	if !strings.Contains(llm.calls[1], "USER: Paris is nice this time of year") {
+		t.Errorf("llm.calls[1] = %q, want the previous node's raw output passed through unchanged", llm.calls[1])
+	}
+}
+
+func TestRunDecisionMatchTemplateChecksNamedNodeProperty(t *testing.T) {
+	schema := `{"type":"object","required":["sentiment"],"properties":{"sentiment":{"type":"string"}}}`
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Analyzer", Model: "m", OutputSchema: schema}},
+			{ID: "d1", Type: "decision", Data: registry.NodeData{Keyword: "positive", MatchTemplate: "{{Analyzer.sentiment}}"}},
+			{ID: "yes", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "happy branch"}},
+			{ID: "no", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "sad branch"}},
+			{ID: "out", Type: "output"},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "p1"},
+			{ID: "e2", Source: "p1", Target: "d1"},
+			{ID: "e3", Source: "d1", SourceHandle: "yes", Target: "yes"},
+			{ID: "e4", Source: "d1", SourceHandle: "no", Target: "no"},
+			{ID: "e5", Source: "yes", Target: "out"},
+			{ID: "e6", Source: "no", Target: "out"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{`{"sentiment": "positive", "confidence": 0.9}`, "took happy branch"}}
+	engine := NewEngine(llm, &fakeTools{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "I love this!", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "took happy branch" {
+		t.Errorf("Run() = %q, want %q", reply, "took happy branch")
+	}
+	if !strings.Contains(llm.calls[1], "happy branch") {
+		t.Errorf("llm.calls[1] = %q, want the yes-branch (positive sentiment) system prompt", llm.calls[1])
 	}
 }

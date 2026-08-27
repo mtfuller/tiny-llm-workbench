@@ -22,21 +22,33 @@ type Position struct {
 // struct per node type) matches React Flow's own node data shape and keeps
 // (de)serialization simple.
 //
+// Name is a stable, user-editable, unique-within-the-graph display name —
+// used both on the canvas and as the token a downstream node's template
+// references (see internal/agents.Engine): {{Name}} for a node's raw text
+// output, or {{Name.property}} for a specific property of a node whose
+// OutputSchema made that output parseable JSON. A node with no Name isn't
+// referenceable at all, just unused metadata.
+//
 // Tool nodes name a real Tool (see environments.go) declared on the agent's
 // bound Environment, rather than embedding a raw shell command — the same
 // structured-parameter-list schema the Environments workspace's Playground
-// tab already uses to run a tool. ToolArgs holds a literal value per
-// parameter name; ToolInputParam, if set, names the one parameter that
-// instead receives the previous node's output at run time (see
-// internal/agents.Engine's tool-node handling).
+// tab already uses to run a tool. Every value in ToolArgs (and
+// PromptTemplate, MatchTemplate) may itself contain {{...}} template
+// references, resolved against every node that already ran earlier in the
+// same turn — not just the immediately preceding node.
 type NodeData struct {
-	Label          string            `json:"label,omitempty"`
-	Model          string            `json:"model,omitempty"`          // prompt nodes: which MLX model to call
-	SystemPrompt   string            `json:"systemPrompt,omitempty"`   // prompt nodes
-	Keyword        string            `json:"keyword,omitempty"`        // decision nodes: substring to match
-	ToolName       string            `json:"toolName,omitempty"`       // tool nodes: name of a Tool on the agent's Environment
-	ToolArgs       map[string]string `json:"toolArgs,omitempty"`       // tool nodes: literal value per parameter name
-	ToolInputParam string            `json:"toolInputParam,omitempty"` // tool nodes: parameter name bound to the previous node's output
+	Name string `json:"name,omitempty"`
+
+	Model          string `json:"model,omitempty"`          // prompt nodes: which MLX model to call
+	SystemPrompt   string `json:"systemPrompt,omitempty"`   // prompt nodes
+	PromptTemplate string `json:"promptTemplate,omitempty"` // prompt nodes: templated user turn text; falls back to the previous node's raw output when empty
+	OutputSchema   string `json:"outputSchema,omitempty"`   // prompt nodes: optional JSON Schema the reply must validate against; failing validation fails the turn
+
+	Keyword       string `json:"keyword,omitempty"`       // decision nodes: substring to match
+	MatchTemplate string `json:"matchTemplate,omitempty"` // decision nodes: templated text to search Keyword within; falls back to the previous node's raw output when empty
+
+	ToolName string            `json:"toolName,omitempty"` // tool nodes: name of a Tool on the agent's Environment
+	ToolArgs map[string]string `json:"toolArgs,omitempty"` // tool nodes: templated value per parameter name
 }
 
 // Node is one node in an agent's graph. Type is one of "input", "prompt",

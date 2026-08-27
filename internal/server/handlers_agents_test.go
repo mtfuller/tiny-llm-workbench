@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
@@ -148,6 +149,36 @@ func TestSaveAgentIncludesDescription(t *testing.T) {
 	}
 	if len(store.saved) != 1 || store.saved[0].Description != "Looks things up on the web." {
 		t.Errorf("store.saved = %+v, want Description=%q", store.saved, "Looks things up on the web.")
+	}
+}
+
+// TestSaveAgentResponseReflectsPersistedValue guards against a real bug:
+// SaveAgent stamps CreatedAt on its own copy of the agent (Go passes it by
+// value), so echoing the handler's local request-built struct back in the
+// response always showed a zero CreatedAt even though the persisted file
+// had the real one. The handler must re-read via GetAgent instead.
+func TestSaveAgentResponseReflectsPersistedValue(t *testing.T) {
+	deps := testDeps()
+	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	store := &fakeAgentStore{get: registry.Agent{Name: "greeter", CreatedAt: createdAt}}
+	deps.Agents = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(saveAgentRequest{Name: "greeter", Graph: registry.Graph{Nodes: []registry.Node{{ID: "1", Type: "input"}}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	var got registry.Agent
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !got.CreatedAt.Equal(createdAt) {
+		t.Errorf("response CreatedAt = %v, want %v (the persisted value, not the zero-value request echo)", got.CreatedAt, createdAt)
 	}
 }
 

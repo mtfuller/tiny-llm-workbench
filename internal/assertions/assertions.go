@@ -78,44 +78,61 @@ func CheckAll(list []registry.Assertion, output string) ([]Result, bool) {
 }
 
 // checkJSONSchema validates the first complete JSON value found in output
-// against the JSON Schema document schemaText. Models often preface a JSON
-// reply with a sentence or wrap it in a markdown code fence, so this looks
-// for the first balanced {...}/[...] substring rather than requiring output
-// to be JSON in its entirety.
+// against the JSON Schema document schemaText.
 func checkJSONSchema(schemaText, output string) (bool, error) {
-	candidate, ok := extractJSONValue(output)
-	if !ok {
-		return false, errors.New("reply does not contain a JSON value")
-	}
-
-	instance, err := jsonschema.UnmarshalJSON(strings.NewReader(candidate))
+	_, err := ValidateJSONSchema(schemaText, output)
 	if err != nil {
-		return false, fmt.Errorf("reply is not valid JSON: %w", err)
-	}
-
-	schemaDoc, err := jsonschema.UnmarshalJSON(strings.NewReader(schemaText))
-	if err != nil {
-		return false, fmt.Errorf("invalid JSON schema: %w", err)
-	}
-
-	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource("assertion.json", schemaDoc); err != nil {
-		return false, fmt.Errorf("invalid JSON schema: %w", err)
-	}
-	schema, err := compiler.Compile("assertion.json")
-	if err != nil {
-		return false, fmt.Errorf("invalid JSON schema: %w", err)
-	}
-
-	if err := schema.Validate(instance); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// extractJSONValue returns the first balanced {...} or [...] substring in s,
+// ValidateJSONSchema extracts the first complete JSON value found in output,
+// validates it against the JSON Schema document schemaText, and returns the
+// parsed value (as decoded by jsonschema.UnmarshalJSON: map[string]any for
+// an object, []any for an array, json.Number for a number, etc.) on success.
+// Models often preface a JSON reply with a sentence or wrap it in a markdown
+// code fence, so this looks for the first balanced {...}/[...] substring
+// rather than requiring output to be JSON in its entirety.
+//
+// Exported so internal/agents can reuse the exact same extraction/validation
+// path for a Prompt node's optional output schema — that feature needs the
+// parsed value itself (to expose properties to downstream nodes), not just
+// a pass/fail like an assertion.
+func ValidateJSONSchema(schemaText, output string) (any, error) {
+	candidate, ok := ExtractJSONValue(output)
+	if !ok {
+		return nil, errors.New("reply does not contain a JSON value")
+	}
+
+	instance, err := jsonschema.UnmarshalJSON(strings.NewReader(candidate))
+	if err != nil {
+		return nil, fmt.Errorf("reply is not valid JSON: %w", err)
+	}
+
+	schemaDoc, err := jsonschema.UnmarshalJSON(strings.NewReader(schemaText))
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON schema: %w", err)
+	}
+
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource("schema.json", schemaDoc); err != nil {
+		return nil, fmt.Errorf("invalid JSON schema: %w", err)
+	}
+	schema, err := compiler.Compile("schema.json")
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON schema: %w", err)
+	}
+
+	if err := schema.Validate(instance); err != nil {
+		return nil, err
+	}
+	return instance, nil
+}
+
+// ExtractJSONValue returns the first balanced {...} or [...] substring in s,
 // ignoring braces/brackets that appear inside JSON string literals.
-func extractJSONValue(s string) (string, bool) {
+func ExtractJSONValue(s string) (string, bool) {
 	start := strings.IndexAny(s, "{[")
 	if start == -1 {
 		return "", false

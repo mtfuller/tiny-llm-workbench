@@ -363,6 +363,84 @@ choice:
   and returned genuine API JSON to the output node — the exact case a raw-`{{input}}`-string design would
   have handled anyway, but now going through the same validated, safely-quoted rendering path everywhere
   a tool runs in the app (Environments Playground, Agent tool nodes) instead of two divergent mechanisms.
+
+  **2026-08-27 addendum — cross-node templating and JSON-schema-constrained node output:** the user asked
+  for two related capabilities: referencing an upstream node's output inside a downstream node's config
+  (e.g. a Prompt node's text containing `"please solve user problem: {{output}}"`), and forcing one node's
+  output to comply with a JSON Schema so downstream nodes can pull specific properties out of it. Before
+  building anything, the installed `mlx_lm.server` (0.31.3) source was checked directly for a
+  `response_format`/`json_schema`/grammar-constrained-decoding request parameter (the OpenAI-API
+  equivalent) — **it has none** (confirmed by grepping `server.py`; its only per-request
+  generation-shaping knobs are `repetition_penalty` and `top_logprobs`, and `logits_processors` are
+  fixed server-side args, not something a request can supply). So "forcing" a schema can only ever mean
+  best-effort prompting plus after-the-fact parsing/validation — the same conclusion already reached for
+  `testcasegen`'s JSON generation. Four real design forks were surfaced via `AskUserQuestion` (all
+  "Recommended" options chosen): named references reachable from **any** upstream node (not just the
+  immediate predecessor), fail-the-turn-immediately on schema validation failure (no retry, no soft-fail),
+  templating on Prompt + Tool + Decision nodes, and an inspector "insert variable" picker UI.
+
+  `registry.Node` — really `registry.NodeData` — gained `Name string`, replacing `Label` for every node
+  type (a clean cutover, not additive): it's both the canvas display title and the token a downstream
+  node's template references (`{{Name}}` for raw text, `{{Name.property}}` for a JSON property). Prompt
+  nodes gained `PromptTemplate` (templated user-turn text; empty falls back to the previous node's raw
+  output verbatim, preserving old behavior with zero migration needed) and `OutputSchema` (a JSON Schema
+  the reply must validate against). Decision nodes gained `MatchTemplate` (templated text to keyword-match
+  against; same empty-falls-back-to-previous-output convention). Tool nodes' `ToolInputParam` (the old
+  "bind exactly one parameter to the previous output" mechanism) was removed entirely — every `ToolArgs`
+  value can now itself contain a `{{...}}` template, which strictly subsumes what `ToolInputParam` did.
+
+  New `internal/agents/runcontext.go`: a `runContext` accumulates a `{raw, parsed}` result per node
+  **Name** (not ID) as `Engine.Run` walks the graph — since the engine only ever walks one path per turn
+  (a Decision node's branching still follows a single edge), this map is naturally exactly the set of
+  nodes that ran earlier in the turn, so no separate graph-reachability analysis is needed; a reference to
+  a node that hasn't run yet (a typo, or a node on the branch not taken) is simply absent and reported as
+  a clear error. `render(template)` finds every `{{...}}` block, splits its inner text on the first `.`
+  (deliberately not a single combined regex — Go's RE2 doesn't backtrack the way a name-with-spaces
+  followed by an optional path group would need), and resolves the name against the context, then
+  optionally walks a dot-separated path into that node's parsed JSON value (only present if it declared an
+  `OutputSchema`) via `lookupJSONPath`; `stringifyJSONValue` renders the result back to plain text
+  (`json.Number.String()`, `strconv.FormatBool`, or a compact JSON re-marshal for a nested object/array).
+  `internal/assertions.checkJSONSchema` (the existing `json_schema` assertion type) was refactored into a
+  thin wrapper around a newly-exported `ValidateJSONSchema`, which returns the parsed value instead of
+  just pass/fail — `internal/agents` reuses this exact function for a Prompt node's `OutputSchema` check,
+  and `internal/environments.RenderToolCommand` for a Tool node's arg substitution+quoting, so a template
+  reference and a tool-parameter value go through the same already-tested paths rather than new ones.
+  `Engine.Run` gained node-name-uniqueness validation up front (two nodes sharing a Name is a template
+  ambiguity, reported before any node runs, not discovered mid-turn).
+
+  The frontend's `TemplateField.tsx` is new: `upstreamVariableOptions(nodes, edges, nodeId)` walks edges
+  backward from a node to find every named ancestor (a real BFS over the graph, not "just the immediate
+  predecessor"), offering `{{Name}}` for each plus `{{Name.property}}` for every top-level key an
+  ancestor Prompt node's `OutputSchema` declares (parsed client-side with a try/catch — a malformed schema
+  just contributes no property options, it doesn't break the picker); `insertAtCursor` splices a chosen
+  snippet into a field at its actual cursor position (via `selectionStart`/`selectionEnd`) rather than
+  just appending to the end, and `VariableMenuButton` is a small popover (mirroring
+  `TagFilterDropdown`'s portal-to-`document.body` pattern) that lists the options and calls back into it.
+  **A real positioning bug found live, not just in code review:** the popover's trigger button sits at the
+  right edge of the (narrow, fixed-width) inspector sidebar, and the popover was originally positioned
+  `left: <button's left edge>` — for a button already near the right edge of the viewport, the popover's
+  own width pushed its right side off-screen, clipping every option. Fixed by anchoring from the right
+  instead (`right: window.innerWidth - button.right`), which is always on-screen by construction since
+  it's computed from a coordinate the visible button itself occupies.
+
+  While building the Created-date column for this session's earlier Agents list-view work, `saveAgentHandler`
+  turned out to have a variant of the same "response doesn't reflect what was actually persisted" bug
+  already fixed elsewhere: it echoed back its own local `registry.Agent` struct — built straight from the
+  request, `CreatedAt` never set — instead of what `SaveAgent` had actually stamped (Go passes structs by
+  value, so `SaveAgent`'s own `agent.CreatedAt = ...` mutates its private copy, not the caller's). The
+  persisted file was always correct (confirmed via a direct `GET` returning the real timestamp); only the
+  immediate `POST` response was wrong, and nothing in the frontend happened to read that field from it —
+  still fixed the same way `createEnvironmentHandler` already does it: re-read via `GetAgent` after
+  saving, and return that instead.
+
+  Fully verified live against a real local MLX model (`mlx-community/Qwen2.5-0.5B-Instruct-4bit` via
+  `mlx_lm.server`): built Input → `Classifier` (Prompt, `OutputSchema` requiring a `city` string) →
+  `Responder` (Prompt, `PromptTemplate: "please solve user problem: recommend one food to try in
+  {{Classifier.city}}"`) → Output, sent "I want to visit Paris next month.", and confirmed via the Run
+  view's live step log that Classifier's real reply `{"city": "Paris"}` validated against the schema and
+  Responder's actual prompt had `{{Classifier.city}}` correctly resolved to "Paris" (the final reply was
+  specifically about Parisian food, not a generic answer) — the core cross-node-reference and
+  schema-property-access mechanism working end-to-end against a real model's real output, not a mock.
 - **Evaluation runner**: how assertions are expressed and checked against agent output, and how
   environment starting state is set up per-test (Phase 4).
   **Decided:** assertions are deterministic rules — `contains` / `not_contains` / `regex` — checked

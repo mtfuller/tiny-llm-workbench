@@ -239,26 +239,54 @@ func TestSimilarityRatioKnownValues(t *testing.T) {
 }
 
 func TestExtractJSONValueIgnoresBracesInStrings(t *testing.T) {
-	got, ok := extractJSONValue(`prefix {"a": "b{c}d"} suffix`)
+	got, ok := ExtractJSONValue(`prefix {"a": "b{c}d"} suffix`)
 	if !ok {
-		t.Fatal("extractJSONValue() ok = false, want true")
+		t.Fatal("ExtractJSONValue() ok = false, want true")
 	}
 	want := `{"a": "b{c}d"}`
 	if got != want {
-		t.Errorf("extractJSONValue() = %q, want %q", got, want)
+		t.Errorf("ExtractJSONValue() = %q, want %q", got, want)
 	}
 }
 
 func TestExtractJSONValueNoJSON(t *testing.T) {
-	_, ok := extractJSONValue("no json here")
+	_, ok := ExtractJSONValue("no json here")
 	if ok {
-		t.Error("extractJSONValue() ok = true, want false")
+		t.Error("ExtractJSONValue() ok = true, want false")
 	}
 }
 
 func TestExtractJSONValueArray(t *testing.T) {
-	got, ok := extractJSONValue(`here: [1, 2, 3] done`)
+	got, ok := ExtractJSONValue(`here: [1, 2, 3] done`)
 	if !ok || got != "[1, 2, 3]" {
-		t.Errorf("extractJSONValue() = (%q, %v), want (\"[1, 2, 3]\", true)", got, ok)
+		t.Errorf("ExtractJSONValue() = (%q, %v), want (\"[1, 2, 3]\", true)", got, ok)
+	}
+}
+
+func TestValidateJSONSchemaReturnsParsedValue(t *testing.T) {
+	schema := `{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}`
+	value, err := ValidateJSONSchema(schema, `Sure, here you go: {"city": "Paris", "temp": 72}`)
+	if err != nil {
+		t.Fatalf("ValidateJSONSchema() error = %v", err)
+	}
+	obj, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("ValidateJSONSchema() = %T, want map[string]any", value)
+	}
+	if obj["city"] != "Paris" {
+		t.Errorf("ValidateJSONSchema()[\"city\"] = %v, want %q", obj["city"], "Paris")
+	}
+}
+
+func TestValidateJSONSchemaFailsValidation(t *testing.T) {
+	schema := `{"type":"object","required":["city"]}`
+	if _, err := ValidateJSONSchema(schema, `{"temp": 72}`); err == nil {
+		t.Error("ValidateJSONSchema() error = nil, want an error for a document missing a required property")
+	}
+}
+
+func TestValidateJSONSchemaNoJSONInReply(t *testing.T) {
+	if _, err := ValidateJSONSchema(`{"type":"object"}`, "no json here"); err == nil {
+		t.Error("ValidateJSONSchema() error = nil, want an error when the reply has no JSON value")
 	}
 }

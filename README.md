@@ -67,17 +67,26 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
 - [x] **Phase 3 — Agents**
   - [x] Add an Agents page to the navbar
   - [x] Visual canvas for building agent workflows (input, prompt, output, decision, tool nodes) — built
-        with React Flow. Decision branches on a simple keyword match against the prior node's output,
-        not an LLM call. Agent settings (which Environment it targets, plus a free-text description) live
+        with React Flow. Agent settings (which Environment it targets, plus a free-text description) live
         in a settings modal opened from the left node palette, not an always-visible sidebar block. A
         professional-looking, node-type-colored right-sidebar inspector configures each selected node; a
         tool node picks one of the bound Environment's real tools from a dropdown and fills in a
-        generated form for its typed parameters, with one parameter markable as "use previous output" to
-        receive the prior node's result at run time — deterministic, not an LLM-driven tool-calling loop.
-        Fully verified live: a real Docker container was launched, a tool node's chosen tool (a real
-        DuckDuckGo web search) executed inside it with the previous node's output correctly bound to its
-        query parameter, and the container was cleaned up when the chat closed. No memory/knowledge nodes
-        yet — that's future work.
+        generated form for its typed parameters — deterministic, not an LLM-driven tool-calling loop.
+        Every node has an editable Name, and any downstream node's text fields (a prompt's system
+        prompt/prompt template, a tool's parameters, a decision's match text) can reference an earlier
+        node's output — not just its immediate predecessor — as `{{NodeName}}`, with an "insert variable"
+        picker in the inspector so you don't have to type it by hand. A prompt node can optionally declare
+        a JSON Schema its reply must satisfy (best-effort: the model is instructed via the prompt, then
+        the reply is parsed and validated — there's no true constrained decoding available from the local
+        MLX server, so a non-conforming reply fails the turn rather than being silently accepted), and once
+        it does, downstream nodes can pull out a specific property with `{{NodeName.property}}`. Decision
+        branches on a simple keyword match against a node's output (optionally a specific property, via the
+        same templating), not an LLM call. Fully verified live end-to-end, twice: a real Docker container
+        was launched, a tool node's chosen tool (a real DuckDuckGo web search) executed inside it with the
+        previous node's output correctly templated into its query parameter; and a real local model
+        extracted `{"city": "Paris"}` into a schema-checked node, with a downstream node's prompt template
+        correctly resolving `{{Classifier.city}}` to produce a reply specifically about Parisian food. No
+        memory/knowledge nodes yet — that's future work.
   - [x] Run view: watch agent events live and chat with a running agent — fully verified live with a
         real local MLX model (served via `mlx_lm.server`, TLW's inference backend — see CLAUDE.md's MLX
         integration note): canvas building, saving, chatting, and the live step-by-step execution log

@@ -163,17 +163,34 @@ export interface Exec {
 export type NodeType = 'input' | 'prompt' | 'decision' | 'tool' | 'output'
 
 export interface AgentNodeData extends Record<string, unknown> {
-  label?: string
+  // name is a stable, user-editable, unique-within-the-graph display name —
+  // shown on the canvas and used as the token a downstream node's template
+  // references: {{name}} for this node's raw text output, or
+  // {{name.property}} for a property of it if outputSchema made that output
+  // parseable JSON. A node with no name isn't referenceable at all.
+  name?: string
+
   model?: string
   systemPrompt?: string
+  // promptTemplate is templated user-turn text ({{nodeName}}/{{nodeName.field}}
+  // resolved against every earlier-run node); falls back to the previous
+  // node's raw output verbatim when empty.
+  promptTemplate?: string
+  // outputSchema, if set, is a JSON Schema the reply must validate against —
+  // failing validation fails the whole turn. Enables downstream
+  // {{thisNode.property}} references.
+  outputSchema?: string
+
   keyword?: string
+  // matchTemplate is templated text to search keyword within; falls back to
+  // the previous node's raw output when empty.
+  matchTemplate?: string
+
   // Tool nodes: toolName names a Tool declared on the agent's bound
-  // Environment (see registry.Tool); toolArgs holds a literal value per
-  // parameter name; toolInputParam, if set, names the one parameter that
-  // instead receives the previous node's output at run time.
+  // Environment (see registry.Tool); each toolArgs value may itself contain
+  // {{nodeName}}/{{nodeName.field}} template references.
   toolName?: string
   toolArgs?: Record<string, string>
-  toolInputParam?: string
 }
 
 export interface AgentNode {

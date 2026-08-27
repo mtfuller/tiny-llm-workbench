@@ -50,6 +50,7 @@ import { nodeTypes } from '../agentNodes'
 import { useEventStream } from '../eventStream'
 import Modal from '../Modal'
 import { suggestedModels } from '../suggestedModels'
+import { insertAtCursor, upstreamVariableOptions, VariableMenuButton } from '../TemplateField'
 
 type FlowNode = Node<AgentNodeData>
 
@@ -132,6 +133,14 @@ function AgentEditorWorkspace() {
   const [steps, setSteps] = useState<AgentStepEvent[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
+  // Refs for the templatable fields the "insert variable" picker writes
+  // into at the current cursor position. toolArgRefs is keyed by parameter
+  // name since a tool node's fields are rendered dynamically.
+  const systemPromptRef = useRef<HTMLTextAreaElement>(null)
+  const promptTemplateRef = useRef<HTMLTextAreaElement>(null)
+  const matchTemplateRef = useRef<HTMLTextAreaElement>(null)
+  const toolArgRefs = useRef<Map<string, HTMLInputElement>>(new Map())
+
   useEffect(() => {
     getAgent(name)
       .then((agent) => {
@@ -169,13 +178,17 @@ function AgentEditorWorkspace() {
   const addNode = useCallback(
     (type: NodeType, position?: { x: number; y: number }) => {
       const id = newNodeId(type)
-      const data: AgentNodeData = type === 'prompt' ? { model: models[0]?.name } : {}
+      const countOfType = nodes.filter((n) => n.type === type).length + 1
+      const data: AgentNodeData = {
+        name: `${NODE_META[type].label} ${countOfType}`,
+        ...(type === 'prompt' ? { model: models[0]?.name } : {}),
+      }
       setNodes((nds) => [
         ...nds,
         { id, type, position: position ?? { x: 120 + nds.length * 40, y: 120 + (nds.length % 4) * 90 }, data },
       ])
     },
-    [models, setNodes],
+    [models, nodes, setNodes],
   )
 
   const onDragStart = (event: DragEvent, type: NodeType) => {
@@ -225,19 +238,29 @@ function AgentEditorWorkspace() {
     [availableTools, selectedNode],
   )
 
+  // Every named node reachable upstream of the currently selected node —
+  // what the "insert variable" picker offers for its templatable fields.
+  const upstreamOptions = useMemo(
+    () => (selectedNode ? upstreamVariableOptions(nodes, edges, selectedNode.id) : []),
+    [nodes, edges, selectedNode],
+  )
+
   const handleToolChange = (toolName: string) => {
-    updateSelectedNodeData({ toolName, toolArgs: {}, toolInputParam: undefined })
+    updateSelectedNodeData({ toolName, toolArgs: {} })
   }
 
   const handleToolArgChange = (paramName: string, value: string) => {
     updateSelectedNodeData({ toolArgs: { ...(selectedNode?.data.toolArgs ?? {}), [paramName]: value } })
   }
 
-  const handleBindInputParam = (paramName: string) => {
-    updateSelectedNodeData({ toolInputParam: paramName })
-  }
-
   const handleSave = async () => {
+    const names = nodes.map((n) => n.data.name?.trim()).filter((n): n is string => !!n)
+    const duplicate = names.find((n, i) => names.indexOf(n) !== i)
+    if (duplicate) {
+      setError(`Node names must be unique — "${duplicate}" is used more than once.`)
+      return
+    }
+
     setSaving(true)
     setError(null)
     try {
@@ -410,6 +433,21 @@ function AgentEditorWorkspace() {
                 </div>
 
                 <div className="inspector-body">
+                  <label>
+                    Name
+                    <input
+                      type="text"
+                      placeholder={NODE_META[selectedNode.type as NodeType]?.label}
+                      value={selectedNode.data.name ?? ''}
+                      onChange={(e) => updateSelectedNodeData({ name: e.target.value })}
+                    />
+                    <span className="field-hint">
+                      Reference this node's output elsewhere as {'{{'}
+                      {selectedNode.data.name || '…'}
+                      {'}}'}.
+                    </span>
+                  </label>
+
                   {selectedNode.type === 'prompt' && (
                     <>
                       <label>
@@ -427,29 +465,107 @@ function AgentEditorWorkspace() {
                           ))}
                         </datalist>
                       </label>
+
                       <label>
                         System prompt
+                        <div className="template-field-row">
+                          <textarea
+                            ref={systemPromptRef}
+                            rows={5}
+                            placeholder="You are a helpful assistant…"
+                            value={selectedNode.data.systemPrompt ?? ''}
+                            onChange={(e) => updateSelectedNodeData({ systemPrompt: e.target.value })}
+                          />
+                          <VariableMenuButton
+                            options={upstreamOptions}
+                            onInsert={(snippet) =>
+                              insertAtCursor(systemPromptRef.current, selectedNode.data.systemPrompt ?? '', snippet, (next) =>
+                                updateSelectedNodeData({ systemPrompt: next }),
+                              )
+                            }
+                          />
+                        </div>
+                      </label>
+
+                      <label>
+                        Prompt template
+                        <div className="template-field-row">
+                          <textarea
+                            ref={promptTemplateRef}
+                            rows={4}
+                            placeholder="e.g. please solve user problem: {{Input}}"
+                            value={selectedNode.data.promptTemplate ?? ''}
+                            onChange={(e) => updateSelectedNodeData({ promptTemplate: e.target.value })}
+                          />
+                          <VariableMenuButton
+                            options={upstreamOptions}
+                            onInsert={(snippet) =>
+                              insertAtCursor(promptTemplateRef.current, selectedNode.data.promptTemplate ?? '', snippet, (next) =>
+                                updateSelectedNodeData({ promptTemplate: next }),
+                              )
+                            }
+                          />
+                        </div>
+                        <span className="field-hint">
+                          Leave blank to pass the previous node's output through unchanged as the user turn.
+                        </span>
+                      </label>
+
+                      <label>
+                        Output schema (optional)
                         <textarea
-                          rows={5}
-                          placeholder="You are a helpful assistant…"
-                          value={selectedNode.data.systemPrompt ?? ''}
-                          onChange={(e) => updateSelectedNodeData({ systemPrompt: e.target.value })}
+                          className="assertion-json-schema"
+                          rows={4}
+                          placeholder='{"type": "object", "required": ["city"]}'
+                          value={selectedNode.data.outputSchema ?? ''}
+                          onChange={(e) => updateSelectedNodeData({ outputSchema: e.target.value })}
                         />
+                        <span className="field-hint">
+                          If set, the reply must validate against this JSON Schema — the turn fails otherwise.
+                          Downstream nodes can then reference {'{{'}
+                          {selectedNode.data.name || 'ThisNode'}.property{'}}'}.
+                        </span>
                       </label>
                     </>
                   )}
 
                   {selectedNode.type === 'decision' && (
-                    <label>
-                      Keyword
-                      <input
-                        type="text"
-                        placeholder="e.g. weather"
-                        value={selectedNode.data.keyword ?? ''}
-                        onChange={(e) => updateSelectedNodeData({ keyword: e.target.value })}
-                      />
-                      <span className="field-hint">Routes to "yes" if the previous node's output contains this.</span>
-                    </label>
+                    <>
+                      <label>
+                        Keyword
+                        <input
+                          type="text"
+                          placeholder="e.g. weather"
+                          value={selectedNode.data.keyword ?? ''}
+                          onChange={(e) => updateSelectedNodeData({ keyword: e.target.value })}
+                        />
+                        <span className="field-hint">Routes to "yes" if the match text below contains this.</span>
+                      </label>
+
+                      <label>
+                        Match against (optional)
+                        <div className="template-field-row">
+                          <textarea
+                            ref={matchTemplateRef}
+                            rows={3}
+                            placeholder="Leave blank to check the previous node's raw output"
+                            value={selectedNode.data.matchTemplate ?? ''}
+                            onChange={(e) => updateSelectedNodeData({ matchTemplate: e.target.value })}
+                          />
+                          <VariableMenuButton
+                            options={upstreamOptions}
+                            onInsert={(snippet) =>
+                              insertAtCursor(matchTemplateRef.current, selectedNode.data.matchTemplate ?? '', snippet, (next) =>
+                                updateSelectedNodeData({ matchTemplate: next }),
+                              )
+                            }
+                          />
+                        </div>
+                        <span className="field-hint">
+                          Reference a specific node's output or JSON property instead — e.g. {'{{Analyzer.sentiment}}'}.
+                        </span>
+                      </label>
+                    </>
                   )}
 
                   {selectedNode.type === 'tool' && (
@@ -489,62 +605,54 @@ function AgentEditorWorkspace() {
                           {selectedTool.description && <p className="hint">{selectedTool.description}</p>}
                           <div className="inspector-section-label">Parameters</div>
                           {selectedTool.parameters.length === 0 && <p className="hint">This tool takes no parameters.</p>}
-                          {selectedTool.parameters.map((p) => {
-                            const bound = selectedNode.data.toolInputParam === p.name
-                            return (
-                              <div className={`tool-arg-row${bound ? ' tool-arg-row-bound' : ''}`} key={p.name}>
-                                <div className="tool-arg-row-header">
-                                  <span>
-                                    {p.name}
-                                    {p.required ? ' *' : ''}
-                                  </span>
-                                  <label className="tool-arg-bind-toggle" title="Fill this parameter from the previous node's output">
-                                    <input
-                                      type="radio"
-                                      name={`bind-${selectedNode.id}`}
-                                      checked={bound}
-                                      onChange={() => handleBindInputParam(p.name)}
-                                    />
-                                    Use previous output
-                                  </label>
-                                </div>
-                                {p.description && <span className="field-hint">{p.description}</span>}
-                                {!bound &&
-                                  (p.type === 'boolean' ? (
-                                    <select
-                                      value={selectedNode.data.toolArgs?.[p.name] ?? ''}
-                                      onChange={(e) => handleToolArgChange(p.name, e.target.value)}
-                                    >
-                                      <option value="">—</option>
-                                      <option value="true">true</option>
-                                      <option value="false">false</option>
-                                    </select>
-                                  ) : (
-                                    <input
-                                      type={p.type === 'number' ? 'number' : 'text'}
-                                      placeholder={p.name}
-                                      value={selectedNode.data.toolArgs?.[p.name] ?? ''}
-                                      onChange={(e) => handleToolArgChange(p.name, e.target.value)}
-                                    />
-                                  ))}
+                          {selectedTool.parameters.map((p) => (
+                            <div className="tool-arg-row" key={p.name}>
+                              <div className="tool-arg-row-header">
+                                <span>
+                                  {p.name}
+                                  {p.required ? ' *' : ''}
+                                </span>
                               </div>
-                            )
-                          })}
+                              {p.description && <span className="field-hint">{p.description}</span>}
+                              {p.type === 'boolean' ? (
+                                <select
+                                  value={selectedNode.data.toolArgs?.[p.name] ?? ''}
+                                  onChange={(e) => handleToolArgChange(p.name, e.target.value)}
+                                >
+                                  <option value="">—</option>
+                                  <option value="true">true</option>
+                                  <option value="false">false</option>
+                                </select>
+                              ) : (
+                                <div className="template-field-row">
+                                  <input
+                                    type="text"
+                                    ref={(el) => {
+                                      if (el) toolArgRefs.current.set(p.name, el)
+                                      else toolArgRefs.current.delete(p.name)
+                                    }}
+                                    placeholder={p.type === 'number' ? `${p.name} (number or {{...}})` : p.name}
+                                    value={selectedNode.data.toolArgs?.[p.name] ?? ''}
+                                    onChange={(e) => handleToolArgChange(p.name, e.target.value)}
+                                  />
+                                  <VariableMenuButton
+                                    options={upstreamOptions}
+                                    onInsert={(snippet) =>
+                                      insertAtCursor(
+                                        toolArgRefs.current.get(p.name) ?? null,
+                                        selectedNode.data.toolArgs?.[p.name] ?? '',
+                                        snippet,
+                                        (next) => handleToolArgChange(p.name, next),
+                                      )
+                                    }
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       )}
                     </>
-                  )}
-
-                  {(selectedNode.type === 'input' || selectedNode.type === 'output') && (
-                    <label>
-                      Label
-                      <input
-                        type="text"
-                        placeholder={selectedNode.type === 'input' ? 'Input' : 'Output'}
-                        value={selectedNode.data.label ?? ''}
-                        onChange={(e) => updateSelectedNodeData({ label: e.target.value })}
-                      />
-                    </label>
                   )}
                 </div>
 

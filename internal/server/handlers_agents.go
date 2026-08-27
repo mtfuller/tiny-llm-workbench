@@ -65,7 +65,16 @@ func saveAgentHandler(store agentStore) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusCreated, normalizeAgent(agent))
+		// Re-read rather than echo the local agent value: SaveAgent stamps
+		// CreatedAt on its own copy (Go passes it by value), so the request's
+		// struct never reflects it — same reasoning as createEnvironmentHandler.
+		saved, err := store.GetAgent(req.Name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, normalizeAgent(saved))
 	}
 }
 

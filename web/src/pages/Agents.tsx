@@ -62,8 +62,8 @@ function Agents() {
       const startX = 60
       await saveAgent(name, {
         nodes: [
-          { id: 'input-1', type: 'input', position: { x: startX, y: 120 }, data: { label: 'Input' } },
-          { id: 'output-1', type: 'output', position: { x: startX + 500, y: 120 }, data: { label: 'Output' } },
+          { id: 'input-1', type: 'input', position: { x: startX, y: 120 }, data: { name: 'Input' } },
+          { id: 'output-1', type: 'output', position: { x: startX + 500, y: 120 }, data: { name: 'Output' } },
         ],
         edges: [],
       })
