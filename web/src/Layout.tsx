@@ -24,6 +24,7 @@ const navSections: NavSection[] = [
       { to: '/models', label: 'Models', icon: Box },
       { to: '/datasets', label: 'Datasets', icon: Database },
       { to: '/training', label: 'Training', icon: BarChart3 },
+      { to: '/benchmarks', label: 'Benchmarks', icon: Trophy },
     ],
   },
   {
@@ -32,7 +33,6 @@ const navSections: NavSection[] = [
       { to: '/environments', label: 'Environments', icon: Container },
       { to: '/agents', label: 'Agents', icon: Workflow },
       { to: '/evaluations', label: 'Evaluations', icon: ClipboardCheck },
-      { to: '/benchmarks', label: 'Benchmarks', icon: Trophy },
     ],
   },
 ]
