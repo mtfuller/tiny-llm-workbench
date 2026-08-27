@@ -1402,6 +1402,10 @@ textarea {
   --node-color: #2f8f6d;
 }
 
+.inspector-node-header-knowledge {
+  --node-color: #7c5cbf;
+}
+
 .inspector-node-header-output {
   --node-color: #d0447a;
 }
@@ -1604,6 +1608,10 @@ textarea {
 
 .flow-node-tool {
   border-left-color: #2f8f6d;
+}
+
+.flow-node-knowledge {
+  border-left-color: #7c5cbf;
 }
 
 .flow-node-output {

@@ -19,46 +19,17 @@ type Mount struct {
 	ReadOnly      bool   `json:"readOnly,omitempty"`
 }
 
-// ToolParameterType is a Tool parameter's value type — used to render the
-// right form control when trying a tool, and for light validation before a
-// value is substituted into the tool's command.
-type ToolParameterType string
-
-const (
-	ToolParamString  ToolParameterType = "string"
-	ToolParamNumber  ToolParameterType = "number"
-	ToolParamBoolean ToolParameterType = "boolean"
-)
-
-// ToolParameter is one named, typed input a Tool's Command template expects
-// as a "{{name}}" placeholder.
-type ToolParameter struct {
-	Name        string            `json:"name"`
-	Type        ToolParameterType `json:"type"`
-	Description string            `json:"description,omitempty"`
-	Required    bool              `json:"required"`
-}
-
-// Tool is a named, runnable capability inside an Environment's container: a
-// shell command template with "{{name}}" placeholders, one per declared
-// Parameter, substituted (each value shell-quoted) when the tool actually
-// runs — see internal/environments.RenderToolCommand. A template places a
-// placeholder directly where its value belongs (e.g. "cat {{path}}") without
-// adding its own quotes around it, since substitution already quotes values.
-type Tool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Command     string          `json:"command"`
-	Parameters  []ToolParameter `json:"parameters"`
-}
-
 // Environment is a registry-tracked Environment definition: a Docker image,
-// the mounts it should launch with, and the Tools available to run inside
-// it once launched (see internal/environments).
+// the mounts it should launch with (its "file structure" — what's visible
+// inside the container from the host), and the names of catalog Tools
+// (see tools.go) available to run inside it once launched (see
+// internal/environments). Tools is a list of names, not embedded
+// definitions — attaching a tool to an environment is a live reference to
+// the shared catalog entry, not a copy.
 type Environment struct {
 	Name      string    `json:"name"`
 	Image     string    `json:"image"`
-	Tools     []Tool    `json:"tools"`
+	Tools     []string  `json:"tools"`
 	Mounts    []Mount   `json:"mounts"`
 	Prebuilt  bool      `json:"prebuilt"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -121,8 +92,8 @@ func (r *Registry) DeleteEnvironment(name string) error {
 }
 
 // UpdateConfig overwrites the named environment's image and mounts, leaving
-// its tools untouched — the "Configuration" side of the environment
-// workspace page.
+// its attached tools untouched — the "Configuration" side of the
+// environment workspace page.
 func (r *Registry) UpdateConfig(name, image string, mounts []Mount) error {
 	env, err := r.GetEnvironment(name)
 	if err != nil {
@@ -133,42 +104,43 @@ func (r *Registry) UpdateConfig(name, image string, mounts []Mount) error {
 	return r.SaveEnvironment(env)
 }
 
-// AddTool appends a new tool to the named environment.
-func (r *Registry) AddTool(name string, tool Tool) error {
+// AttachTool references an existing catalog tool from the named
+// environment. It's idempotent (attaching an already-attached tool is a
+// no-op) and validates the tool actually exists in the catalog first, so a
+// typo'd name can't silently create a dangling reference at attach time.
+func (r *Registry) AttachTool(name, toolName string) error {
 	env, err := r.GetEnvironment(name)
 	if err != nil {
 		return err
 	}
-	env.Tools = append(env.Tools, tool)
+	if _, err := r.GetTool(toolName); err != nil {
+		return fmt.Errorf("tool %q not found in the catalog: %w", toolName, err)
+	}
+	for _, t := range env.Tools {
+		if t == toolName {
+			return nil
+		}
+	}
+	env.Tools = append(env.Tools, toolName)
 	return r.SaveEnvironment(env)
 }
 
-// UpdateTool overwrites the tool at index (0-based, in the order
-// GetEnvironment returns them). It's an error if index is out of range.
-func (r *Registry) UpdateTool(name string, index int, tool Tool) error {
+// DetachTool removes a tool reference from the named environment. This
+// doesn't touch the catalog tool itself, only this environment's list of
+// which tools it makes available. It's an error if the environment doesn't
+// currently reference toolName.
+func (r *Registry) DetachTool(name, toolName string) error {
 	env, err := r.GetEnvironment(name)
 	if err != nil {
 		return err
 	}
-	if index < 0 || index >= len(env.Tools) {
-		return fmt.Errorf("tool index %d out of range (environment has %d tools)", index, len(env.Tools))
+	for i, t := range env.Tools {
+		if t == toolName {
+			env.Tools = append(env.Tools[:i], env.Tools[i+1:]...)
+			return r.SaveEnvironment(env)
+		}
 	}
-	env.Tools[index] = tool
-	return r.SaveEnvironment(env)
-}
-
-// DeleteTool removes the tool at index (0-based, in the order
-// GetEnvironment returns them). It's an error if index is out of range.
-func (r *Registry) DeleteTool(name string, index int) error {
-	env, err := r.GetEnvironment(name)
-	if err != nil {
-		return err
-	}
-	if index < 0 || index >= len(env.Tools) {
-		return fmt.Errorf("tool index %d out of range (environment has %d tools)", index, len(env.Tools))
-	}
-	env.Tools = append(env.Tools[:index], env.Tools[index+1:]...)
-	return r.SaveEnvironment(env)
+	return fmt.Errorf("environment %q doesn't have tool %q attached", name, toolName)
 }
 
 // ListEnvironments returns every registry-tracked environment, sorted by
@@ -203,7 +175,8 @@ func (r *Registry) ListEnvironments() ([]Environment, error) {
 // EnsurePrebuiltEnvironments seeds the registry's built-in environment
 // definitions (WebSearch, SoftwareDev, OfficeWorker) if they don't already
 // exist. It never overwrites an existing definition, so a user is free to
-// edit or replace them.
+// edit or replace them. Call EnsurePrebuiltTools first — these definitions
+// reference catalog tools by name and assume they already exist.
 func (r *Registry) EnsurePrebuiltEnvironments() error {
 	for _, env := range PrebuiltEnvironments() {
 		if _, err := r.GetEnvironment(env.Name); err == nil {
@@ -216,82 +189,33 @@ func (r *Registry) EnsurePrebuiltEnvironments() error {
 	return nil
 }
 
-// readFileTool, writeFileTool, and readDirectoryTool are shared by more than
-// one prebuilt environment — general file-manipulation capabilities any
-// container with a shell can run.
-func readFileTool() Tool {
-	return Tool{
-		Name:        "read_file",
-		Description: "Read a file's contents",
-		Command:     "cat {{path}}",
-		Parameters:  []ToolParameter{{Name: "path", Type: ToolParamString, Description: "Path to the file", Required: true}},
-	}
-}
-
-func writeFileTool() Tool {
-	return Tool{
-		Name:        "write_file",
-		Description: "Write content to a file, overwriting it if it already exists",
-		Command:     "printf '%s' {{content}} > {{path}}",
-		Parameters: []ToolParameter{
-			{Name: "path", Type: ToolParamString, Description: "Path to write to", Required: true},
-			{Name: "content", Type: ToolParamString, Description: "Content to write", Required: true},
-		},
-	}
-}
-
-func readDirectoryTool() Tool {
-	return Tool{
-		Name:        "read_directory",
-		Description: "List a directory's contents",
-		Command:     "ls -la {{path}}",
-		Parameters:  []ToolParameter{{Name: "path", Type: ToolParamString, Description: "Directory path", Required: true}},
-	}
-}
-
-// webSearchTool searches the web via DuckDuckGo's free, keyless Instant
-// Answer API — chosen over a real search API specifically to avoid needing
-// an API key/signup, consistent with this app's local-first stance. Results
-// are instant-answer/infobox style, not full web search results. The query
-// is passed to curl via --data-urlencode rather than embedded in a
-// hand-built URL string, so curl (not this app) handles URL-encoding it —
-// and {{query}} sits directly after the literal "q=" prefix in the same
-// shell word, with no extra quotes, so command substitution's own
-// shell-quoting composes correctly (see RenderToolCommand's doc comment).
-func webSearchTool() Tool {
-	return Tool{
-		Name:        "web_search",
-		Description: "Search the web via DuckDuckGo's Instant Answer API (free, no API key)",
-		Command:     "curl -s -G --data-urlencode q={{query}} --data format=json --data no_html=1 --data skip_disambig=1 https://api.duckduckgo.com/",
-		Parameters:  []ToolParameter{{Name: "query", Type: ToolParamString, Description: "Search query", Required: true}},
-	}
-}
-
 // PrebuiltEnvironments returns TLW's built-in Environment definitions.
 // Their images are deliberately generic (no dedicated web-search/dev/office
 // container images exist yet) — they're a starting point to launch, exec
-// into, and customize, not finished task-specific sandboxes.
+// into, and customize, not finished task-specific sandboxes. Tools are
+// referenced by name from the prebuilt tool catalog (see PrebuiltTools) —
+// EnsurePrebuiltTools must run first for these references to resolve.
 func PrebuiltEnvironments() []Environment {
 	now := time.Now().UTC()
 	return []Environment{
 		{
 			Name:      "WebSearch",
 			Image:     "curlimages/curl:8.10.1",
-			Tools:     []Tool{webSearchTool(), readFileTool(), writeFileTool()},
+			Tools:     []string{"web_search", "read_file", "write_file"},
 			Prebuilt:  true,
 			CreatedAt: now,
 		},
 		{
 			Name:      "SoftwareDev",
 			Image:     "python:3.12-slim",
-			Tools:     []Tool{readFileTool(), writeFileTool(), readDirectoryTool()},
+			Tools:     []string{"read_file", "write_file", "read_directory"},
 			Prebuilt:  true,
 			CreatedAt: now,
 		},
 		{
 			Name:      "OfficeWorker",
 			Image:     "debian:bookworm-slim",
-			Tools:     []Tool{readFileTool(), writeFileTool(), readDirectoryTool()},
+			Tools:     []string{"read_file", "write_file", "read_directory"},
 			Prebuilt:  true,
 			CreatedAt: now,
 		},

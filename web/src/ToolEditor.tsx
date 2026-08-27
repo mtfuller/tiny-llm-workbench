@@ -37,8 +37,15 @@ export function toDraftTool(tool: Tool): DraftTool {
   }
 }
 
-// toPayloadTool drops blank parameters, ready to send to addTool/updateTool.
-export function toPayloadTool(draft: DraftTool): Tool {
+export interface ToolPayload {
+  name: string
+  description?: string
+  command: string
+  parameters: ToolParameter[]
+}
+
+// toPayloadTool drops blank parameters, ready to send to createTool/updateTool.
+export function toPayloadTool(draft: DraftTool): ToolPayload {
   return {
     name: draft.name.trim(),
     description: draft.description.trim() || undefined,

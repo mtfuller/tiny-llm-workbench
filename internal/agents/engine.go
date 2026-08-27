@@ -1,12 +1,14 @@
 // Package agents executes agent workflow graphs (registry.Graph) as chat
 // turns: starting at the graph's input node, calling a local LLM for each
 // prompt node, branching at decision nodes on a keyword match, running a
-// named Tool from the agent's bound Environment for each tool node, and
-// returning whatever text reaches the output node. Every node's output is
-// kept (by its user-chosen Name) for the rest of the turn, so a downstream
-// node's template can reference any earlier node's output — not just its
-// immediate predecessor — and, for a prompt node with a declared output
-// JSON Schema, a specific property of it. See runcontext.go.
+// named Tool from the agent's bound Environment for each tool node,
+// deterministically keyword-searching a named KnowledgeBase for each
+// knowledge node (independent of any Environment — see internal/knowledge),
+// and returning whatever text reaches the output node. Every node's output
+// is kept (by its user-chosen Name) for the rest of the turn, so a
+// downstream node's template can reference any earlier node's output — not
+// just its immediate predecessor — and, for a prompt node with a declared
+// output JSON Schema, a specific property of it. See runcontext.go.
 package agents
 
 import (
@@ -18,6 +20,7 @@ import (
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/assertions"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
+	"github.com/mtfuller/tiny-llm-workbench/internal/knowledge"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
@@ -52,16 +55,25 @@ type toolRunner interface {
 	RunToolSync(ctx context.Context, instanceID, command string) (string, error)
 }
 
-// Engine walks an agent's graph to produce one chat reply.
-type Engine struct {
-	llm   llmClient
-	tools toolRunner
+// knowledgeReader is the subset of registry.Registry the engine needs to
+// resolve a knowledge node's named KnowledgeBase. Independent of any
+// Environment/toolRunner — querying records is plain in-process text
+// matching, nothing to launch.
+type knowledgeReader interface {
+	GetKnowledgeBase(name string) (registry.KnowledgeBase, error)
 }
 
-// NewEngine builds an Engine that calls models via llm and runs tool node
-// commands via tools.
-func NewEngine(llm llmClient, tools toolRunner) *Engine {
-	return &Engine{llm: llm, tools: tools}
+// Engine walks an agent's graph to produce one chat reply.
+type Engine struct {
+	llm       llmClient
+	tools     toolRunner
+	knowledge knowledgeReader
+}
+
+// NewEngine builds an Engine that calls models via llm, runs tool node
+// commands via tools, and resolves knowledge node lookups via kb.
+func NewEngine(llm llmClient, tools toolRunner, kb knowledgeReader) *Engine {
+	return &Engine{llm: llm, tools: tools, knowledge: kb}
 }
 
 // Run executes graph for one turn: starting at its input node with
@@ -221,6 +233,33 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 			edge := findEdge(graph.Edges, current.ID, "")
 			if edge == nil {
 				return "", fmt.Errorf("tool node %q has no outgoing edge", current.ID)
+			}
+			nextID = edge.Target
+
+		case "knowledge":
+			if current.Data.KnowledgeBaseName == "" {
+				return "", fmt.Errorf("knowledge node %q has no knowledge base selected", current.ID)
+			}
+			kb, err := e.knowledge.GetKnowledgeBase(current.Data.KnowledgeBaseName)
+			if err != nil {
+				return "", fmt.Errorf("knowledge node %q: %w", current.ID, err)
+			}
+
+			query := output
+			if current.Data.KnowledgeQuery != "" {
+				rendered, err := rc.render(current.Data.KnowledgeQuery)
+				if err != nil {
+					return "", fmt.Errorf("knowledge node %q: %w", current.ID, err)
+				}
+				query = rendered
+			}
+
+			output = knowledge.FormatResults(knowledge.Query(kb, query))
+			rc.set(current.Data.Name, output, nil)
+
+			edge := findEdge(graph.Edges, current.ID, "")
+			if edge == nil {
+				return "", fmt.Errorf("knowledge node %q has no outgoing edge", current.ID)
 			}
 			nextID = edge.Target
 

@@ -14,6 +14,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import {
+  BookOpen,
   GitBranch,
   LogIn,
   MessageSquare,
@@ -33,7 +34,9 @@ import { Link, useParams } from 'react-router-dom'
 import {
   getAgent,
   listEnvironments,
+  listKnowledgeBases,
   listModels,
+  listTools,
   saveAgent,
   sendAgentMessage,
   startAgentRun,
@@ -42,6 +45,7 @@ import {
   type AgentStepEvent,
   type ChatMessage,
   type Environment,
+  type KnowledgeBase,
   type Model,
   type NodeType,
   type Tool,
@@ -60,6 +64,7 @@ type FlowNode = Node<AgentNodeData>
 const NODE_COLORS: Record<string, string> = {
   prompt: '#2f6fd6',
   tool: '#2f8f6d',
+  knowledge: '#7c5cbf',
   output: '#d0447a',
 }
 
@@ -85,10 +90,11 @@ const NODE_META: Record<NodeType, NodeMeta> = {
   prompt: { label: 'Prompt', icon: MessageSquare },
   decision: { label: 'Decision', icon: GitBranch },
   tool: { label: 'Tool', icon: Terminal },
+  knowledge: { label: 'Knowledge', icon: BookOpen },
   output: { label: 'Output', icon: SquareArrowOutUpRight },
 }
 
-const PALETTE: NodeType[] = ['prompt', 'decision', 'tool', 'output']
+const PALETTE: NodeType[] = ['prompt', 'decision', 'tool', 'knowledge', 'output']
 
 let nodeCounter = 0
 function newNodeId(type: string): string {
@@ -115,6 +121,8 @@ function AgentEditorWorkspace() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [models, setModels] = useState<Model[]>([])
   const [environments, setEnvironments] = useState<Environment[]>([])
+  const [toolCatalog, setToolCatalog] = useState<Tool[]>([])
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
   const [environment, setEnvironment] = useState('')
   const [description, setDescription] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -139,6 +147,7 @@ function AgentEditorWorkspace() {
   const systemPromptRef = useRef<HTMLTextAreaElement>(null)
   const promptTemplateRef = useRef<HTMLTextAreaElement>(null)
   const matchTemplateRef = useRef<HTMLTextAreaElement>(null)
+  const knowledgeQueryRef = useRef<HTMLTextAreaElement>(null)
   const toolArgRefs = useRef<Map<string, HTMLInputElement>>(new Map())
 
   useEffect(() => {
@@ -157,6 +166,12 @@ function AgentEditorWorkspace() {
     listEnvironments()
       .then(setEnvironments)
       .catch(() => setEnvironments([]))
+    listTools()
+      .then(setToolCatalog)
+      .catch(() => setToolCatalog([]))
+    listKnowledgeBases()
+      .then(setKnowledgeBases)
+      .catch(() => setKnowledgeBases([]))
   }, [name, setNodes, setEdges])
 
   useEffect(() => {
@@ -231,7 +246,14 @@ function AgentEditorWorkspace() {
   }, [models])
 
   const boundEnvironment = useMemo(() => environments.find((e) => e.name === environment), [environments, environment])
-  const availableTools = boundEnvironment?.tools ?? []
+  // The environment only stores tool NAMES (a live reference into the
+  // global catalog) — resolve them here the same way EnvironmentDetail's
+  // Playground does, dropping any name that's since been deleted from the
+  // catalog rather than erroring.
+  const availableTools = useMemo(
+    () => (boundEnvironment?.tools ?? []).map((n) => toolCatalog.find((t) => t.name === n)).filter((t): t is Tool => t !== undefined),
+    [boundEnvironment, toolCatalog],
+  )
 
   const selectedTool: Tool | undefined = useMemo(
     () => availableTools.find((t) => t.name === selectedNode?.data.toolName),
@@ -654,6 +676,55 @@ function AgentEditorWorkspace() {
                       )}
                     </>
                   )}
+
+                  {selectedNode.type === 'knowledge' && (
+                    <>
+                      <label>
+                        Knowledge base
+                        <select
+                          value={selectedNode.data.knowledgeBaseName ?? ''}
+                          onChange={(e) => updateSelectedNodeData({ knowledgeBaseName: e.target.value })}
+                        >
+                          <option value="">Select a knowledge base…</option>
+                          {knowledgeBases.map((kb) => (
+                            <option key={kb.name} value={kb.name}>
+                              {kb.name}
+                            </option>
+                          ))}
+                        </select>
+                        {knowledgeBases.length === 0 && (
+                          <span className="field-hint">
+                            No knowledge bases yet — create one on the <Link to="/knowledge">Knowledge</Link> page.
+                          </span>
+                        )}
+                      </label>
+
+                      <label>
+                        Query (optional)
+                        <div className="template-field-row">
+                          <textarea
+                            ref={knowledgeQueryRef}
+                            rows={3}
+                            placeholder="Leave blank to query with the previous node's raw output"
+                            value={selectedNode.data.knowledgeQuery ?? ''}
+                            onChange={(e) => updateSelectedNodeData({ knowledgeQuery: e.target.value })}
+                          />
+                          <VariableMenuButton
+                            options={upstreamOptions}
+                            onInsert={(snippet) =>
+                              insertAtCursor(knowledgeQueryRef.current, selectedNode.data.knowledgeQuery ?? '', snippet, (next) =>
+                                updateSelectedNodeData({ knowledgeQuery: next }),
+                              )
+                            }
+                          />
+                        </div>
+                        <span className="field-hint">
+                          Matched records are joined and passed downstream as this node's output — a deterministic
+                          keyword match against title and content, not embeddings.
+                        </span>
+                      </label>
+                    </>
+                  )}
                 </div>
 
                 {selectedNode.type !== 'input' && (
@@ -764,9 +835,7 @@ function AgentSettingsModal({
           </select>
         </label>
         {selected && (
-          <p className="hint">
-            Tools available: {selected.tools.length > 0 ? selected.tools.map((t) => t.name).join(', ') : 'none'}
-          </p>
+          <p className="hint">Tools available: {selected.tools.length > 0 ? selected.tools.join(', ') : 'none'}</p>
         )}
 
         <label>

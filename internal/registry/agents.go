@@ -49,10 +49,19 @@ type NodeData struct {
 
 	ToolName string            `json:"toolName,omitempty"` // tool nodes: name of a Tool on the agent's Environment
 	ToolArgs map[string]string `json:"toolArgs,omitempty"` // tool nodes: templated value per parameter name
+
+	// KnowledgeBaseName and KnowledgeQuery are knowledge nodes: which
+	// registry.KnowledgeBase to search (independent of any Environment —
+	// querying records doesn't need a container) and what templated query
+	// text to search with; an empty KnowledgeQuery falls back to the
+	// previous node's raw output, same convention as PromptTemplate and
+	// MatchTemplate.
+	KnowledgeBaseName string `json:"knowledgeBaseName,omitempty"`
+	KnowledgeQuery    string `json:"knowledgeQuery,omitempty"`
 }
 
 // Node is one node in an agent's graph. Type is one of "input", "prompt",
-// "decision", "tool", "output".
+// "decision", "tool", "knowledge", "output".
 type Node struct {
 	ID       string   `json:"id"`
 	Type     string   `json:"type"`

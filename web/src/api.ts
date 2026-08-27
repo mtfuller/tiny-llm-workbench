@@ -121,19 +121,42 @@ export interface ToolParameter {
   required: boolean
 }
 
+// Tool is a global catalog entry (its own top-level resource, like Models/
+// Datasets) — an Environment names which catalog tools it makes available
+// (Environment.tools: string[]) rather than embedding a copy, so editing a
+// tool here changes it everywhere it's attached.
 export interface Tool {
   name: string
   description?: string
   command: string
   parameters: ToolParameter[]
+  prebuilt?: boolean
+  createdAt: string
 }
 
 export interface Environment {
   name: string
   image: string
-  tools: Tool[]
+  tools: string[]
   mounts: Mount[]
   prebuilt: boolean
+  createdAt: string
+}
+
+export interface KnowledgeRecord {
+  id: string
+  title: string
+  content: string
+  tags?: string[]
+}
+
+// KnowledgeBase is independent of any Environment — querying its records is
+// plain in-process text matching, nothing to launch. See internal/knowledge:
+// querying is deterministic keyword/substring matching, not embeddings.
+export interface KnowledgeBase {
+  name: string
+  description?: string
+  records: KnowledgeRecord[]
   createdAt: string
 }
 
@@ -160,7 +183,7 @@ export interface Exec {
   error?: string
 }
 
-export type NodeType = 'input' | 'prompt' | 'decision' | 'tool' | 'output'
+export type NodeType = 'input' | 'prompt' | 'decision' | 'tool' | 'knowledge' | 'output'
 
 export interface AgentNodeData extends Record<string, unknown> {
   // name is a stable, user-editable, unique-within-the-graph display name —
@@ -191,6 +214,13 @@ export interface AgentNodeData extends Record<string, unknown> {
   // {{nodeName}}/{{nodeName.field}} template references.
   toolName?: string
   toolArgs?: Record<string, string>
+
+  // Knowledge nodes: knowledgeBaseName names a KnowledgeBase (independent of
+  // any Environment) to search; knowledgeQuery is templated query text,
+  // falling back to the previous node's raw output when empty, same
+  // convention as promptTemplate/matchTemplate.
+  knowledgeBaseName?: string
+  knowledgeQuery?: string
 }
 
 export interface AgentNode {
@@ -555,32 +585,113 @@ export function updateEnvironmentConfig(name: string, image: string, mounts: Mou
   }).then(json<Environment>)
 }
 
-export function addTool(name: string, tool: Tool): Promise<Tool> {
+// attachTool references an existing catalog tool from an environment — a
+// live reference, not a copy: editing the tool afterward (via updateTool)
+// changes it everywhere it's attached.
+export function attachTool(name: string, toolName: string): Promise<Environment> {
   return fetch(`/api/environments/${encodeURIComponent(name)}/tools`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ toolName }),
+  }).then(json<Environment>)
+}
+
+// detachTool removes a tool reference from an environment without touching
+// the catalog entry itself.
+export function detachTool(name: string, toolName: string): Promise<void> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${encodeURIComponent(toolName)}`, { method: 'DELETE' }).then(
+    noContent,
+  )
+}
+
+export function tryTool(name: string, toolName: string, instanceId: string, args: Record<string, string>): Promise<Exec> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${encodeURIComponent(toolName)}/try`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instanceId, args }),
+  }).then(json<Exec>)
+}
+
+// --- Tool catalog (global, independent of any Environment) ---
+
+export function listTools(): Promise<Tool[]> {
+  return fetch('/api/tools').then(json<Tool[]>)
+}
+
+export function createTool(tool: { name: string; description?: string; command: string; parameters: ToolParameter[] }): Promise<Tool> {
+  return fetch('/api/tools', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tool),
   }).then(json<Tool>)
 }
 
-export function updateTool(name: string, index: number, tool: Tool): Promise<Tool> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${index}`, {
+export function getTool(name: string): Promise<Tool> {
+  return fetch(`/api/tools/${encodeURIComponent(name)}`).then(json<Tool>)
+}
+
+export function updateTool(
+  name: string,
+  tool: { description?: string; command: string; parameters: ToolParameter[] },
+): Promise<Tool> {
+  return fetch(`/api/tools/${encodeURIComponent(name)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tool),
   }).then(json<Tool>)
 }
 
-export function deleteTool(name: string, index: number): Promise<void> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${index}`, { method: 'DELETE' }).then(noContent)
+export function deleteTool(name: string): Promise<void> {
+  return fetch(`/api/tools/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
 }
 
-export function tryTool(name: string, index: number, instanceId: string, args: Record<string, string>): Promise<Exec> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${index}/try`, {
+// --- Knowledge bases (independent of any Environment) ---
+
+export function listKnowledgeBases(): Promise<KnowledgeBase[]> {
+  return fetch('/api/knowledge').then(json<KnowledgeBase[]>)
+}
+
+export function createKnowledgeBase(name: string, description?: string): Promise<KnowledgeBase> {
+  return fetch('/api/knowledge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ instanceId, args }),
-  }).then(json<Exec>)
+    body: JSON.stringify({ name, description }),
+  }).then(json<KnowledgeBase>)
+}
+
+export function getKnowledgeBase(name: string): Promise<KnowledgeBase> {
+  return fetch(`/api/knowledge/${encodeURIComponent(name)}`).then(json<KnowledgeBase>)
+}
+
+export function deleteKnowledgeBase(name: string): Promise<void> {
+  return fetch(`/api/knowledge/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+}
+
+export function addKnowledgeRecords(
+  name: string,
+  records: { title: string; content: string; tags?: string[] }[],
+): Promise<KnowledgeBase> {
+  return fetch(`/api/knowledge/${encodeURIComponent(name)}/records`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ records }),
+  }).then(json<KnowledgeBase>)
+}
+
+export function updateKnowledgeRecord(
+  name: string,
+  index: number,
+  record: { title: string; content: string; tags?: string[] },
+): Promise<KnowledgeBase> {
+  return fetch(`/api/knowledge/${encodeURIComponent(name)}/records/${index}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(record),
+  }).then(json<KnowledgeBase>)
+}
+
+export function deleteKnowledgeRecord(name: string, index: number): Promise<void> {
+  return fetch(`/api/knowledge/${encodeURIComponent(name)}/records/${index}`, { method: 'DELETE' }).then(noContent)
 }
 
 export function launchEnvironment(name: string, instanceName?: string): Promise<Instance> {

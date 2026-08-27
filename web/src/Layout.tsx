@@ -1,4 +1,18 @@
-import { Activity, BarChart3, Box, ClipboardCheck, Container, Database, PanelLeftClose, PanelLeftOpen, Settings, Trophy, Workflow } from 'lucide-react'
+import {
+  Activity,
+  BarChart3,
+  BookOpen,
+  Box,
+  ClipboardCheck,
+  Container,
+  Database,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings,
+  Trophy,
+  Wrench,
+  Workflow,
+} from 'lucide-react'
 import { useEffect, useState, type ComponentType } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useEventStream } from './eventStream'
@@ -28,9 +42,16 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    label: 'Automation',
+    label: 'Environments',
     items: [
       { to: '/environments', label: 'Environments', icon: Container },
+      { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
+      { to: '/tools', label: 'Tools', icon: Wrench },
+    ],
+  },
+  {
+    label: 'Automation',
+    items: [
       { to: '/agents', label: 'Agents', icon: Workflow },
       { to: '/evaluations', label: 'Evaluations', icon: ClipboardCheck },
     ],

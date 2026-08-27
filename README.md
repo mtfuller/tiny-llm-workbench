@@ -20,14 +20,19 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
 - **Training** — Train models locally with Apple MLX. Pick a base model (a Hugging Face MLX repo id, or
   a model you've already trained here) and a dataset, configure a run, and watch weight changes and
   training stats (duration, iterations, memory) update live.
-- **Environments** — Sandboxed Docker environments give agents tools, memory, and a filesystem to do
-  real work. Each environment has its own workspace page: configure its image and mounts, define tools
-  (a command template with a typed parameter list — string/number/boolean), and launch an instance to
-  try a tool interactively before wiring it into an agent. Several prebuilt environments (WebSearch,
-  SoftwareDev, OfficeWorker) ship with real tools already defined (read/write files, list a directory;
-  WebSearch also gets a keyless web-search tool), or build your own from scratch.
-- **Agents** — Design agents visually on a canvas: connect prompt, model, tool, memory, knowledge, and
-  input/output nodes into a workflow. Each agent targets a specific environment.
+- **Environments** — Sandboxed Docker environments give agents tools and a filesystem to do real work.
+  Each environment has its own workspace page: configure its image and mounts, attach tools from a
+  shared catalog, and launch an instance to try one interactively before wiring it into an agent.
+- **Tools** — A shared catalog of runnable commands (a command template with a typed parameter list —
+  string/number/boolean), independent of any one Environment: attach a tool to as many environments as
+  you like by name, and editing it updates every attachment. Several prebuilt tools ship out of the box
+  (read/write files, list a directory, a keyless DuckDuckGo web search) and come pre-attached to the
+  prebuilt Environments (WebSearch, SoftwareDev, OfficeWorker), or build your own from scratch.
+- **Knowledge** — Define named knowledge bases of title/content records an agent can query. Matching is
+  a deterministic keyword search (every query word must appear in the record), not embeddings or a
+  vector store — consistent with the rest of TLW's deterministic, non-LLM-graded decision points.
+- **Agents** — Design agents visually on a canvas: connect prompt, model, tool, knowledge, decision, and
+  input/output nodes into a workflow. Each agent can target a specific Environment (for its tool nodes).
 - **Evaluations** — Define test suites against your agents: starting environment state, an initial
   prompt, and assertions to check. TLW ships with a tiny LLM fine-tuned to generate evaluation test
   variations from a single example, and lets you compare results across agents.
@@ -53,21 +58,27 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         CLAUDE.md's MLX integration note).
   - [x] Local MLX model client for generating dataset variations
 - [x] **Phase 2 — Environments**
-  - [x] Add an Environments page to the navbar
+  - [x] Add an Environments page to the navbar — since expanded into its own "Environments" nav section
+        (Environments, Knowledge, Tools)
   - [x] Prebuilt environments (WebSearch, SoftwareDev, OfficeWorker, ...) launched as Docker containers
   - [x] Create and save custom environments
   - [x] Per-environment workspace page (Configuration / Tools / Playground tabs): edit image and mounts
-        (with per-mount read-only), define tools as a command template plus a typed parameter list
-        (string/number/boolean), and launch an instance to try a tool interactively with live streamed
-        output. Prebuilt environments ship with real tools (read/write file, list directory; WebSearch
-        also gets a DuckDuckGo-backed web search tool) rather than just descriptive labels. Fully
-        verified live against a real Docker container: launched an instance, ran the real `web_search`
-        tool and got a real API response, and ran `read_file` against a path containing a space to
-        confirm argument quoting is correct.
+        (with per-mount read-only), attach tools from a shared global catalog (a command template plus a
+        typed parameter list — string/number/boolean, editable on its own Tools page and referenced by
+        name, so editing a tool updates every environment it's attached to), and launch an instance to try
+        a tool interactively with live streamed output. Prebuilt environments come with real tools already
+        attached (read/write file, list directory; WebSearch also gets a DuckDuckGo-backed web search
+        tool) rather than just descriptive labels. Fully verified live against a real Docker container:
+        attached a catalog tool to a running environment and ran it for a real result, and ran `read_file`
+        against a path containing a space to confirm argument quoting is correct.
+  - [x] Knowledge — a separate page (independent of any Environment/Docker) for defining named knowledge
+        bases of title/content records, queryable by deterministic keyword match. An Agent's new
+        "knowledge" canvas node queries one directly.
 - [x] **Phase 3 — Agents**
   - [x] Add an Agents page to the navbar
-  - [x] Visual canvas for building agent workflows (input, prompt, output, decision, tool nodes) — built
-        with React Flow. Agent settings (which Environment it targets, plus a free-text description) live
+  - [x] Visual canvas for building agent workflows (input, prompt, output, decision, tool, knowledge
+        nodes) — built with React Flow. Agent settings (which Environment it targets, plus a free-text
+        description) live
         in a settings modal opened from the left node palette, not an always-visible sidebar block. A
         professional-looking, node-type-colored right-sidebar inspector configures each selected node; a
         tool node picks one of the bound Environment's real tools from a dropdown and fills in a
@@ -85,8 +96,11 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         was launched, a tool node's chosen tool (a real DuckDuckGo web search) executed inside it with the
         previous node's output correctly templated into its query parameter; and a real local model
         extracted `{"city": "Paris"}` into a schema-checked node, with a downstream node's prompt template
-        correctly resolving `{{Classifier.city}}` to produce a reply specifically about Parisian food. No
-        memory/knowledge nodes yet — that's future work.
+        correctly resolving `{{Classifier.city}}` to produce a reply specifically about Parisian food. A
+        knowledge node queries a named KnowledgeBase (deterministic keyword match, no Environment
+        involved) and its result is referenceable downstream the same way any other node's output is —
+        verified live with a real KnowledgeBase record correctly matched and templated into a prompt node
+        that produced an accurate, on-topic reply from a real local model.
   - [x] Run view: watch agent events live and chat with a running agent — fully verified live with a
         real local MLX model (served via `mlx_lm.server`, TLW's inference backend — see CLAUDE.md's MLX
         integration note): canvas building, saving, chatting, and the live step-by-step execution log

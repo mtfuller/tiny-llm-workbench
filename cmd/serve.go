@@ -69,6 +69,9 @@ URL in a browser. Stop it with Ctrl+C.`,
 			logger.Warn("Failed to load training run history: %v", err)
 		}
 
+		if err := reg.EnsurePrebuiltTools(); err != nil {
+			logger.Warn("Failed to seed prebuilt tools: %v", err)
+		}
 		if err := reg.EnsurePrebuiltEnvironments(); err != nil {
 			logger.Warn("Failed to seed prebuilt environments: %v", err)
 		}
@@ -82,7 +85,7 @@ URL in a browser. Stop it with Ctrl+C.`,
 		}
 		environmentsMgr := environments.NewManager(ctx, dockerClient, reg, bus)
 
-		agentsMgr := agents.NewManager(ctx, reg, runner, environmentsMgr, reg, bus)
+		agentsMgr := agents.NewManager(ctx, reg, runner, environmentsMgr, reg, reg, reg, bus)
 
 		evaluationsMgr := evaluations.NewManager(ctx, reg, agentsMgr, environmentsMgr, bus)
 
@@ -97,6 +100,8 @@ URL in a browser. Stop it with Ctrl+C.`,
 			Training:     trainingMgr,
 			Environments: reg,
 			Instances:    environmentsMgr,
+			Tools:        reg,
+			Knowledge:    reg,
 			Agents:       reg,
 			AgentRuns:    agentsMgr,
 			Evaluations:  reg,

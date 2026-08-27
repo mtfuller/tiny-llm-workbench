@@ -11,9 +11,12 @@ import Environments from './pages/Environments'
 import EvaluationDetail from './pages/EvaluationDetail'
 import Evaluations from './pages/Evaluations'
 import Home from './pages/Home'
+import Knowledge from './pages/Knowledge'
+import KnowledgeDetail from './pages/KnowledgeDetail'
 import ModelDetail from './pages/ModelDetail'
 import Models from './pages/Models'
 import Settings from './pages/Settings'
+import Tools from './pages/Tools'
 import Training from './pages/Training'
 import TrainingRunDetail from './pages/TrainingRunDetail'
 
@@ -30,6 +33,9 @@ function App() {
         <Route path="training/:id" element={<TrainingRunDetail />} />
         <Route path="environments" element={<Environments />} />
         <Route path="environments/:name" element={<EnvironmentDetail />} />
+        <Route path="knowledge" element={<Knowledge />} />
+        <Route path="knowledge/:name" element={<KnowledgeDetail />} />
+        <Route path="tools" element={<Tools />} />
         <Route path="agents" element={<Agents />} />
         <Route path="agents/:name" element={<AgentEditor />} />
         <Route path="evaluations" element={<Evaluations />} />

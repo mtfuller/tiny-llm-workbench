@@ -36,6 +36,13 @@ type environmentReader interface {
 	GetEnvironment(name string) (registry.Environment, error)
 }
 
+// toolReader is the subset of registry.Registry Manager needs to resolve
+// the Tool catalog entries an Environment names by reference (Environment
+// itself only stores tool names, not full definitions — see registry.Tool).
+type toolReader interface {
+	GetTool(name string) (registry.Tool, error)
+}
+
 // Run is a chat session against one agent. History is in-memory only —
 // unlike Phase 1's training runs, losing it on a `tlw serve` restart isn't
 // costly enough to warrant persisting to disk. InstanceID is set for the
@@ -56,6 +63,7 @@ type Manager struct {
 	agents    agentReader
 	envs      environmentRunner
 	envReader environmentReader
+	toolStore toolReader
 	engine    *Engine
 	bus       *eventbus.Bus
 
@@ -68,14 +76,17 @@ type Manager struct {
 // needs to outlive individual HTTP requests, but using the server's
 // lifetime context (not a request context) keeps this consistent with
 // Phase 1/2's managers. envReader resolves an agent's bound Environment
-// (its declared Tools) so a turn's tool nodes can look up what they name.
-func NewManager(ctx context.Context, agentsReader agentReader, llm llmClient, envs environmentRunner, envReader environmentReader, bus *eventbus.Bus) *Manager {
+// (its list of attached tool names); toolStore resolves each of those names
+// against the global Tool catalog; kb resolves a knowledge node's named
+// KnowledgeBase (independent of any Environment).
+func NewManager(ctx context.Context, agentsReader agentReader, llm llmClient, envs environmentRunner, envReader environmentReader, toolStore toolReader, kb knowledgeReader, bus *eventbus.Bus) *Manager {
 	return &Manager{
 		ctx:       ctx,
 		agents:    agentsReader,
 		envs:      envs,
 		envReader: envReader,
-		engine:    NewEngine(llm, envs),
+		toolStore: toolStore,
+		engine:    NewEngine(llm, envs, kb),
 		bus:       bus,
 		runs:      make(map[string]*Run),
 	}
@@ -163,7 +174,16 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 		if err != nil {
 			return ChatMessage{}, fmt.Errorf("look up environment %q: %w", agent.Environment, err)
 		}
-		tools = env.Tools
+		// A tool name the environment references but that's since been
+		// deleted from the catalog is skipped here, not an error — the
+		// engine's own "tool not found" reporting for a node that actually
+		// tries to use it is the same graceful-degradation path a tool
+		// removed from the environment already goes through.
+		for _, toolName := range env.Tools {
+			if tool, err := m.toolStore.GetTool(toolName); err == nil {
+				tools = append(tools, tool)
+			}
+		}
 	}
 
 	reply, err := m.engine.Run(m.ctx, agent.Graph, history, message, run.InstanceID, tools, func(step StepEvent) {

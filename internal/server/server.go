@@ -69,9 +69,8 @@ type environmentStore interface {
 	GetEnvironment(name string) (registry.Environment, error)
 	DeleteEnvironment(name string) error
 	UpdateConfig(name, image string, mounts []registry.Mount) error
-	AddTool(name string, tool registry.Tool) error
-	UpdateTool(name string, index int, tool registry.Tool) error
-	DeleteTool(name string, index int) error
+	AttachTool(name, toolName string) error
+	DetachTool(name, toolName string) error
 }
 
 // environmentManager is the subset of environments.Manager the server needs.
@@ -82,6 +81,27 @@ type environmentManager interface {
 	StartExec(instanceID, command string) (*environments.Exec, error)
 	GetExec(id string) (*environments.Exec, bool)
 	TryTool(instanceID string, tool registry.Tool, args map[string]string) (*environments.Exec, error)
+}
+
+// toolStore is the subset of registry.Registry the server needs for the
+// global Tool catalog (see registry.Tool) — independent of any Environment.
+type toolStore interface {
+	ListTools() ([]registry.Tool, error)
+	SaveTool(tool registry.Tool) error
+	GetTool(name string) (registry.Tool, error)
+	DeleteTool(name string) error
+}
+
+// knowledgeStore is the subset of registry.Registry the server needs for
+// Knowledge base definitions.
+type knowledgeStore interface {
+	ListKnowledgeBases() ([]registry.KnowledgeBase, error)
+	SaveKnowledgeBase(kb registry.KnowledgeBase) error
+	GetKnowledgeBase(name string) (registry.KnowledgeBase, error)
+	DeleteKnowledgeBase(name string) error
+	AddRecords(name string, records []registry.KnowledgeRecord) error
+	UpdateRecord(name string, index int, record registry.KnowledgeRecord) error
+	DeleteRecord(name string, index int) error
 }
 
 // agentStore is the subset of registry.Registry the server needs for Agent
@@ -155,6 +175,8 @@ type Deps struct {
 	Training     trainingManager
 	Environments environmentStore
 	Instances    environmentManager
+	Tools        toolStore
+	Knowledge    knowledgeStore
 	Agents       agentStore
 	AgentRuns    agentManager
 	Evaluations  evaluationStore
@@ -207,15 +229,26 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /api/environments/{name}", getEnvironmentHandler(deps.Environments))
 	mux.HandleFunc("DELETE /api/environments/{name}", deleteEnvironmentHandler(deps.Environments))
 	mux.HandleFunc("PUT /api/environments/{name}/config", updateEnvironmentConfigHandler(deps.Environments))
-	mux.HandleFunc("POST /api/environments/{name}/tools", addToolHandler(deps.Environments))
-	mux.HandleFunc("PUT /api/environments/{name}/tools/{index}", updateToolHandler(deps.Environments))
-	mux.HandleFunc("DELETE /api/environments/{name}/tools/{index}", deleteToolHandler(deps.Environments))
-	mux.HandleFunc("POST /api/environments/{name}/tools/{index}/try", tryToolHandler(deps.Environments, deps.Instances))
+	mux.HandleFunc("POST /api/environments/{name}/tools", attachToolHandler(deps.Environments))
+	mux.HandleFunc("DELETE /api/environments/{name}/tools/{toolName}", detachToolHandler(deps.Environments))
+	mux.HandleFunc("POST /api/environments/{name}/tools/{toolName}/try", tryToolHandler(deps.Environments, deps.Tools, deps.Instances))
 	mux.HandleFunc("POST /api/environments/{name}/launch", launchEnvironmentHandler(deps.Instances))
 	mux.HandleFunc("GET /api/environments/instances", listInstancesHandler(deps.Instances))
 	mux.HandleFunc("POST /api/environments/instances/{id}/stop", stopInstanceHandler(deps.Instances))
 	mux.HandleFunc("POST /api/environments/instances/{id}/exec", startExecHandler(deps.Instances))
 	mux.HandleFunc("GET /api/environments/instances/{id}/execs/{execId}", getExecHandler(deps.Instances))
+	mux.HandleFunc("GET /api/tools", listToolsHandler(deps.Tools))
+	mux.HandleFunc("POST /api/tools", createToolHandler(deps.Tools))
+	mux.HandleFunc("GET /api/tools/{name}", getToolHandler(deps.Tools))
+	mux.HandleFunc("PUT /api/tools/{name}", updateToolHandler(deps.Tools))
+	mux.HandleFunc("DELETE /api/tools/{name}", deleteToolHandler(deps.Tools))
+	mux.HandleFunc("GET /api/knowledge", listKnowledgeBasesHandler(deps.Knowledge))
+	mux.HandleFunc("POST /api/knowledge", createKnowledgeBaseHandler(deps.Knowledge))
+	mux.HandleFunc("GET /api/knowledge/{name}", getKnowledgeBaseHandler(deps.Knowledge))
+	mux.HandleFunc("DELETE /api/knowledge/{name}", deleteKnowledgeBaseHandler(deps.Knowledge))
+	mux.HandleFunc("POST /api/knowledge/{name}/records", addRecordsHandler(deps.Knowledge))
+	mux.HandleFunc("PUT /api/knowledge/{name}/records/{index}", updateRecordHandler(deps.Knowledge))
+	mux.HandleFunc("DELETE /api/knowledge/{name}/records/{index}", deleteRecordHandler(deps.Knowledge))
 	mux.HandleFunc("GET /api/agents", listAgentsHandler(deps.Agents))
 	mux.HandleFunc("POST /api/agents", saveAgentHandler(deps.Agents))
 	mux.HandleFunc("GET /api/agents/{name}", getAgentHandler(deps.Agents))

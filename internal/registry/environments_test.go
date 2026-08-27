@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -9,11 +8,9 @@ func TestSaveAndGetEnvironment(t *testing.T) {
 	reg := New(t.TempDir())
 
 	want := Environment{
-		Name:  "my-env",
-		Image: "alpine:3.20",
-		Tools: []Tool{
-			{Name: "shell", Command: "{{cmd}}", Parameters: []ToolParameter{{Name: "cmd", Type: ToolParamString, Required: true}}},
-		},
+		Name:   "my-env",
+		Image:  "alpine:3.20",
+		Tools:  []string{"shell"},
 		Mounts: []Mount{{HostPath: "/host", ContainerPath: "/container"}},
 	}
 	if err := reg.SaveEnvironment(want); err != nil {
@@ -27,8 +24,8 @@ func TestSaveAndGetEnvironment(t *testing.T) {
 	if got.Name != want.Name || got.Image != want.Image || len(got.Mounts) != 1 || got.Mounts[0] != want.Mounts[0] {
 		t.Errorf("GetEnvironment() = %+v, want %+v", got, want)
 	}
-	if len(got.Tools) != 1 || got.Tools[0].Name != "shell" {
-		t.Errorf("GetEnvironment().Tools = %+v, want a single 'shell' tool", got.Tools)
+	if len(got.Tools) != 1 || got.Tools[0] != "shell" {
+		t.Errorf("GetEnvironment().Tools = %+v, want [shell]", got.Tools)
 	}
 }
 
@@ -105,19 +102,19 @@ func TestEnsurePrebuiltEnvironmentsSeedsOnce(t *testing.T) {
 	}
 }
 
-func TestPrebuiltEnvironmentsHaveRealTools(t *testing.T) {
+func TestPrebuiltEnvironmentsReferenceRealToolNames(t *testing.T) {
+	toolNames := make(map[string]bool)
+	for _, tool := range PrebuiltTools() {
+		toolNames[tool.Name] = true
+	}
+
 	for _, env := range PrebuiltEnvironments() {
 		if len(env.Tools) == 0 {
 			t.Errorf("PrebuiltEnvironments() %q has no tools, want at least one", env.Name)
 		}
-		for _, tool := range env.Tools {
-			if tool.Command == "" {
-				t.Errorf("PrebuiltEnvironments() %q tool %q has no command", env.Name, tool.Name)
-			}
-			for _, p := range tool.Parameters {
-				if !strings.Contains(tool.Command, "{{"+p.Name+"}}") {
-					t.Errorf("PrebuiltEnvironments() %q tool %q declares parameter %q but its command has no {{%s}} placeholder", env.Name, tool.Name, p.Name, p.Name)
-				}
+		for _, toolName := range env.Tools {
+			if !toolNames[toolName] {
+				t.Errorf("PrebuiltEnvironments() %q references tool %q, which isn't in PrebuiltTools()", env.Name, toolName)
 			}
 		}
 	}
@@ -179,91 +176,113 @@ func TestUpdateConfigUnknownEnvironment(t *testing.T) {
 	}
 }
 
-func TestAddTool(t *testing.T) {
+func TestAttachTool(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
+		t.Fatalf("SaveEnvironment() error = %v", err)
+	}
+	if err := reg.SaveTool(Tool{Name: "read_file", Command: "cat {{path}}"}); err != nil {
+		t.Fatalf("SaveTool() error = %v", err)
+	}
+
+	if err := reg.AttachTool("my-env", "read_file"); err != nil {
+		t.Fatalf("AttachTool() error = %v", err)
+	}
+
+	got, err := reg.GetEnvironment("my-env")
+	if err != nil {
+		t.Fatalf("GetEnvironment() error = %v", err)
+	}
+	if len(got.Tools) != 1 || got.Tools[0] != "read_file" {
+		t.Errorf("GetEnvironment().Tools = %+v, want [read_file]", got.Tools)
+	}
+}
+
+func TestAttachToolUnknownTool(t *testing.T) {
 	reg := New(t.TempDir())
 
 	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
 		t.Fatalf("SaveEnvironment() error = %v", err)
 	}
 
-	tool := Tool{Name: "read_file", Command: "cat {{path}}", Parameters: []ToolParameter{{Name: "path", Type: ToolParamString, Required: true}}}
-	if err := reg.AddTool("my-env", tool); err != nil {
-		t.Fatalf("AddTool() error = %v", err)
-	}
-
-	got, err := reg.GetEnvironment("my-env")
-	if err != nil {
-		t.Fatalf("GetEnvironment() error = %v", err)
-	}
-	if len(got.Tools) != 1 || got.Tools[0].Name != "read_file" {
-		t.Errorf("GetEnvironment().Tools = %+v, want a single read_file tool", got.Tools)
+	if err := reg.AttachTool("my-env", "does-not-exist"); err == nil {
+		t.Error("AttachTool() error = nil, want an error when the tool isn't in the catalog")
 	}
 }
 
-func TestUpdateTool(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20", Tools: []Tool{{Name: "read_file", Command: "cat {{path}}"}}}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-
-	if err := reg.UpdateTool("my-env", 0, Tool{Name: "read_file_v2", Command: "cat -A {{path}}"}); err != nil {
-		t.Fatalf("UpdateTool() error = %v", err)
-	}
-
-	got, err := reg.GetEnvironment("my-env")
-	if err != nil {
-		t.Fatalf("GetEnvironment() error = %v", err)
-	}
-	if len(got.Tools) != 1 || got.Tools[0].Name != "read_file_v2" {
-		t.Errorf("GetEnvironment().Tools = %+v, want the tool renamed to read_file_v2", got.Tools)
-	}
-}
-
-func TestUpdateToolOutOfRange(t *testing.T) {
+func TestAttachToolIsIdempotent(t *testing.T) {
 	reg := New(t.TempDir())
 
 	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
 		t.Fatalf("SaveEnvironment() error = %v", err)
 	}
-
-	if err := reg.UpdateTool("my-env", 0, Tool{Name: "x"}); err == nil {
-		t.Error("UpdateTool() error = nil, want an error for an out-of-range index")
-	}
-}
-
-func TestDeleteTool(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{
-		Name:  "my-env",
-		Image: "alpine:3.20",
-		Tools: []Tool{{Name: "read_file", Command: "cat {{path}}"}, {Name: "write_file", Command: "printf '%s' {{content}} > {{path}}"}},
-	}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
+	if err := reg.SaveTool(Tool{Name: "read_file", Command: "cat {{path}}"}); err != nil {
+		t.Fatalf("SaveTool() error = %v", err)
 	}
 
-	if err := reg.DeleteTool("my-env", 0); err != nil {
-		t.Fatalf("DeleteTool() error = %v", err)
+	for i := 0; i < 2; i++ {
+		if err := reg.AttachTool("my-env", "read_file"); err != nil {
+			t.Fatalf("AttachTool() call %d error = %v", i, err)
+		}
 	}
 
 	got, err := reg.GetEnvironment("my-env")
 	if err != nil {
 		t.Fatalf("GetEnvironment() error = %v", err)
 	}
-	if len(got.Tools) != 1 || got.Tools[0].Name != "write_file" {
+	if len(got.Tools) != 1 {
+		t.Errorf("GetEnvironment().Tools = %+v, want attaching twice to still leave just one entry", got.Tools)
+	}
+}
+
+func TestDetachTool(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20", Tools: []string{"read_file", "write_file"}}); err != nil {
+		t.Fatalf("SaveEnvironment() error = %v", err)
+	}
+
+	if err := reg.DetachTool("my-env", "read_file"); err != nil {
+		t.Fatalf("DetachTool() error = %v", err)
+	}
+
+	got, err := reg.GetEnvironment("my-env")
+	if err != nil {
+		t.Fatalf("GetEnvironment() error = %v", err)
+	}
+	if len(got.Tools) != 1 || got.Tools[0] != "write_file" {
 		t.Errorf("GetEnvironment().Tools = %+v, want only write_file to remain", got.Tools)
 	}
 }
 
-func TestDeleteToolOutOfRange(t *testing.T) {
+func TestDetachToolNotAttached(t *testing.T) {
 	reg := New(t.TempDir())
 
 	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
 		t.Fatalf("SaveEnvironment() error = %v", err)
 	}
 
-	if err := reg.DeleteTool("my-env", 0); err == nil {
-		t.Error("DeleteTool() error = nil, want an error for an out-of-range index")
+	if err := reg.DetachTool("my-env", "read_file"); err == nil {
+		t.Error("DetachTool() error = nil, want an error when the tool isn't attached")
+	}
+}
+
+func TestDetachToolLeavesCatalogEntryAlone(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20", Tools: []string{"read_file"}}); err != nil {
+		t.Fatalf("SaveEnvironment() error = %v", err)
+	}
+	if err := reg.SaveTool(Tool{Name: "read_file", Command: "cat {{path}}"}); err != nil {
+		t.Fatalf("SaveTool() error = %v", err)
+	}
+
+	if err := reg.DetachTool("my-env", "read_file"); err != nil {
+		t.Fatalf("DetachTool() error = %v", err)
+	}
+
+	if _, err := reg.GetTool("read_file"); err != nil {
+		t.Errorf("GetTool() error = %v, want the catalog entry to survive detaching it from an environment", err)
 	}
 }

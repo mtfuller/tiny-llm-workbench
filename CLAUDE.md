@@ -279,6 +279,88 @@ choice:
   ran `read_file` against a path containing a space (`/tmp/my file.txt`) and confirmed the rendered
   command was correctly quoted (`cat '/tmp/my file.txt'`) and returned the exact file contents — first
   reproducing the stuck-at-"running" race live, then confirming the poll-fallback fix resolved it.
+
+  **2026-08-27 addendum — global Tool catalog, independent Knowledge bases, dedicated nav section:** the
+  user asked for a new top-level "Environments" nav section (Environments, Knowledge, Tools) so a user has
+  "a space to easily design flexible and powerful environments that their agents can interact with" —
+  tools as a shared catalog rather than something defined per-environment, plus a new Knowledge concept:
+  queryable records an agent can pull from. Four real design forks were surfaced via `AskUserQuestion`
+  (all "Recommended" options chosen): **Tool catalog model** is a live reference, not a copy — an
+  Environment names which catalog tools it makes available, so editing a tool in the catalog changes it
+  everywhere it's attached (the same reference-by-name relationship Training already has with
+  Models/Datasets); **file structure scope** stays exactly what it already was — the Environment's
+  existing host↔container mount configuration, just repositioned under the new nav section, no new
+  capability; **Knowledge query mechanism** is deterministic keyword/substring matching, consistent with
+  the project's established avoidance of embeddings/vector search/second ML runtimes (the same reasoning
+  as keyword-match Decision nodes and `contains`/`regex` assertions); **Knowledge binding** is independent
+  of Environment — a KnowledgeBase needs no Docker container, so an Agent's new "knowledge" node type
+  queries one directly with no environment/instance involved at all.
+
+  `registry.Tool` moved out of `Environment.Tools` (which was `[]Tool`) into its own top-level registry
+  resource (`tools/<name>/definition.json`, alongside Models/Datasets/Environments/Agents/Evaluations/
+  Benchmarks) with its own `SaveTool`/`GetTool`/`DeleteTool`/`ListTools`, a `Prebuilt bool` field, and
+  `EnsurePrebuiltTools` (the same idempotent-seed pattern as `EnsurePrebuiltEnvironments`, and called
+  before it in `cmd/serve.go` since the prebuilt Environments now reference prebuilt Tools by name).
+  `Environment.Tools` became `[]string` (name references only); `AttachTool`/`DetachTool` replaced the old
+  index-addressed `AddTool`/`UpdateTool`/`DeleteTool` — `AttachTool` is idempotent and validates the name
+  resolves against the catalog before appending, `DetachTool` only removes the reference and never touches
+  the catalog entry. Deleting a catalog tool does **not** cascade to environments that reference it — a
+  dangling name is silently skipped wherever tools are resolved (`agents.Manager.SendMessage`'s
+  environment-tools lookup, `EnvironmentDetail.tsx`'s attached-tools list), the same graceful-degradation
+  UX already established for "tool removed from environment" before this change existed at all.
+
+  New `registry.KnowledgeBase{Name, Description, Records []KnowledgeRecord, CreatedAt}` at
+  `knowledge/<name>/definition.json`, with `KnowledgeRecord{ID, Title, Content, Tags}` and the same
+  `AddRecords`/`UpdateRecord`/`DeleteRecord` index-addressed CRUD shape as Dataset examples and Benchmark
+  test cases (`AddRecords` always assigns a fresh server-side ID, ignoring any client-supplied one). New
+  `internal/knowledge` package: `Query(kb, query string) []KnowledgeRecord` lowercases both sides and
+  requires every whitespace-separated query term to appear somewhere in `Title + " " + Content` — an
+  order-independent all-terms match (query "python tutorial" matches a record containing "tutorial for
+  python"), not a literal-phrase substring match; `FormatResults` renders matches as `"Title: Content"`
+  joined by blank lines, or a literal "No matching records found." string.
+
+  A fifth Agent node type, "knowledge", was added alongside input/prompt/decision/tool/output:
+  `registry.NodeData` gained `KnowledgeBaseName` and `KnowledgeQuery` (templated; empty falls back to the
+  previous node's raw output, the same convention as `PromptTemplate`/`MatchTemplate`). `agents.Engine`
+  gained a `knowledgeReader` interface (`GetKnowledgeBase(name) (registry.KnowledgeBase, error)`) and a
+  `"knowledge"` case that renders the query template, calls `knowledge.Query`+`FormatResults`, and stores
+  the result under the node's Name in the same `runContext` every other node type uses — so a Knowledge
+  node's output is referenceable downstream as `{{NodeName}}` with zero special-casing needed in
+  `runcontext.go`, the cross-node templating mechanism built earlier in this project. `NewEngine` grew to
+  3 params (`llm, tools, kb`) and `agents.Manager` gained a `toolReader` dependency and grew to 8 params
+  (`ctx, agentsReader, llm, envs, envReader, toolStore, kb, bus`) — both mechanical signature-growth
+  additions following this codebase's established constructor-param convention rather than introducing an
+  options-struct pattern for the first time here.
+
+  New routes: `/api/tools` (list/create) and `/api/tools/{name}` (get/update/delete) for the catalog;
+  `/api/knowledge` (list/create) and `/api/knowledge/{name}` (get/delete) plus `/api/knowledge/{name}/records`
+  (add) and `/api/knowledge/{name}/records/{index}` (update/delete) for KnowledgeBases; environment tool
+  routes changed from index-addressed (`PUT/DELETE /api/environments/{name}/tools/{index}`) to
+  name-addressed (`POST /api/environments/{name}/tools` with `{toolName}` body to attach, `DELETE
+  /api/environments/{name}/tools/{toolName}` to detach, `POST .../tools/{toolName}/try` to run).
+
+  The frontend gained a new top-level "Environments" nav section (Environments, Knowledge, Tools),
+  replacing Environments' old spot under "Automation" (which now holds just Agents/Evaluations): a new
+  `Tools.tsx` list page for the global catalog (reusing `ToolEditor.tsx`'s `ToolParameterFields`/
+  `DraftTool`/`toDraftTool` unchanged from when they were built for the old per-environment tool editor);
+  new `Knowledge.tsx` (list) and `KnowledgeDetail.tsx` (per-base record CRUD, mirroring
+  `DatasetDetail.tsx`'s examples pattern — search, tag filter via `FilterMenu`, pagination) pages;
+  `EnvironmentDetail.tsx`'s Tools tab rewritten to show attached tools (resolved by joining
+  `environment.tools: string[]` against a fetched catalog) with a "+" opening an "Attach tool" modal
+  (a `<select>` of catalog tools not yet attached, with a link to the Tools page to create a new one) and
+  a detach (unlink icon) action per row instead of the old edit/delete; `AgentEditor.tsx` gained a
+  "Knowledge" palette entry (a new, previously-unused violet `#7c5cbf`, distinct from every other node
+  type's color) with inspector fields for knowledge-base selection and a templated query field using the
+  existing `VariableMenuButton` insert-variable picker.
+
+  Fully verified live end-to-end: attached a newly-created catalog tool to the real `WebSearch`
+  environment and ran it against a real launched Docker container from the Playground tab (`DONE (EXIT
+  0)` / `hello World`); built a real `faq` KnowledgeBase with a "Refunds" record, then an Input →
+  Knowledge → Prompt → Output agent (`{{Knowledge 1}}` referenced in the Prompt node's template) and ran a
+  real chat turn against `mlx-community/Qwen2.5-0.5B-Instruct-4bit` over `mlx_lm.server` — confirmed via
+  the Run view's live step log that the Knowledge node correctly matched the "Refunds" record for the
+  message "refunds" and the Prompt node's template correctly substituted its content, producing a real,
+  on-topic, refund-policy-accurate reply — not a mock.
 - **Agent canvas format**: how a node/edge agent graph is serialized and persisted, and the node type
   taxonomy beyond the input/prompt/output/decision nodes the README already names (Phase 3).
   **Decided:** the canvas UI is built with React Flow (`@xyflow/react`) rather than a hand-rolled

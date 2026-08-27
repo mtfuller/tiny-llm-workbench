@@ -1,17 +1,17 @@
-import { Pencil, Plus, Square, Trash2 } from 'lucide-react'
+import { Link2Off, Plus, Square } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
-  addTool,
-  deleteTool,
+  attachTool,
+  detachTool,
   getEnvironment,
   getExec,
   launchEnvironment,
   listInstances,
+  listTools,
   stopInstance,
   tryTool,
   updateEnvironmentConfig,
-  updateTool,
   type Environment,
   type Exec,
   type Instance,
@@ -24,11 +24,9 @@ import Modal from '../Modal'
 import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { useToast } from '../Toast'
-import { emptyTool, toDraftTool, toPayloadTool, ToolParameterFields, type DraftTool } from '../ToolEditor'
 import { usePagination } from '../usePagination'
 
 type Tab = 'configuration' | 'tools' | 'playground'
-type ToolModalState = { mode: 'add' } | { mode: 'edit'; index: number } | null
 
 function EnvironmentDetail() {
   const { name = '' } = useParams<{ name: string }>()
@@ -39,6 +37,7 @@ function EnvironmentDetail() {
   const [tab, setTab] = useState<Tab>('configuration')
   const [environment, setEnvironment] = useState<Environment | null>(null)
   const [instances, setInstances] = useState<Instance[] | null>(null)
+  const [catalog, setCatalog] = useState<Tool[]>([])
   const [error, setError] = useState<string | null>(null)
 
   const [image, setImage] = useState('')
@@ -47,15 +46,15 @@ function EnvironmentDetail() {
   const [configError, setConfigError] = useState<string | null>(null)
 
   const [toolSearch, setToolSearch] = useState('')
-  const [toolModal, setToolModal] = useState<ToolModalState>(null)
-  const [toolModalSaving, setToolModalSaving] = useState(false)
-  const [toolModalError, setToolModalError] = useState<string | null>(null)
-  const [deletingToolIndex, setDeletingToolIndex] = useState<number | null>(null)
+  const [attachOpen, setAttachOpen] = useState(false)
+  const [attaching, setAttaching] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const [detachingTool, setDetachingTool] = useState<string | null>(null)
 
   const [launching, setLaunching] = useState(false)
   const [stopping, setStopping] = useState<string | null>(null)
   const [playgroundInstanceId, setPlaygroundInstanceId] = useState('')
-  const [playgroundToolIndex, setPlaygroundToolIndex] = useState('')
+  const [playgroundToolName, setPlaygroundToolName] = useState('')
   const [playgroundArgs, setPlaygroundArgs] = useState<Record<string, string>>({})
   const [running, setRunning] = useState(false)
   const [activeExec, setActiveExec] = useState<Exec | null>(null)
@@ -76,10 +75,17 @@ function EnvironmentDetail() {
       .catch((err: Error) => setError(err.message))
   }, [])
 
+  const reloadCatalog = useCallback(() => {
+    listTools()
+      .then(setCatalog)
+      .catch((err: Error) => setError(err.message))
+  }, [])
+
   useEffect(() => {
     reloadEnvironment()
     reloadInstances()
-  }, [reloadEnvironment, reloadInstances])
+    reloadCatalog()
+  }, [reloadEnvironment, reloadInstances, reloadCatalog])
 
   // Poll instances while this page is open, since launching/stopping an
   // instance elsewhere (the Environments list page) doesn't otherwise
@@ -124,13 +130,21 @@ function EnvironmentDetail() {
 
   const myInstances = useMemo(() => (instances ?? []).filter((i) => i.environmentName === name), [instances, name])
 
-  const tools = environment?.tools ?? []
+  // Attached tools are resolved by joining the environment's name references
+  // against the global catalog — a name that no longer resolves (the
+  // catalog entry was deleted elsewhere) is silently dropped here, the same
+  // graceful-degradation behavior the backend uses when actually running a
+  // tool node.
+  const attachedNames = environment?.tools ?? []
+  const tools = useMemo(
+    () => attachedNames.map((n) => catalog.find((t) => t.name === n)).filter((t): t is Tool => t !== undefined),
+    [attachedNames, catalog],
+  )
+  const unattachedCatalog = useMemo(() => catalog.filter((t) => !attachedNames.includes(t.name)), [catalog, attachedNames])
 
   const filteredTools = useMemo(() => {
     const q = toolSearch.trim().toLowerCase()
-    return tools
-      .map((t, index) => ({ t, index }))
-      .filter(({ t }) => !q || t.name.toLowerCase().includes(q) || (t.description ?? '').toLowerCase().includes(q))
+    return tools.filter((t) => !q || t.name.toLowerCase().includes(q) || (t.description ?? '').toLowerCase().includes(q))
   }, [tools, toolSearch])
 
   const {
@@ -172,42 +186,34 @@ function EnvironmentDetail() {
   }
   const removeMountRow = (index: number) => setMounts((prev) => prev.filter((_, i) => i !== index))
 
-  const handleSaveToolModal = async (draft: DraftTool) => {
-    if (!toolModal) return
-
-    setToolModalSaving(true)
-    setToolModalError(null)
+  const handleAttachTool = async (toolName: string) => {
+    setAttaching(true)
+    setAttachError(null)
     try {
-      const payload = toPayloadTool(draft)
-      if (toolModal.mode === 'add') {
-        await addTool(name, payload)
-        showToast('Added tool')
-      } else {
-        await updateTool(name, toolModal.index, payload)
-        showToast('Saved tool')
-      }
-      setToolModal(null)
-      reloadEnvironment()
+      const env = await attachTool(name, toolName)
+      setEnvironment(env)
+      showToast(`Attached "${toolName}"`)
+      setAttachOpen(false)
     } catch (err) {
-      setToolModalError((err as Error).message)
+      setAttachError((err as Error).message)
     } finally {
-      setToolModalSaving(false)
+      setAttaching(false)
     }
   }
 
-  const handleDeleteTool = async (index: number) => {
-    if (!(await confirm('Delete this tool? This cannot be undone.'))) return
+  const handleDetachTool = async (toolName: string) => {
+    if (!(await confirm(`Detach "${toolName}" from this environment? The tool itself stays in the catalog.`))) return
 
-    setDeletingToolIndex(index)
+    setDetachingTool(toolName)
     setError(null)
     try {
-      await deleteTool(name, index)
-      showToast('Deleted tool')
+      await detachTool(name, toolName)
+      showToast(`Detached "${toolName}"`)
       reloadEnvironment()
     } catch (err) {
       setError((err as Error).message)
     } finally {
-      setDeletingToolIndex(null)
+      setDetachingTool(null)
     }
   }
 
@@ -239,21 +245,21 @@ function EnvironmentDetail() {
     }
   }
 
-  const selectedTool: Tool | null = playgroundToolIndex === '' ? null : (tools[Number(playgroundToolIndex)] ?? null)
+  const selectedTool: Tool | null = tools.find((t) => t.name === playgroundToolName) ?? null
 
-  const handleToolIndexChange = (value: string) => {
-    setPlaygroundToolIndex(value)
+  const handleToolNameChange = (value: string) => {
+    setPlaygroundToolName(value)
     setPlaygroundArgs({})
   }
 
   const handleRunTool = async (e: FormEvent) => {
     e.preventDefault()
-    if (!playgroundInstanceId || playgroundToolIndex === '') return
+    if (!playgroundInstanceId || !playgroundToolName) return
 
     setRunning(true)
     setError(null)
     try {
-      const exec = await tryTool(name, Number(playgroundToolIndex), playgroundInstanceId, playgroundArgs)
+      const exec = await tryTool(name, playgroundToolName, playgroundInstanceId, playgroundArgs)
       setActiveExec(exec)
     } catch (err) {
       setError((err as Error).message)
@@ -391,9 +397,9 @@ function EnvironmentDetail() {
               <button
                 type="button"
                 className="icon-button"
-                title="Add tool"
-                aria-label="Add tool"
-                onClick={() => setToolModal({ mode: 'add' })}
+                title="Attach tool"
+                aria-label="Attach tool"
+                onClick={() => setAttachOpen(true)}
               >
                 <Plus size={16} />
               </button>
@@ -402,7 +408,10 @@ function EnvironmentDetail() {
 
           {tools.length === 0 && (
             <div className="panel-body">
-              <p className="hint">No tools yet. Add one to give this environment something an agent (or you, in the Playground) can run.</p>
+              <p className="hint">
+                No tools attached yet. Attach one from the catalog to give this environment something an agent (or you, in the
+                Playground) can run.
+              </p>
             </div>
           )}
 
@@ -425,9 +434,11 @@ function EnvironmentDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {toolPageItems.map(({ t, index }) => (
-                    <tr key={index}>
-                      <td>{t.name}</td>
+                  {toolPageItems.map((t) => (
+                    <tr key={t.name}>
+                      <td>
+                        <Link to="/tools">{t.name}</Link>
+                      </td>
                       <td>{t.description || '—'}</td>
                       <td>
                         <code>{t.command}</code>
@@ -437,21 +448,12 @@ function EnvironmentDetail() {
                         <button
                           type="button"
                           className="icon-button"
-                          title="Edit tool"
-                          aria-label="Edit tool"
-                          onClick={() => setToolModal({ mode: 'edit', index })}
+                          title="Detach tool"
+                          aria-label="Detach tool"
+                          disabled={detachingTool === t.name}
+                          onClick={() => handleDetachTool(t.name)}
                         >
-                          <Pencil size={15} />
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          title="Delete tool"
-                          aria-label="Delete tool"
-                          disabled={deletingToolIndex === index}
-                          onClick={() => handleDeleteTool(index)}
-                        >
-                          <Trash2 size={15} />
+                          <Link2Off size={15} />
                         </button>
                       </td>
                     </tr>
@@ -535,7 +537,7 @@ function EnvironmentDetail() {
           <section className="panel">
             <h3>Try a tool</h3>
             {tools.length === 0 ? (
-              <p className="hint">Add a tool in the Tools tab first.</p>
+              <p className="hint">Attach a tool in the Tools tab first.</p>
             ) : (
               <form className="stacked-form" onSubmit={handleRunTool}>
                 <label>
@@ -552,10 +554,10 @@ function EnvironmentDetail() {
 
                 <label>
                   Tool
-                  <select value={playgroundToolIndex} onChange={(e) => handleToolIndexChange(e.target.value)}>
+                  <select value={playgroundToolName} onChange={(e) => handleToolNameChange(e.target.value)}>
                     <option value="">Select a tool…</option>
-                    {tools.map((t, i) => (
-                      <option key={i} value={i}>
+                    {tools.map((t) => (
+                      <option key={t.name} value={t.name}>
                         {t.name}
                       </option>
                     ))}
@@ -592,7 +594,7 @@ function EnvironmentDetail() {
                 )}
 
                 <div className="row-actions confirm-actions">
-                  <button type="submit" disabled={running || !playgroundInstanceId || playgroundToolIndex === ''}>
+                  <button type="submit" disabled={running || !playgroundInstanceId || !playgroundToolName}>
                     {running ? 'Running…' : 'Run'}
                   </button>
                 </div>
@@ -619,76 +621,75 @@ function EnvironmentDetail() {
         </>
       )}
 
-      {toolModal && (
-        <ToolModal
-          initial={toolModal.mode === 'edit' ? toDraftTool(tools[toolModal.index]) : emptyTool()}
-          saving={toolModalSaving}
-          error={toolModalError}
-          onSave={handleSaveToolModal}
-          onClose={() => setToolModal(null)}
+      {attachOpen && (
+        <AttachToolModal
+          options={unattachedCatalog}
+          attaching={attaching}
+          error={attachError}
+          onAttach={handleAttachTool}
+          onClose={() => setAttachOpen(false)}
         />
       )}
     </>
   )
 }
 
-interface ToolModalProps {
-  initial: DraftTool
-  saving: boolean
+interface AttachToolModalProps {
+  options: Tool[]
+  attaching: boolean
   error: string | null
-  onSave: (draft: DraftTool) => void
+  onAttach: (toolName: string) => void
   onClose: () => void
 }
 
-function ToolModal({ initial, saving, error, onSave, onClose }: ToolModalProps) {
-  const [draft, setDraft] = useState<DraftTool>(initial)
+// AttachToolModal lets the user pick an existing catalog tool to reference
+// from this environment — a live reference, not a copy (see the Tool
+// catalog "live reference" decision in CLAUDE.md). Creating a brand-new
+// tool happens on the Tools catalog page instead of here.
+function AttachToolModal({ options, attaching, error, onAttach, onClose }: AttachToolModalProps) {
+  const [selected, setSelected] = useState('')
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
-    if (!draft.name.trim() || !draft.command.trim()) return
-    onSave(draft)
+    if (!selected) return
+    onAttach(selected)
   }
 
   return (
-    <Modal title={initial.name ? 'Edit tool' : 'Add tool'} onClose={onClose} size="lg">
-      <form className="stacked-form" onSubmit={handleSubmit}>
-        <label>
-          Name
-          <input type="text" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} autoFocus />
-        </label>
-        <label>
-          Description
-          <input type="text" value={draft.description} onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))} />
-        </label>
-        <label>
-          Command
-          <textarea
-            rows={2}
-            placeholder="cat {{path}}"
-            value={draft.command}
-            onChange={(e) => setDraft((d) => ({ ...d, command: e.target.value }))}
-          />
-        </label>
+    <Modal title="Attach tool" onClose={onClose}>
+      {options.length === 0 ? (
         <p className="hint">
-          Reference a parameter in the command with <code>{'{{paramName}}'}</code> — values are always safely quoted, so don't add
-          your own quotes around the placeholder.
+          Every catalog tool is already attached, or the catalog is empty. Create a new one on the <Link to="/tools">Tools</Link>{' '}
+          page first.
         </p>
+      ) : (
+        <form className="stacked-form" onSubmit={handleSubmit}>
+          <label>
+            Tool
+            <select value={selected} onChange={(e) => setSelected(e.target.value)} autoFocus>
+              <option value="">Select a tool…</option>
+              {options.map((t) => (
+                <option key={t.name} value={t.name}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="hint">
+            Don't see the tool you want? Create it on the <Link to="/tools">Tools</Link> page, then come back here.
+          </p>
 
-        <div className="mounts-editor">
-          <span>Parameters</span>
-          <ToolParameterFields parameters={draft.parameters} onChange={(parameters) => setDraft((d) => ({ ...d, parameters }))} />
-        </div>
-
-        {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={saving || !draft.name.trim() || !draft.command.trim()}>
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </form>
+          {error && <p className="error">{error}</p>}
+          <div className="row-actions confirm-actions">
+            <button type="button" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" disabled={attaching || !selected}>
+              {attaching ? 'Attaching…' : 'Attach'}
+            </button>
+          </div>
+        </form>
+      )}
     </Modal>
   )
 }

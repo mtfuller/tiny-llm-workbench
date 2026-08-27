@@ -48,6 +48,17 @@ function ToolNode({ data }: NodeProps<FlowNode>) {
   )
 }
 
+function KnowledgeNode({ data }: NodeProps<FlowNode>) {
+  return (
+    <div className="flow-node flow-node-knowledge">
+      <Handle type="target" position={Position.Left} />
+      <div className="flow-node-title">{data.name || 'Knowledge'}</div>
+      <div className="flow-node-sub">{data.knowledgeBaseName || 'no knowledge base selected'}</div>
+      <Handle type="source" position={Position.Right} />
+    </div>
+  )
+}
+
 function OutputNode({ data }: NodeProps<FlowNode>) {
   return (
     <div className="flow-node flow-node-output">
@@ -62,5 +73,6 @@ export const nodeTypes = {
   prompt: PromptNode,
   decision: DecisionNode,
   tool: ToolNode,
+  knowledge: KnowledgeNode,
   output: OutputNode,
 }

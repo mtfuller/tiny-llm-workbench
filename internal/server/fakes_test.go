@@ -234,15 +234,12 @@ type fakeEnvironmentStore struct {
 	deleteErr error
 	deleted   []string
 
-	updateConfigErr  error
-	updatedConfigs   []registry.Environment
-	addToolErr       error
-	addedTools       []registry.Tool
-	updateToolErr    error
-	updatedTools     []registry.Tool
-	updatedToolIndex []int
-	deleteToolErr    error
-	deletedToolIndex []int
+	updateConfigErr error
+	updatedConfigs  []registry.Environment
+	attachErr       error
+	attached        []string
+	detachErr       error
+	detached        []string
 }
 
 func (f *fakeEnvironmentStore) ListEnvironments() ([]registry.Environment, error) {
@@ -277,28 +274,19 @@ func (f *fakeEnvironmentStore) UpdateConfig(name, image string, mounts []registr
 	return nil
 }
 
-func (f *fakeEnvironmentStore) AddTool(name string, tool registry.Tool) error {
-	if f.addToolErr != nil {
-		return f.addToolErr
+func (f *fakeEnvironmentStore) AttachTool(name, toolName string) error {
+	if f.attachErr != nil {
+		return f.attachErr
 	}
-	f.addedTools = append(f.addedTools, tool)
+	f.attached = append(f.attached, toolName)
 	return nil
 }
 
-func (f *fakeEnvironmentStore) UpdateTool(name string, index int, tool registry.Tool) error {
-	if f.updateToolErr != nil {
-		return f.updateToolErr
+func (f *fakeEnvironmentStore) DetachTool(name, toolName string) error {
+	if f.detachErr != nil {
+		return f.detachErr
 	}
-	f.updatedTools = append(f.updatedTools, tool)
-	f.updatedToolIndex = append(f.updatedToolIndex, index)
-	return nil
-}
-
-func (f *fakeEnvironmentStore) DeleteTool(name string, index int) error {
-	if f.deleteToolErr != nil {
-		return f.deleteToolErr
-	}
-	f.deletedToolIndex = append(f.deletedToolIndex, index)
+	f.detached = append(f.detached, toolName)
 	return nil
 }
 
@@ -351,6 +339,109 @@ func (f *fakeEnvironmentManager) GetExec(id string) (*environments.Exec, bool) {
 func (f *fakeEnvironmentManager) TryTool(instanceID string, tool registry.Tool, args map[string]string) (*environments.Exec, error) {
 	f.tryToolCalls = append(f.tryToolCalls, instanceID)
 	return f.tryToolResult, f.tryToolErr
+}
+
+type fakeToolStore struct {
+	list      []registry.Tool
+	listErr   error
+	saveErr   error
+	saved     []registry.Tool
+	get       registry.Tool
+	getErr    error
+	deleteErr error
+	deleted   []string
+}
+
+func (f *fakeToolStore) ListTools() ([]registry.Tool, error) {
+	return f.list, f.listErr
+}
+
+func (f *fakeToolStore) SaveTool(tool registry.Tool) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.saved = append(f.saved, tool)
+	return nil
+}
+
+func (f *fakeToolStore) GetTool(name string) (registry.Tool, error) {
+	return f.get, f.getErr
+}
+
+func (f *fakeToolStore) DeleteTool(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+
+type fakeKnowledgeStore struct {
+	list      []registry.KnowledgeBase
+	listErr   error
+	saveErr   error
+	saved     []registry.KnowledgeBase
+	get       registry.KnowledgeBase
+	getErr    error
+	deleteErr error
+	deleted   []string
+
+	addRecordsErr    error
+	addedRecords     [][]registry.KnowledgeRecord
+	updateRecordErr  error
+	updatedRecords   []registry.KnowledgeRecord
+	updatedRecordIdx []int
+	deleteRecordErr  error
+	deletedRecordIdx []int
+}
+
+func (f *fakeKnowledgeStore) ListKnowledgeBases() ([]registry.KnowledgeBase, error) {
+	return f.list, f.listErr
+}
+
+func (f *fakeKnowledgeStore) SaveKnowledgeBase(kb registry.KnowledgeBase) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.saved = append(f.saved, kb)
+	return nil
+}
+
+func (f *fakeKnowledgeStore) GetKnowledgeBase(name string) (registry.KnowledgeBase, error) {
+	return f.get, f.getErr
+}
+
+func (f *fakeKnowledgeStore) DeleteKnowledgeBase(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+
+func (f *fakeKnowledgeStore) AddRecords(name string, records []registry.KnowledgeRecord) error {
+	if f.addRecordsErr != nil {
+		return f.addRecordsErr
+	}
+	f.addedRecords = append(f.addedRecords, records)
+	return nil
+}
+
+func (f *fakeKnowledgeStore) UpdateRecord(name string, index int, record registry.KnowledgeRecord) error {
+	if f.updateRecordErr != nil {
+		return f.updateRecordErr
+	}
+	f.updatedRecords = append(f.updatedRecords, record)
+	f.updatedRecordIdx = append(f.updatedRecordIdx, index)
+	return nil
+}
+
+func (f *fakeKnowledgeStore) DeleteRecord(name string, index int) error {
+	if f.deleteRecordErr != nil {
+		return f.deleteRecordErr
+	}
+	f.deletedRecordIdx = append(f.deletedRecordIdx, index)
+	return nil
 }
 
 type fakeAgentStore struct {
@@ -630,6 +721,8 @@ func testDeps() Deps {
 		Training:     &fakeTrainingManager{},
 		Environments: &fakeEnvironmentStore{},
 		Instances:    &fakeEnvironmentManager{},
+		Tools:        &fakeToolStore{},
+		Knowledge:    &fakeKnowledgeStore{},
 		Agents:       &fakeAgentStore{},
 		AgentRuns:    &fakeAgentManager{},
 		Evaluations:  &fakeEvaluationStore{},
