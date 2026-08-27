@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 10
 
 // usePagination slices items into PAGE_SIZE-sized pages. The current page
 // clamps automatically when items shrinks (e.g. a search narrows the list)

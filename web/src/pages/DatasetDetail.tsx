@@ -15,12 +15,12 @@ import {
   type Model,
 } from '../api'
 import { useConfirm } from '../ConfirmDialog'
+import FilterMenu from '../FilterMenu'
 import LineNumberedTextarea from '../LineNumberedTextarea'
 import Modal from '../Modal'
 import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { suggestedModels } from '../suggestedModels'
-import TagFilterDropdown from '../TagFilterDropdown'
 import TagInput from '../TagInput'
 import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
@@ -203,7 +203,10 @@ function DatasetDetail() {
             className="list-search"
           />
           {allTags.length > 0 && (
-            <TagFilterDropdown tags={allTags} active={activeTags} onToggle={toggleTagFilter} onClear={() => setActiveTags(new Set())} />
+            <FilterMenu
+              groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTagFilter }]}
+              onClearAll={() => setActiveTags(new Set())}
+            />
           )}
           <div className="list-toolbar-actions">
             <button

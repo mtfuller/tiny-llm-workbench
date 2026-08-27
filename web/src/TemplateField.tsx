@@ -100,7 +100,7 @@ interface VariableMenuButtonProps {
 // VariableMenuButton is a small icon button that opens a popover listing
 // every {{...}} reference available at this point in the graph, inserting
 // the chosen one at the caller's field's cursor position on click. Mirrors
-// TagFilterDropdown's portal-to-body popover pattern.
+// FilterMenu's portal-to-body popover pattern.
 export function VariableMenuButton({ options, onInsert }: VariableMenuButtonProps) {
   const [open, setOpen] = useState(false)
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null)

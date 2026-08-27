@@ -24,11 +24,11 @@ import {
 } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import { useEventStream } from '../eventStream'
+import FilterMenu from '../FilterMenu'
 import Modal from '../Modal'
 import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
 import { suggestedModels } from '../suggestedModels'
-import TagFilterDropdown from '../TagFilterDropdown'
 import TagInput from '../TagInput'
 import {
   AssertionFields,
@@ -434,7 +434,10 @@ function BenchmarkDetail() {
               className="list-search"
             />
             {allTags.length > 0 && (
-              <TagFilterDropdown tags={allTags} active={activeTags} onToggle={toggleTagFilter} onClear={() => setActiveTags(new Set())} />
+              <FilterMenu
+                groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTagFilter }]}
+                onClearAll={() => setActiveTags(new Set())}
+              />
             )}
             <div className="list-toolbar-actions">
               <button

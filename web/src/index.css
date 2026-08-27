@@ -116,6 +116,33 @@ a:hover {
   top: 0;
   height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 0.15s ease;
+}
+
+/* Collapsed: icon-only rail. Layout.tsx doesn't render the text nodes at
+   all when collapsed (rather than hiding them here), so this only needs to
+   handle sizing/centering. */
+.sidebar-collapsed {
+  width: 68px;
+  padding-left: 0.6rem;
+  padding-right: 0.6rem;
+}
+
+.sidebar-collapsed .sidebar-brand {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar-collapsed .nav-item,
+.sidebar-collapsed .sidebar-collapse-toggle {
+  justify-content: center;
+  padding: 0.55rem;
+}
+
+.sidebar-collapsed .status-row {
+  justify-content: center;
+  padding: 0.2rem;
 }
 
 .sidebar-brand {
@@ -180,6 +207,28 @@ a.nav-item:hover {
   border-top: 1px solid var(--border);
 }
 
+.sidebar-collapse-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.5rem 0.6rem;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: color-mix(in srgb, var(--text) 68%, transparent);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.sidebar-collapse-toggle:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text);
+}
+
 .status-row {
   display: flex;
   align-items: center;
@@ -218,6 +267,14 @@ a.nav-item:hover {
      sidebar eats a fixed chunk of the viewport, so a viewport-width media
      query collapses a grid far later than the page actually needs it to. */
   container-type: inline-size;
+}
+
+/* Collapsing the sidebar is meant to give the content more room, not just
+   re-center the same fixed column in a wider .app-main — so widen the cap
+   too. :has() is already relied on elsewhere in this file (see the
+   agent-editor rule below), so this is a proven-safe pattern here. */
+.app-shell:has(.sidebar-collapsed) .page-content {
+  max-width: 1200px;
 }
 
 /* The agent canvas is a workspace, not a document — let it use the full
@@ -544,23 +601,28 @@ a.nav-item:hover {
   text-decoration: underline;
 }
 
+/* Segmented pill control — a track holding the buttons, with the active one
+   rendered as a filled pill. Deliberately no underline/border-bottom
+   anywhere here: that was the "shadow" look this replaced. */
 .tab-bar {
-  display: flex;
-  gap: 0.25rem;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 1rem;
+  display: inline-flex;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border-radius: 10px;
+  margin-bottom: 1.25rem;
 }
 
 .tab-button {
   background: none;
   border: none;
-  border-bottom: 2px solid transparent;
-  padding: 0.6rem 0.2rem;
-  margin-right: 1.25rem;
-  font-size: 0.9rem;
+  border-radius: 8px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
   font-weight: 500;
   color: color-mix(in srgb, var(--text) 55%, transparent);
   cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
 .tab-button:hover {
@@ -569,7 +631,8 @@ a.nav-item:hover {
 
 .tab-button-active {
   color: var(--text);
-  border-bottom-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 12%, transparent);
 }
 
 .sort-header {
@@ -620,7 +683,7 @@ a.nav-item:hover {
    popover in place of one chip per tag, so the toolbar stays a fixed width
    no matter how many tags a dataset has. */
 
-.tag-filter-dropdown {
+.filter-menu-anchor {
   position: relative;
 }
 
@@ -645,11 +708,11 @@ a.nav-item:hover {
   text-align: center;
 }
 
-.tag-filter-menu {
+.filter-menu {
   position: fixed;
   z-index: 1000;
-  min-width: 160px;
-  max-height: 260px;
+  min-width: 180px;
+  max-height: 320px;
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -661,7 +724,20 @@ a.nav-item:hover {
   gap: 0.1rem;
 }
 
-.tag-filter-menu-item {
+.filter-menu-group-title {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: color-mix(in srgb, var(--text) 50%, transparent);
+  padding: 0.3rem 0.4rem 0.15rem;
+}
+
+.filter-menu-divider {
+  border-top: 1px solid var(--border);
+  margin: 0.3rem 0;
+}
+
+.filter-menu-item {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -671,15 +747,15 @@ a.nav-item:hover {
   cursor: pointer;
 }
 
-.tag-filter-menu-item:hover {
+.filter-menu-item:hover {
   background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
-.tag-filter-menu-item input {
+.filter-menu-item input {
   width: auto;
 }
 
-.tag-filter-menu-clear {
+.filter-menu-clear {
   background: none;
   color: var(--accent);
   border: none;
@@ -692,7 +768,7 @@ a.nav-item:hover {
   text-align: left;
 }
 
-.tag-filter-menu-clear:hover {
+.filter-menu-clear:hover {
   filter: none;
   background: color-mix(in srgb, var(--text) 6%, transparent);
 }

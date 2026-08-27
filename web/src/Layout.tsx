@@ -1,5 +1,5 @@
-import { Activity, BarChart3, Box, ClipboardCheck, Container, Database, Settings, Trophy, Workflow } from 'lucide-react'
-import type { ComponentType } from 'react'
+import { Activity, BarChart3, Box, ClipboardCheck, Container, Database, PanelLeftClose, PanelLeftOpen, Settings, Trophy, Workflow } from 'lucide-react'
+import { useEffect, useState, type ComponentType } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useEventStream } from './eventStream'
 import './index.css'
@@ -37,6 +37,8 @@ const navSections: NavSection[] = [
   },
 ]
 
+const SIDEBAR_COLLAPSED_KEY = 'tlw-sidebar-collapsed'
+
 function Logo() {
   return (
     <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
@@ -58,18 +60,38 @@ function Layout() {
   const { status } = useEventStream()
   const location = useLocation()
 
+  // Persisted per-browser (not per-agent-data), so it belongs in
+  // localStorage rather than anything server-side — purely a per-viewer
+  // display preference.
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed))
+    } catch {
+      // ignore — a private window or blocked storage just means the
+      // preference doesn't survive a reload, which is fine.
+    }
+  }, [collapsed])
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar${collapsed ? ' sidebar-collapsed' : ''}`}>
         <div className="sidebar-brand">
           <Logo />
-          <span>Tiny LLM Workbench</span>
+          {!collapsed && <span>Tiny LLM Workbench</span>}
         </div>
 
         <nav className="sidebar-nav">
           {navSections.map((section) => (
             <div className="sidebar-nav-section" key={section.label ?? 'root'}>
-              {section.label && <div className="sidebar-nav-label">{section.label}</div>}
+              {section.label && !collapsed && <div className="sidebar-nav-label">{section.label}</div>}
               {section.items.map((item) => {
                 const Icon = item.icon
                 return (
@@ -77,10 +99,11 @@ function Layout() {
                     key={item.to}
                     to={item.to}
                     end={item.end}
+                    title={collapsed ? item.label : undefined}
                     className={({ isActive }) => `nav-item${isActive ? ' nav-item-active' : ''}`}
                   >
                     <Icon size={17} strokeWidth={2} />
-                    {item.label}
+                    {!collapsed && item.label}
                   </NavLink>
                 )
               })}
@@ -89,14 +112,27 @@ function Layout() {
         </nav>
 
         <div className="sidebar-footer">
-          <NavLink to="/settings" className={({ isActive }) => `nav-item${isActive ? ' nav-item-active' : ''}`}>
+          <NavLink
+            to="/settings"
+            title={collapsed ? 'Settings' : undefined}
+            className={({ isActive }) => `nav-item${isActive ? ' nav-item-active' : ''}`}
+          >
             <Settings size={17} strokeWidth={2} />
-            Settings
+            {!collapsed && 'Settings'}
           </NavLink>
-          <div className={`status-row status-row-${status}`}>
+          <div className={`status-row status-row-${status}`} title={collapsed ? connectionLabel(status) : undefined}>
             <span className="status-dot" />
-            API: {connectionLabel(status)}
+            {!collapsed && `API: ${connectionLabel(status)}`}
           </div>
+          <button
+            type="button"
+            className="sidebar-collapse-toggle"
+            onClick={() => setCollapsed((c) => !c)}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? <PanelLeftOpen size={16} strokeWidth={2} /> : <PanelLeftClose size={16} strokeWidth={2} />}
+            {!collapsed && 'Collapse'}
+          </button>
         </div>
       </aside>
 
