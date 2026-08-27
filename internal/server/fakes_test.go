@@ -229,8 +229,20 @@ type fakeEnvironmentStore struct {
 	listErr   error
 	saveErr   error
 	saved     []registry.Environment
+	get       registry.Environment
+	getErr    error
 	deleteErr error
 	deleted   []string
+
+	updateConfigErr  error
+	updatedConfigs   []registry.Environment
+	addToolErr       error
+	addedTools       []registry.Tool
+	updateToolErr    error
+	updatedTools     []registry.Tool
+	updatedToolIndex []int
+	deleteToolErr    error
+	deletedToolIndex []int
 }
 
 func (f *fakeEnvironmentStore) ListEnvironments() ([]registry.Environment, error) {
@@ -245,11 +257,48 @@ func (f *fakeEnvironmentStore) SaveEnvironment(e registry.Environment) error {
 	return nil
 }
 
+func (f *fakeEnvironmentStore) GetEnvironment(name string) (registry.Environment, error) {
+	return f.get, f.getErr
+}
+
 func (f *fakeEnvironmentStore) DeleteEnvironment(name string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
 	f.deleted = append(f.deleted, name)
+	return nil
+}
+
+func (f *fakeEnvironmentStore) UpdateConfig(name, image string, mounts []registry.Mount) error {
+	if f.updateConfigErr != nil {
+		return f.updateConfigErr
+	}
+	f.updatedConfigs = append(f.updatedConfigs, registry.Environment{Name: name, Image: image, Mounts: mounts})
+	return nil
+}
+
+func (f *fakeEnvironmentStore) AddTool(name string, tool registry.Tool) error {
+	if f.addToolErr != nil {
+		return f.addToolErr
+	}
+	f.addedTools = append(f.addedTools, tool)
+	return nil
+}
+
+func (f *fakeEnvironmentStore) UpdateTool(name string, index int, tool registry.Tool) error {
+	if f.updateToolErr != nil {
+		return f.updateToolErr
+	}
+	f.updatedTools = append(f.updatedTools, tool)
+	f.updatedToolIndex = append(f.updatedToolIndex, index)
+	return nil
+}
+
+func (f *fakeEnvironmentStore) DeleteTool(name string, index int) error {
+	if f.deleteToolErr != nil {
+		return f.deleteToolErr
+	}
+	f.deletedToolIndex = append(f.deletedToolIndex, index)
 	return nil
 }
 
@@ -270,6 +319,10 @@ type fakeEnvironmentManager struct {
 
 	getExecResult *environments.Exec
 	getExecOK     bool
+
+	tryToolResult *environments.Exec
+	tryToolErr    error
+	tryToolCalls  []string
 }
 
 func (f *fakeEnvironmentManager) Launch(ctx context.Context, environmentName, instanceName string) (environments.Instance, error) {
@@ -293,6 +346,11 @@ func (f *fakeEnvironmentManager) StartExec(instanceID, command string) (*environ
 
 func (f *fakeEnvironmentManager) GetExec(id string) (*environments.Exec, bool) {
 	return f.getExecResult, f.getExecOK
+}
+
+func (f *fakeEnvironmentManager) TryTool(instanceID string, tool registry.Tool, args map[string]string) (*environments.Exec, error) {
+	f.tryToolCalls = append(f.tryToolCalls, instanceID)
+	return f.tryToolResult, f.tryToolErr
 }
 
 type fakeAgentStore struct {
@@ -443,6 +501,13 @@ type fakeBenchmarkStore struct {
 
 	deleteTestCaseErr error
 	deletedIndex      int
+
+	publishErr    error
+	publishResult registry.BenchmarkVersion
+	published     []string
+
+	versions    []registry.BenchmarkVersion
+	versionsErr error
 }
 
 func (f *fakeBenchmarkStore) ListBenchmarks() ([]registry.Benchmark, error) {
@@ -494,6 +559,18 @@ func (f *fakeBenchmarkStore) DeleteTestCase(benchmarkName string, index int) err
 	return nil
 }
 
+func (f *fakeBenchmarkStore) PublishVersion(benchmarkName string) (registry.BenchmarkVersion, error) {
+	if f.publishErr != nil {
+		return registry.BenchmarkVersion{}, f.publishErr
+	}
+	f.published = append(f.published, benchmarkName)
+	return f.publishResult, nil
+}
+
+func (f *fakeBenchmarkStore) ListVersions(benchmarkName string) ([]registry.BenchmarkVersion, error) {
+	return f.versions, f.versionsErr
+}
+
 type fakeTestCaseGenerator struct {
 	prompts  []string
 	err      error
@@ -523,7 +600,7 @@ type fakeBenchmarkManager struct {
 	resultsErr error
 }
 
-func (f *fakeBenchmarkManager) StartRun(benchmarkName string, modelNames []string) (*benchmarks.Run, error) {
+func (f *fakeBenchmarkManager) StartRun(benchmarkName string, version int, modelNames []string) (*benchmarks.Run, error) {
 	f.started = append(f.started, benchmarkName)
 	return f.startResult, f.startErr
 }

@@ -5,17 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
-// normalizeEnvironment ensures Tools/Mounts never serialize as JSON "null"
-// (a nil slice's default), which breaks frontend code that calls array
-// methods on a parsed response.
+// normalizeEnvironment ensures Tools/Mounts (and each tool's Parameters)
+// never serialize as JSON "null", which breaks frontend code that calls
+// array methods on a parsed response.
 func normalizeEnvironment(e registry.Environment) registry.Environment {
 	if e.Tools == nil {
-		e.Tools = []string{}
+		e.Tools = []registry.Tool{}
+	}
+	for i, t := range e.Tools {
+		if t.Parameters == nil {
+			e.Tools[i].Parameters = []registry.ToolParameter{}
+		}
 	}
 	if e.Mounts == nil {
 		e.Mounts = []registry.Mount{}
@@ -45,11 +51,12 @@ func listEnvironmentsHandler(envs environmentStore) http.HandlerFunc {
 type createEnvironmentRequest struct {
 	Name   string           `json:"name"`
 	Image  string           `json:"image"`
-	Tools  []string         `json:"tools"`
 	Mounts []registry.Mount `json:"mounts"`
 }
 
-// createEnvironmentHandler saves a new custom Environment definition.
+// createEnvironmentHandler saves a new custom Environment definition. It
+// starts with no tools — those are added afterward from the environment's
+// own workspace page, the same way a Benchmark starts with no test cases.
 func createEnvironmentHandler(envs environmentStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req createEnvironmentRequest
@@ -66,18 +73,25 @@ func createEnvironmentHandler(envs environmentStore) http.HandlerFunc {
 			return
 		}
 
-		env := registry.Environment{
-			Name:   req.Name,
-			Image:  req.Image,
-			Tools:  req.Tools,
-			Mounts: req.Mounts,
-		}
+		env := registry.Environment{Name: req.Name, Image: req.Image, Mounts: req.Mounts}
 		if err := envs.SaveEnvironment(env); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 
 		writeJSON(w, http.StatusCreated, normalizeEnvironment(env))
+	}
+}
+
+// getEnvironmentHandler responds with a single Environment's definition.
+func getEnvironmentHandler(envs environmentStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		env, err := envs.GetEnvironment(r.PathValue("name"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, normalizeEnvironment(env))
 	}
 }
 
@@ -90,6 +104,189 @@ func deleteEnvironmentHandler(envs environmentStore) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// updateEnvironmentConfigRequest is the PUT /api/environments/{name}/config
+// request body.
+type updateEnvironmentConfigRequest struct {
+	Image  string           `json:"image"`
+	Mounts []registry.Mount `json:"mounts"`
+}
+
+// updateEnvironmentConfigHandler overwrites an environment's image and
+// mounts, leaving its tools untouched — the "Configuration" side of the
+// environment workspace page.
+func updateEnvironmentConfigHandler(envs environmentStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		var req updateEnvironmentConfigRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+		if req.Image == "" {
+			writeError(w, http.StatusBadRequest, errors.New("image is required"))
+			return
+		}
+
+		if err := envs.UpdateConfig(name, req.Image, req.Mounts); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		env, err := envs.GetEnvironment(name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, normalizeEnvironment(env))
+	}
+}
+
+// addToolHandler appends a new tool to an environment.
+func addToolHandler(envs environmentStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		var tool registry.Tool
+		if err := json.NewDecoder(r.Body).Decode(&tool); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+		if tool.Name == "" {
+			writeError(w, http.StatusBadRequest, errors.New("tool name is required"))
+			return
+		}
+		if tool.Command == "" {
+			writeError(w, http.StatusBadRequest, errors.New("tool command is required"))
+			return
+		}
+
+		if err := envs.AddTool(name, tool); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		env, err := envs.GetEnvironment(name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, normalizeEnvironment(env).Tools[len(env.Tools)-1])
+	}
+}
+
+// updateToolHandler overwrites a single tool, addressed by its position in
+// the environment (as returned by GET /api/environments/{name}).
+func updateToolHandler(envs environmentStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid tool index: %w", err))
+			return
+		}
+
+		var tool registry.Tool
+		if err := json.NewDecoder(r.Body).Decode(&tool); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+		if tool.Name == "" {
+			writeError(w, http.StatusBadRequest, errors.New("tool name is required"))
+			return
+		}
+		if tool.Command == "" {
+			writeError(w, http.StatusBadRequest, errors.New("tool command is required"))
+			return
+		}
+
+		if err := envs.UpdateTool(name, index, tool); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		env, err := envs.GetEnvironment(name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, normalizeEnvironment(env).Tools[index])
+	}
+}
+
+// deleteToolHandler removes a single tool, addressed by its position in the
+// environment (as returned by GET /api/environments/{name}).
+func deleteToolHandler(envs environmentStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid tool index: %w", err))
+			return
+		}
+
+		if err := envs.DeleteTool(name, index); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// tryToolRequest is the POST /api/environments/{name}/tools/{index}/try
+// request body.
+type tryToolRequest struct {
+	InstanceID string            `json:"instanceId"`
+	Args       map[string]string `json:"args"`
+}
+
+// tryToolHandler renders a tool's command with the given arguments and runs
+// it inside a running instance, the same way plain ad hoc exec does — the
+// environment workspace's "Playground" tab uses this so trying a tool
+// streams live output over the same /api/events mechanism.
+func tryToolHandler(envs environmentStore, mgr environmentManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid tool index: %w", err))
+			return
+		}
+
+		var req tryToolRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+		if req.InstanceID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("instanceId is required"))
+			return
+		}
+
+		env, err := envs.GetEnvironment(name)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		if index < 0 || index >= len(env.Tools) {
+			writeError(w, http.StatusBadRequest, errors.New("tool index out of range"))
+			return
+		}
+
+		exec, err := mgr.TryTool(req.InstanceID, env.Tools[index], req.Args)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		writeJSON(w, http.StatusAccepted, exec)
 	}
 }
 

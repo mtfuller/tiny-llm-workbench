@@ -20,9 +20,12 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
 - **Training** — Train models locally with Apple MLX. Pick a base model (a Hugging Face MLX repo id, or
   a model you've already trained here) and a dataset, configure a run, and watch weight changes and
   training stats (duration, iterations, memory) update live.
-- **Environments** — Sandboxed environments give agents tools, memory, and a filesystem to do real
-  work. Several prebuilt environments (WebSearch, SoftwareDev, OfficeWorker, ...) are included, or
-  build your own.
+- **Environments** — Sandboxed Docker environments give agents tools, memory, and a filesystem to do
+  real work. Each environment has its own workspace page: configure its image and mounts, define tools
+  (a command template with a typed parameter list — string/number/boolean), and launch an instance to
+  try a tool interactively before wiring it into an agent. Several prebuilt environments (WebSearch,
+  SoftwareDev, OfficeWorker) ship with real tools already defined (read/write files, list a directory;
+  WebSearch also gets a keyless web-search tool), or build your own from scratch.
 - **Agents** — Design agents visually on a canvas: connect prompt, model, tool, memory, knowledge, and
   input/output nodes into a workflow. Each agent targets a specific environment.
 - **Evaluations** — Define test suites against your agents: starting environment state, an initial
@@ -53,6 +56,14 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
   - [x] Add an Environments page to the navbar
   - [x] Prebuilt environments (WebSearch, SoftwareDev, OfficeWorker, ...) launched as Docker containers
   - [x] Create and save custom environments
+  - [x] Per-environment workspace page (Configuration / Tools / Playground tabs): edit image and mounts
+        (with per-mount read-only), define tools as a command template plus a typed parameter list
+        (string/number/boolean), and launch an instance to try a tool interactively with live streamed
+        output. Prebuilt environments ship with real tools (read/write file, list directory; WebSearch
+        also gets a DuckDuckGo-backed web search tool) rather than just descriptive labels. Fully
+        verified live against a real Docker container: launched an instance, ran the real `web_search`
+        tool and got a real API response, and ran `read_file` against a path containing a space to
+        confirm argument quoting is correct.
 - [x] **Phase 3 — Agents**
   - [x] Add an Agents page to the navbar
   - [x] Visual canvas for building agent workflows (input, prompt, output, decision, tool nodes) — built

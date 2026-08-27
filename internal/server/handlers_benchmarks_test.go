@@ -229,7 +229,7 @@ func TestStartBenchmarkRun(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	body, _ := json.Marshal(startBenchmarkRunRequest{ModelNames: []string{"tiny"}})
+	body, _ := json.Marshal(startBenchmarkRunRequest{Version: 1, ModelNames: []string{"tiny"}})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/benchmarks/greeting-benchmark/runs", bytes.NewReader(body))
 	handler.ServeHTTP(rec, req)
@@ -251,13 +251,31 @@ func TestStartBenchmarkRunError(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	body, _ := json.Marshal(startBenchmarkRunRequest{ModelNames: []string{"tiny"}})
+	body, _ := json.Marshal(startBenchmarkRunRequest{Version: 1, ModelNames: []string{"tiny"}})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/benchmarks/greeting-benchmark/runs", bytes.NewReader(body))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("POST .../runs (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestStartBenchmarkRunRequiresVersion(t *testing.T) {
+	deps := testDeps()
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(startBenchmarkRunRequest{ModelNames: []string{"tiny"}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmarks/greeting-benchmark/runs", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../runs (no version) status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
@@ -680,5 +698,114 @@ func TestGenerateTestCasesGeneratorError(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("POST .../generate (generator error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestPublishBenchmarkVersion(t *testing.T) {
+	deps := testDeps()
+	store := &fakeBenchmarkStore{publishResult: registry.BenchmarkVersion{Version: 1}}
+	deps.Benchmarks = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmarks/greeting-benchmark/versions", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST .../versions status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if len(store.published) != 1 || store.published[0] != "greeting-benchmark" {
+		t.Errorf("store.published = %v, want [greeting-benchmark]", store.published)
+	}
+
+	var got registry.BenchmarkVersion
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if got.Version != 1 {
+		t.Errorf("POST .../versions body = %+v, want Version 1", got)
+	}
+}
+
+func TestPublishBenchmarkVersionError(t *testing.T) {
+	deps := testDeps()
+	deps.Benchmarks = &fakeBenchmarkStore{publishErr: errors.New("no test cases to publish")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmarks/greeting-benchmark/versions", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../versions (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestListBenchmarkVersions(t *testing.T) {
+	deps := testDeps()
+	deps.Benchmarks = &fakeBenchmarkStore{versions: []registry.BenchmarkVersion{{Version: 1}, {Version: 2}}}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/benchmark-versions/greeting-benchmark", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/benchmark-versions/greeting-benchmark status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got []registry.BenchmarkVersion
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("GET /api/benchmark-versions/greeting-benchmark body = %+v, want 2 entries", got)
+	}
+}
+
+func TestListBenchmarkVersionsEmptyIsJSONArrayNotNull(t *testing.T) {
+	deps := testDeps()
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/benchmark-versions/greeting-benchmark", nil)
+	handler.ServeHTTP(rec, req)
+
+	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
+		t.Errorf("GET /api/benchmark-versions/greeting-benchmark (empty) body = %q, want %q", got, "[]")
+	}
+}
+
+func TestListBenchmarkVersionsError(t *testing.T) {
+	deps := testDeps()
+	deps.Benchmarks = &fakeBenchmarkStore{versionsErr: errors.New("read error")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/benchmark-versions/greeting-benchmark", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("GET /api/benchmark-versions/greeting-benchmark (error) status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }

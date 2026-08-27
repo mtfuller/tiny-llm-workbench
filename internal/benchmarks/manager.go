@@ -72,19 +72,22 @@ type RunResult struct {
 // queryable outcome of each model it covers is a separately persisted
 // RunResult (see ListResults).
 type Run struct {
-	ID            string      `json:"id"`
-	BenchmarkName string      `json:"benchmarkName"`
-	ModelNames    []string    `json:"modelNames"`
-	Status        Status      `json:"status"`
-	Results       []RunResult `json:"results"`
-	StartedAt     time.Time   `json:"startedAt"`
-	FinishedAt    *time.Time  `json:"finishedAt,omitempty"`
-	Error         string      `json:"error,omitempty"`
+	ID               string      `json:"id"`
+	BenchmarkName    string      `json:"benchmarkName"`
+	BenchmarkVersion int         `json:"benchmarkVersion"`
+	ModelNames       []string    `json:"modelNames"`
+	Status           Status      `json:"status"`
+	Results          []RunResult `json:"results"`
+	StartedAt        time.Time   `json:"startedAt"`
+	FinishedAt       *time.Time  `json:"finishedAt,omitempty"`
+	Error            string      `json:"error,omitempty"`
 }
 
-// benchmarkReader is the subset of registry.Registry Manager needs.
+// benchmarkReader is the subset of registry.Registry Manager needs — a run
+// always targets one immutable, published BenchmarkVersion, never the
+// benchmark's live draft test cases.
 type benchmarkReader interface {
-	GetBenchmark(name string) (registry.Benchmark, error)
+	GetVersion(benchmarkName string, version int) (registry.BenchmarkVersion, error)
 }
 
 // modelResolver is the subset of registry.Registry Manager needs to resolve
@@ -134,28 +137,33 @@ func NewManager(ctx context.Context, benchmarksReader benchmarkReader, models mo
 	}
 }
 
-// StartRun begins running the named benchmark against modelNames in the
-// background, returning immediately with the run in its "running" state.
-func (m *Manager) StartRun(benchmarkName string, modelNames []string) (*Run, error) {
+// StartRun begins running one published version of the named benchmark
+// against modelNames in the background, returning immediately with the run
+// in its "running" state. version must be a version number that's already
+// been published (see registry.Registry.PublishVersion) — a run can never
+// target the benchmark's live, editable draft test cases, so its results
+// always trace back to an exact, unchanging set of test cases.
+func (m *Manager) StartRun(benchmarkName string, version int, modelNames []string) (*Run, error) {
 	if len(modelNames) == 0 {
 		return nil, errors.New("at least one model is required")
 	}
 
-	bm, err := m.benchmarks.GetBenchmark(benchmarkName)
+	ver, err := m.benchmarks.GetVersion(benchmarkName, version)
 	if err != nil {
-		return nil, fmt.Errorf("look up benchmark %q: %w", benchmarkName, err)
+		return nil, fmt.Errorf("look up benchmark %q version %d: %w", benchmarkName, version, err)
 	}
-	if len(bm.TestCases) == 0 {
-		return nil, fmt.Errorf("benchmark %q has no test cases", benchmarkName)
+	if len(ver.TestCases) == 0 {
+		return nil, fmt.Errorf("benchmark %q version %d has no test cases", benchmarkName, version)
 	}
 
 	run := &Run{
-		ID:            newRunID(),
-		BenchmarkName: benchmarkName,
-		ModelNames:    modelNames,
-		Status:        StatusRunning,
-		Results:       []RunResult{},
-		StartedAt:     time.Now().UTC(),
+		ID:               newRunID(),
+		BenchmarkName:    benchmarkName,
+		BenchmarkVersion: ver.Version,
+		ModelNames:       modelNames,
+		Status:           StatusRunning,
+		Results:          []RunResult{},
+		StartedAt:        time.Now().UTC(),
 	}
 
 	m.mu.Lock()
@@ -164,7 +172,7 @@ func (m *Manager) StartRun(benchmarkName string, modelNames []string) (*Run, err
 
 	m.publishStatus(run)
 
-	go m.run(run, bm)
+	go m.run(run, ver)
 
 	return run, nil
 }
@@ -202,10 +210,10 @@ func (m *Manager) ListResults(benchmarkName string) ([]RunResult, error) {
 	return m.loadResults(benchmarkName)
 }
 
-func (m *Manager) run(run *Run, bm registry.Benchmark) {
+func (m *Manager) run(run *Run, ver registry.BenchmarkVersion) {
 	for _, modelName := range run.ModelNames {
 		result := RunResult{
-			BenchmarkVersion: bm.Version,
+			BenchmarkVersion: ver.Version,
 			ModelName:        modelName,
 			Results:          []TestCaseResult{},
 			StartedAt:        time.Now().UTC(),
@@ -213,7 +221,7 @@ func (m *Manager) run(run *Run, bm registry.Benchmark) {
 
 		model, modelErr := m.models.GetModel(modelName)
 
-		for _, tc := range bm.TestCases {
+		for _, tc := range ver.TestCases {
 			var tcResult TestCaseResult
 			if modelErr != nil {
 				tcResult = TestCaseResult{

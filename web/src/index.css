@@ -356,6 +356,15 @@ a.nav-item:hover {
   padding: 1rem 1.25rem;
 }
 
+/* Wraps a .data-table that can grow wider than its .panel-flush ancestor
+   (e.g. a metrics-heavy results table) — .panel-flush's own overflow:hidden
+   (needed to clip the table's square corners to the panel's rounded ones)
+   would otherwise just cut the extra columns off instead of letting the
+   table scroll to them. */
+.table-scroll {
+  overflow-x: auto;
+}
+
 /* Event log */
 
 .event-log {
@@ -1545,6 +1554,29 @@ textarea {
 .assertion-row .danger-button {
   padding: 0.3rem 0.6rem;
   line-height: 1;
+}
+
+.tool-param-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.tool-param-row input,
+.tool-param-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-param-row .checkbox-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.tool-param-row .danger-button {
+  padding: 0.3rem 0.6rem;
+  line-height: 1;
+  flex-shrink: 0;
 }
 
 .agent-checklist {

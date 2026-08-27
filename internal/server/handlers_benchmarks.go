@@ -100,8 +100,11 @@ func deleteBenchmarkHandler(store benchmarkStore) http.HandlerFunc {
 }
 
 // startBenchmarkRunRequest is the POST /api/benchmarks/{name}/runs request
-// body.
+// body. Version must name an already-published version (see
+// publishBenchmarkVersionHandler) — a run can never target the benchmark's
+// live draft test cases.
 type startBenchmarkRunRequest struct {
+	Version    int      `json:"version"`
 	ModelNames []string `json:"modelNames"`
 }
 
@@ -116,8 +119,12 @@ func startBenchmarkRunHandler(mgr benchmarkManager) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 			return
 		}
+		if req.Version <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("version is required"))
+			return
+		}
 
-		run, err := mgr.StartRun(name, req.ModelNames)
+		run, err := mgr.StartRun(name, req.Version, req.ModelNames)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -148,6 +155,37 @@ func getBenchmarkRunHandler(mgr benchmarkManager) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, run)
+	}
+}
+
+// publishBenchmarkVersionHandler snapshots the benchmark's current draft
+// test cases into a new, immutable BenchmarkVersion, advancing the
+// benchmark's Version to it. This is the only way Version ever changes —
+// adding/editing/deleting draft test cases never does.
+func publishBenchmarkVersionHandler(store benchmarkStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		v, err := store.PublishVersion(r.PathValue("name"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, v)
+	}
+}
+
+// listBenchmarkVersionsHandler responds with every published version of a
+// benchmark, oldest first — used to populate the run modal's version picker.
+func listBenchmarkVersionsHandler(store benchmarkStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		versions, err := store.ListVersions(r.PathValue("name"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if versions == nil {
+			versions = []registry.BenchmarkVersion{}
+		}
+		writeJSON(w, http.StatusOK, versions)
 	}
 }
 

@@ -152,6 +152,20 @@ func (m *Manager) GetExec(id string) (*Exec, bool) {
 	return exec, ok
 }
 
+// TryTool renders tool's command with args (see RenderToolCommand) and
+// starts it inside instanceID in the background, streaming output the same
+// way StartExec does — the environment workspace's "Playground" tab uses
+// this so trying a tool looks and behaves exactly like running a plain ad
+// hoc command, just with its arguments collected as a form instead of typed
+// as a raw command line.
+func (m *Manager) TryTool(instanceID string, tool registry.Tool, args map[string]string) (*Exec, error) {
+	command, err := RenderToolCommand(tool, args)
+	if err != nil {
+		return nil, err
+	}
+	return m.StartExec(instanceID, command)
+}
+
 // RunToolSync runs command inside instanceID and blocks until it finishes,
 // returning its combined output. Unlike StartExec, this doesn't stream
 // progress over the event bus or track an Exec — it's for callers (an

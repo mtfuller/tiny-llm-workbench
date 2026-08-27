@@ -16,7 +16,9 @@ import {
 } from '../api'
 import { useEventStream } from '../eventStream'
 import Modal from '../Modal'
+import Pagination from '../Pagination'
 import { formatAssertion, TestCaseFields, toDraftTestCases, toPayloadTestCases, type DraftTestCase } from '../TestCaseEditor'
+import { usePagination } from '../usePagination'
 
 function formatDuration(startedAt: string, finishedAt?: string): string {
   const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
@@ -144,6 +146,28 @@ function EvaluationDetail() {
   }
 
   const latestRun = runs[0]
+  const pastRuns = runs.slice(1)
+
+  const {
+    page: testCasePage,
+    setPage: setTestCasePage,
+    pageCount: testCasePageCount,
+    pageItems: testCasePageItems,
+  } = usePagination(evaluation?.testCases ?? [])
+
+  const {
+    page: agentResultPage,
+    setPage: setAgentResultPage,
+    pageCount: agentResultPageCount,
+    pageItems: agentResultPageItems,
+  } = usePagination(latestRun?.agentResults ?? [])
+
+  const {
+    page: pastRunPage,
+    setPage: setPastRunPage,
+    pageCount: pastRunPageCount,
+    pageItems: pastRunPageItems,
+  } = usePagination(pastRuns)
 
   return (
     <>
@@ -177,7 +201,7 @@ function EvaluationDetail() {
               </tr>
             </thead>
             <tbody>
-              {evaluation.testCases.map((tc) => (
+              {testCasePageItems.map((tc) => (
                 <tr key={tc.id}>
                   <td>{tc.prompt}</td>
                   <td>
@@ -191,6 +215,14 @@ function EvaluationDetail() {
               ))}
             </tbody>
           </table>
+          <Pagination
+            page={testCasePage}
+            pageCount={testCasePageCount}
+            onChange={setTestCasePage}
+            shownCount={evaluation.testCases.length}
+            totalCount={evaluation.testCases.length}
+            itemLabel="test cases"
+          />
         </section>
       )}
 
@@ -254,60 +286,70 @@ function EvaluationDetail() {
           {latestRun.agentResults.length === 0 && <p className="hint">Running…</p>}
           {latestRun.agentResults.length > 0 && evaluation && (
             <div className="panel panel-flush">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Agent</th>
-                    {evaluation.testCases.map((tc, i) => (
-                      <th key={tc.id} title={tc.prompt}>
-                        Test {i + 1}
-                      </th>
-                    ))}
-                    <th>Score</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {latestRun.agentResults.map((ar) => (
-                    <tr key={ar.agentName}>
-                      <td>{ar.agentName}</td>
-                      {evaluation.testCases.map((tc) => {
-                        const result = ar.results.find((r) => r.testCaseId === tc.id)
-                        return (
-                          <td key={tc.id}>
-                            {result ? (
-                              <button
-                                type="button"
-                                className="result-cell"
-                                onClick={() => setSelectedResult({ agentName: ar.agentName, testCase: tc, result })}
-                              >
-                                <span className={`badge ${result.passed ? 'badge-purple' : ''}`}>
-                                  {result.passed ? 'pass' : 'fail'}
-                                </span>
-                              </button>
-                            ) : (
-                              '—'
-                            )}
-                          </td>
-                        )
-                      })}
-                      <td>
-                        {ar.passed}/{ar.total}
-                      </td>
+              <div className="table-scroll">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Agent</th>
+                      {evaluation.testCases.map((tc, i) => (
+                        <th key={tc.id} title={tc.prompt}>
+                          Test {i + 1}
+                        </th>
+                      ))}
+                      <th>Score</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {agentResultPageItems.map((ar) => (
+                      <tr key={ar.agentName}>
+                        <td>{ar.agentName}</td>
+                        {evaluation.testCases.map((tc) => {
+                          const result = ar.results.find((r) => r.testCaseId === tc.id)
+                          return (
+                            <td key={tc.id}>
+                              {result ? (
+                                <button
+                                  type="button"
+                                  className="result-cell"
+                                  onClick={() => setSelectedResult({ agentName: ar.agentName, testCase: tc, result })}
+                                >
+                                  <span className={`badge ${result.passed ? 'badge-purple' : ''}`}>
+                                    {result.passed ? 'pass' : 'fail'}
+                                  </span>
+                                </button>
+                              ) : (
+                                '—'
+                              )}
+                            </td>
+                          )
+                        })}
+                        <td>
+                          {ar.passed}/{ar.total}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Pagination
+                page={agentResultPage}
+                pageCount={agentResultPageCount}
+                onChange={setAgentResultPage}
+                shownCount={latestRun.agentResults.length}
+                totalCount={latestRun.agentResults.length}
+                itemLabel="agents"
+              />
             </div>
           )}
           <p className="hint">Duration: {formatDuration(latestRun.startedAt, latestRun.finishedAt)}</p>
         </section>
       )}
 
-      {runs.length > 1 && (
+      {pastRuns.length > 0 && (
         <section className="panel">
           <h3>Run history</h3>
           <ul className="event-log">
-            {runs.slice(1).map((r) => (
+            {pastRunPageItems.map((r) => (
               <li key={r.id}>
                 <span className="event-type">{r.status}</span>
                 <span className="event-data">
@@ -316,6 +358,14 @@ function EvaluationDetail() {
               </li>
             ))}
           </ul>
+          <Pagination
+            page={pastRunPage}
+            pageCount={pastRunPageCount}
+            onChange={setPastRunPage}
+            shownCount={pastRuns.length}
+            totalCount={pastRuns.length}
+            itemLabel="past runs"
+          />
         </section>
       )}
 

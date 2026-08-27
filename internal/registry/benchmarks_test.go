@@ -29,15 +29,15 @@ func TestSaveAndGetBenchmark(t *testing.T) {
 	if len(got.TestCases[0].Assertions) != 1 || got.TestCases[0].Assertions[0].Value != "hello" {
 		t.Errorf("GetBenchmark().TestCases[0].Assertions = %+v, want a single 'hello' assertion", got.TestCases[0].Assertions)
 	}
-	if got.Version != 1 {
-		t.Errorf("GetBenchmark().Version = %d, want 1 for a first save", got.Version)
+	if got.Version != 0 {
+		t.Errorf("GetBenchmark().Version = %d, want 0 (nothing published yet) for a first save", got.Version)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("GetBenchmark().CreatedAt is zero, want it set on first save")
 	}
 }
 
-func TestSaveBenchmarkOverwrites(t *testing.T) {
+func TestSaveBenchmarkOverwritesWithoutBumpingVersion(t *testing.T) {
 	reg := New(t.TempDir())
 
 	if err := reg.SaveBenchmark(testBenchmark("greeting-benchmark")); err != nil {
@@ -60,37 +60,11 @@ func TestSaveBenchmarkOverwrites(t *testing.T) {
 	if len(got.TestCases) != 0 {
 		t.Errorf("GetBenchmark().TestCases = %+v, want the overwrite to have cleared them", got.TestCases)
 	}
-	if got.Version != first.Version+1 {
-		t.Errorf("GetBenchmark().Version = %d, want %d after changing TestCases", got.Version, first.Version+1)
+	if got.Version != first.Version {
+		t.Errorf("GetBenchmark().Version = %d, want unchanged at %d — draft edits never bump Version", got.Version, first.Version)
 	}
 	if !got.CreatedAt.Equal(first.CreatedAt) {
 		t.Errorf("GetBenchmark().CreatedAt = %v, want it preserved from the first save (%v)", got.CreatedAt, first.CreatedAt)
-	}
-}
-
-func TestSaveBenchmarkVersionUnchangedWhenTestCasesIdentical(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveBenchmark(testBenchmark("greeting-benchmark")); err != nil {
-		t.Fatalf("SaveBenchmark() error = %v", err)
-	}
-	first, err := reg.GetBenchmark("greeting-benchmark")
-	if err != nil {
-		t.Fatalf("GetBenchmark() error = %v", err)
-	}
-
-	// Re-save with the exact same test cases (e.g. opening the editor and
-	// saving without changing anything) shouldn't bump the version.
-	if err := reg.SaveBenchmark(testBenchmark("greeting-benchmark")); err != nil {
-		t.Fatalf("SaveBenchmark() (no-op update) error = %v", err)
-	}
-
-	got, err := reg.GetBenchmark("greeting-benchmark")
-	if err != nil {
-		t.Fatalf("GetBenchmark() error = %v", err)
-	}
-	if got.Version != first.Version {
-		t.Errorf("GetBenchmark().Version = %d, want unchanged at %d for identical TestCases", got.Version, first.Version)
 	}
 }
 
@@ -156,7 +130,7 @@ func TestDeleteBenchmarkNotFound(t *testing.T) {
 	}
 }
 
-func TestAddTestCases(t *testing.T) {
+func TestAddTestCasesDoesNotBumpVersion(t *testing.T) {
 	reg := New(t.TempDir())
 
 	if err := reg.SaveBenchmark(Benchmark{Name: "greeting"}); err != nil {
@@ -183,12 +157,12 @@ func TestAddTestCases(t *testing.T) {
 	if len(got.TestCases[1].Tags) != 1 || got.TestCases[1].Tags[0] != "farewell" {
 		t.Errorf("GetBenchmark().TestCases[1].Tags = %v, want [farewell]", got.TestCases[1].Tags)
 	}
-	if got.Version != 2 {
-		t.Errorf("GetBenchmark().Version = %d, want 2 (bumped by adding test cases)", got.Version)
+	if got.Version != 0 {
+		t.Errorf("GetBenchmark().Version = %d, want 0 — adding draft test cases never publishes a version", got.Version)
 	}
 }
 
-func TestUpdateTestCase(t *testing.T) {
+func TestUpdateTestCaseDoesNotBumpVersion(t *testing.T) {
 	reg := New(t.TempDir())
 
 	if err := reg.SaveBenchmark(testBenchmark("greeting")); err != nil {
@@ -214,8 +188,8 @@ func TestUpdateTestCase(t *testing.T) {
 	if got.TestCases[0].ID != originalID {
 		t.Errorf("GetBenchmark().TestCases[0].ID = %q, want unchanged %q", got.TestCases[0].ID, originalID)
 	}
-	if got.Version != before.Version+1 {
-		t.Errorf("GetBenchmark().Version = %d, want %d after changing a test case", got.Version, before.Version+1)
+	if got.Version != before.Version {
+		t.Errorf("GetBenchmark().Version = %d, want unchanged at %d — editing a draft test case never publishes a version", got.Version, before.Version)
 	}
 }
 
@@ -266,5 +240,137 @@ func TestDeleteTestCaseOutOfRange(t *testing.T) {
 
 	if err := reg.DeleteTestCase("greeting", 0); err == nil {
 		t.Error("DeleteTestCase() error = nil, want an error for an out-of-range index")
+	}
+}
+
+func TestPublishVersion(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveBenchmark(testBenchmark("greeting")); err != nil {
+		t.Fatalf("SaveBenchmark() error = %v", err)
+	}
+
+	v, err := reg.PublishVersion("greeting")
+	if err != nil {
+		t.Fatalf("PublishVersion() error = %v", err)
+	}
+	if v.Version != 1 {
+		t.Errorf("PublishVersion().Version = %d, want 1", v.Version)
+	}
+	if len(v.TestCases) != 1 || v.TestCases[0].Prompt != "say hello" {
+		t.Errorf("PublishVersion().TestCases = %+v, want the draft's single test case", v.TestCases)
+	}
+	if v.PublishedAt.IsZero() {
+		t.Error("PublishVersion().PublishedAt is zero, want it set")
+	}
+
+	got, err := reg.GetBenchmark("greeting")
+	if err != nil {
+		t.Fatalf("GetBenchmark() error = %v", err)
+	}
+	if got.Version != 1 {
+		t.Errorf("GetBenchmark().Version = %d, want 1 after publishing", got.Version)
+	}
+}
+
+func TestPublishVersionRequiresTestCases(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveBenchmark(Benchmark{Name: "empty"}); err != nil {
+		t.Fatalf("SaveBenchmark() error = %v", err)
+	}
+
+	if _, err := reg.PublishVersion("empty"); err == nil {
+		t.Error("PublishVersion() error = nil, want an error for a benchmark with no test cases")
+	}
+}
+
+func TestPublishVersionIsImmutableToLaterDraftEdits(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveBenchmark(testBenchmark("greeting")); err != nil {
+		t.Fatalf("SaveBenchmark() error = %v", err)
+	}
+	v1, err := reg.PublishVersion("greeting")
+	if err != nil {
+		t.Fatalf("PublishVersion() error = %v", err)
+	}
+
+	// Editing the draft afterward must not retroactively change the
+	// already-published version's snapshot.
+	if err := reg.UpdateTestCase("greeting", 0, TestCase{Prompt: "say goodbye", Assertions: []Assertion{{Type: "contains", Value: "bye"}}}); err != nil {
+		t.Fatalf("UpdateTestCase() error = %v", err)
+	}
+
+	got, err := reg.GetVersion("greeting", v1.Version)
+	if err != nil {
+		t.Fatalf("GetVersion() error = %v", err)
+	}
+	if got.TestCases[0].Prompt != "say hello" {
+		t.Errorf("GetVersion().TestCases[0].Prompt = %q, want unchanged %q despite the later draft edit", got.TestCases[0].Prompt, "say hello")
+	}
+}
+
+func TestPublishVersionIncrementsAcrossMultiplePublishes(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveBenchmark(testBenchmark("greeting")); err != nil {
+		t.Fatalf("SaveBenchmark() error = %v", err)
+	}
+	if _, err := reg.PublishVersion("greeting"); err != nil {
+		t.Fatalf("PublishVersion() (1st) error = %v", err)
+	}
+
+	if err := reg.AddTestCases("greeting", []TestCase{{Prompt: "say bye", Assertions: []Assertion{{Type: "contains", Value: "bye"}}}}); err != nil {
+		t.Fatalf("AddTestCases() error = %v", err)
+	}
+	v2, err := reg.PublishVersion("greeting")
+	if err != nil {
+		t.Fatalf("PublishVersion() (2nd) error = %v", err)
+	}
+	if v2.Version != 2 {
+		t.Errorf("PublishVersion() (2nd).Version = %d, want 2", v2.Version)
+	}
+	if len(v2.TestCases) != 2 {
+		t.Errorf("PublishVersion() (2nd).TestCases = %+v, want 2 (both draft test cases)", v2.TestCases)
+	}
+
+	versions, err := reg.ListVersions("greeting")
+	if err != nil {
+		t.Fatalf("ListVersions() error = %v", err)
+	}
+	if len(versions) != 2 || versions[0].Version != 1 || versions[1].Version != 2 {
+		t.Errorf("ListVersions() = %+v, want [v1, v2]", versions)
+	}
+}
+
+func TestListVersionsEmptyForUnpublishedBenchmark(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveBenchmark(testBenchmark("greeting")); err != nil {
+		t.Fatalf("SaveBenchmark() error = %v", err)
+	}
+
+	versions, err := reg.ListVersions("greeting")
+	if err != nil {
+		t.Fatalf("ListVersions() error = %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("ListVersions() = %+v, want empty for a benchmark with nothing published", versions)
+	}
+}
+
+func TestGetVersionUnknown(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveBenchmark(testBenchmark("greeting")); err != nil {
+		t.Fatalf("SaveBenchmark() error = %v", err)
+	}
+	if _, err := reg.PublishVersion("greeting"); err != nil {
+		t.Fatalf("PublishVersion() error = %v", err)
+	}
+
+	if _, err := reg.GetVersion("greeting", 99); err == nil {
+		t.Error("GetVersion() error = nil, want an error for an unpublished version number")
 	}
 }

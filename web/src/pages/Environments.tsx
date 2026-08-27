@@ -1,20 +1,8 @@
-import { Play, Plus, Square, Terminal, Trash2 } from 'lucide-react'
+import { Play, Plus, Square, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import {
-  createEnvironment,
-  deleteEnvironment,
-  launchEnvironment,
-  listEnvironments,
-  listInstances,
-  startExec,
-  stopInstance,
-  type Environment,
-  type Exec,
-  type Instance,
-  type Mount,
-} from '../api'
+import { Link } from 'react-router-dom'
+import { createEnvironment, deleteEnvironment, launchEnvironment, listEnvironments, listInstances, stopInstance, type Environment, type Instance } from '../api'
 import { useConfirm } from '../ConfirmDialog'
-import { useEventStream } from '../eventStream'
 import Modal from '../Modal'
 import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
@@ -22,7 +10,6 @@ import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
 
 function Environments() {
-  const { subscribe } = useEventStream()
   const confirm = useConfirm()
   const showToast = useToast()
 
@@ -38,10 +25,6 @@ function Environments() {
   const [launching, setLaunching] = useState<string | null>(null)
   const [stopping, setStopping] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
-
-  const [execInstanceId, setExecInstanceId] = useState<string | null>(null)
-  const [execCommand, setExecCommand] = useState('')
-  const [activeExec, setActiveExec] = useState<Exec | null>(null)
 
   const reloadEnvironments = () => {
     listEnvironments()
@@ -60,29 +43,12 @@ function Environments() {
     reloadInstances()
   }, [])
 
-  // Poll instances while an exec is running, since starting/stopping
-  // instances elsewhere doesn't otherwise notify this page.
+  // Poll instances, since starting/stopping instances from an environment's
+  // own workspace page doesn't otherwise notify this page.
   useEffect(() => {
     const interval = setInterval(reloadInstances, 4000)
     return () => clearInterval(interval)
   }, [])
-
-  useEffect(() => {
-    const unsubscribeOutput = subscribe('environment.exec.output', (event) => {
-      const { execId, chunk } = JSON.parse(event.data) as { execId: string; chunk: string }
-      setActiveExec((prev) => (prev && prev.id === execId ? { ...prev, output: prev.output + chunk } : prev))
-    })
-
-    const unsubscribeStatus = subscribe('environment.exec.status', (event) => {
-      const exec = JSON.parse(event.data) as Exec
-      setActiveExec((prev) => (prev && prev.id === exec.id ? exec : prev))
-    })
-
-    return () => {
-      unsubscribeOutput()
-      unsubscribeStatus()
-    }
-  }, [subscribe])
 
   const filteredEnvironments = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -102,19 +68,11 @@ function Environments() {
 
   useEffect(resetDefinitionsPage, [search, resetDefinitionsPage])
 
-  const handleCreate = async (name: string, image: string, tools: string, mounts: Mount[]) => {
+  const handleCreate = async (name: string, image: string) => {
     setCreating(true)
     setCreateError(null)
     try {
-      await createEnvironment({
-        name,
-        image,
-        tools: tools
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean),
-        mounts: mounts.filter((m) => m.hostPath.trim() && m.containerPath.trim()),
-      })
+      await createEnvironment({ name, image, mounts: [] })
       setCreateOpen(false)
       reloadEnvironments()
     } catch (err) {
@@ -143,10 +101,6 @@ function Environments() {
     try {
       await stopInstance(id)
       reloadInstances()
-      if (execInstanceId === id) {
-        setExecInstanceId(null)
-        setActiveExec(null)
-      }
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -170,27 +124,14 @@ function Environments() {
     }
   }
 
-  const handleRunExec = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!execInstanceId || !execCommand.trim()) return
-
-    setError(null)
-    try {
-      const exec = await startExec(execInstanceId, execCommand.trim())
-      setActiveExec(exec)
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
   return (
     <>
       <div className="page-header">
         <h2>Environments</h2>
       </div>
       <p className="hint">
-        Sandboxed Docker containers agents will use to do real work in a future phase. Launch one below
-        and try a command in it now.
+        Sandboxed Docker containers agents can act inside. Build one out — image, mounts, tools — in its own
+        workspace, then launch it and try a tool.
       </p>
 
       {error && <p className="error">{error}</p>}
@@ -254,23 +195,14 @@ function Environments() {
               {pageDefinitions.map((env) => (
                 <tr key={env.name}>
                   <td>
-                    {env.name} {env.prebuilt && <span className="badge">prebuilt</span>}
+                    <Link to={`/environments/${encodeURIComponent(env.name)}`}>{env.name}</Link>{' '}
+                    {env.prebuilt && <span className="badge">prebuilt</span>}
                   </td>
                   <td>
                     <code>{env.image}</code>
                   </td>
-                  <td>{env.tools.join(', ') || '—'}</td>
-                  <td>
-                    {env.mounts.length === 0
-                      ? '—'
-                      : env.mounts.map((m, i) => (
-                          <div key={i}>
-                            <code>
-                              {m.hostPath} → {m.containerPath}
-                            </code>
-                          </div>
-                        ))}
-                  </td>
+                  <td>{env.tools.length}</td>
+                  <td>{env.mounts.length}</td>
                   <td className="row-actions">
                     <button
                       type="button"
@@ -334,25 +266,15 @@ function Environments() {
               {pageInstances.map((instance) => (
                 <tr key={instance.id}>
                   <td>{instance.name}</td>
-                  <td>{instance.environmentName}</td>
+                  <td>
+                    <Link to={`/environments/${encodeURIComponent(instance.environmentName)}`}>{instance.environmentName}</Link>
+                  </td>
                   <td>
                     <span className={`status ${instance.state === 'running' ? 'status-open' : 'status-closed'}`}>
                       {instance.state}
                     </span>
                   </td>
                   <td className="row-actions">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      title="Run a command"
-                      aria-label="Run a command"
-                      onClick={() => {
-                        setExecInstanceId(instance.id)
-                        setActiveExec(null)
-                      }}
-                    >
-                      <Terminal size={15} />
-                    </button>
                     <button
                       type="button"
                       className="icon-button"
@@ -379,46 +301,8 @@ function Environments() {
         </div>
       )}
 
-      {execInstanceId && (
-        <section className="panel">
-          <h3>Run a command</h3>
-          <p className="hint">
-            Runs in instance <code>{execInstanceId.slice(0, 12)}</code> via <code>sh -c</code>.
-          </p>
-          <form className="inline-form" onSubmit={handleRunExec}>
-            <input
-              type="text"
-              placeholder="echo hello"
-              value={execCommand}
-              onChange={(e) => setExecCommand(e.target.value)}
-            />
-            <button type="submit" disabled={activeExec?.status === 'running' || !execCommand.trim()}>
-              Run
-            </button>
-          </form>
-
-          {activeExec && (
-            <>
-              <div className="page-header">
-                <span className={`status ${activeExec.status === 'failed' ? 'status-closed' : activeExec.status === 'done' ? 'status-open' : 'status-connecting'}`}>
-                  {activeExec.status}
-                  {activeExec.exitCode !== undefined ? ` (exit ${activeExec.exitCode})` : ''}
-                </span>
-              </div>
-              <pre className="exec-output">{activeExec.output || ' '}</pre>
-              {activeExec.error && <p className="error">{activeExec.error}</p>}
-            </>
-          )}
-        </section>
-      )}
-
       {createOpen && (
-        <CreateEnvironmentModal
-          creating={creating}
-          error={createError}
-          onCreate={handleCreate}
-          onClose={() => setCreateOpen(false)}
-        />
+        <CreateEnvironmentModal creating={creating} error={createError} onCreate={handleCreate} onClose={() => setCreateOpen(false)} />
       )}
     </>
   )
@@ -427,30 +311,18 @@ function Environments() {
 interface CreateEnvironmentModalProps {
   creating: boolean
   error: string | null
-  onCreate: (name: string, image: string, tools: string, mounts: Mount[]) => void
+  onCreate: (name: string, image: string) => void
   onClose: () => void
 }
 
 function CreateEnvironmentModal({ creating, error, onCreate, onClose }: CreateEnvironmentModalProps) {
   const [name, setName] = useState('')
   const [image, setImage] = useState('')
-  const [tools, setTools] = useState('')
-  const [mounts, setMounts] = useState<Mount[]>([])
-
-  const addMountRow = () => setMounts((prev) => [...prev, { hostPath: '', containerPath: '' }])
-
-  const updateMountRow = (index: number, patch: Partial<Mount>) => {
-    setMounts((prev) => prev.map((m, i) => (i === index ? { ...m, ...patch } : m)))
-  }
-
-  const removeMountRow = (index: number) => {
-    setMounts((prev) => prev.filter((_, i) => i !== index))
-  }
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     if (!name.trim() || !image.trim()) return
-    onCreate(name.trim(), image.trim(), tools, mounts)
+    onCreate(name.trim(), image.trim())
   }
 
   return (
@@ -464,37 +336,7 @@ function CreateEnvironmentModal({ creating, error, onCreate, onClose }: CreateEn
           Docker image
           <input type="text" placeholder="alpine:3.20" value={image} onChange={(e) => setImage(e.target.value)} />
         </label>
-        <label>
-          Tools (comma-separated)
-          <input type="text" placeholder="shell, python" value={tools} onChange={(e) => setTools(e.target.value)} />
-        </label>
-
-        <div className="mounts-editor">
-          <span>Mounts (host ↔ container)</span>
-          {mounts.map((mount, i) => (
-            <div className="mount-row" key={i}>
-              <input
-                type="text"
-                placeholder="/host/path"
-                value={mount.hostPath}
-                onChange={(e) => updateMountRow(i, { hostPath: e.target.value })}
-              />
-              <span className="mount-arrow">→</span>
-              <input
-                type="text"
-                placeholder="/container/path"
-                value={mount.containerPath}
-                onChange={(e) => updateMountRow(i, { containerPath: e.target.value })}
-              />
-              <button type="button" className="danger-button" onClick={() => removeMountRow(i)}>
-                ×
-              </button>
-            </div>
-          ))}
-          <button type="button" className="button-secondary" onClick={addMountRow}>
-            + Mount
-          </button>
-        </div>
+        <p className="hint">Add mounts and tools afterward from the environment's own workspace page.</p>
 
         {error && <p className="error">{error}</p>}
         <div className="row-actions confirm-actions">

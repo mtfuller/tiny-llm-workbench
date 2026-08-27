@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, Pencil, Plus, Sparkles, Tag, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
@@ -8,13 +8,16 @@ import {
   getBenchmark,
   getBenchmarkResults,
   listBenchmarkRuns,
+  listBenchmarkVersions,
   listModels,
+  publishBenchmarkVersion,
   startBenchmarkRun,
   updateTestCase,
   type Assertion,
   type Benchmark,
   type BenchmarkRun,
   type BenchmarkRunResult,
+  type BenchmarkVersion,
   type Model,
   type TestCase,
   type TestCaseResult,
@@ -39,7 +42,7 @@ import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
 
 type Tab = 'testCases' | 'results'
-type SortKey = 'modelName' | 'benchmarkVersion' | 'passRate' | 'duration' | 'startedAt'
+type SortKey = 'modelName' | 'benchmarkVersion' | 'passAt1' | 'assertionRate' | 'errorRate' | 'avgLatency' | 'startedAt'
 type SortDir = 'asc' | 'desc'
 type TestCaseModalState = { mode: 'add' } | { mode: 'edit'; index: number } | null
 
@@ -52,8 +55,48 @@ function formatDuration(startedAt: string, finishedAt?: string): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
 
-function passRate(r: BenchmarkRunResult): number {
-  return r.total === 0 ? 0 : r.passed / r.total
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+// ResultMetrics are standard benchmark-style aggregates derived entirely
+// from a RunResult's own per-test-case results — no extra data needed from
+// the backend, so these compute the same way for historical results too.
+//
+// passAt1 is the well-known "pass@k" metric with k=1: since each test case
+// here runs exactly once per model, pass@1 is mathematically identical to
+// the plain pass rate (passed/total) — that's what pass@1 means at k=1, not
+// an approximation of it. assertionRate is a finer-grained score than
+// passAt1: a test case with several assertions counts partial credit here
+// even when it doesn't pass outright. avgLatencyMs divides the run's own
+// wall-clock duration by its test case count — exact, not approximate,
+// since test cases run strictly sequentially (see internal/benchmarks).
+interface ResultMetrics {
+  passAt1: number
+  assertionRate: number
+  errorRate: number
+  avgLatencyMs: number
+}
+
+function computeMetrics(r: BenchmarkRunResult): ResultMetrics {
+  const total = r.total || 1
+  let assertionTotal = 0
+  let assertionPassed = 0
+  let errorCount = 0
+  for (const tc of r.results) {
+    assertionTotal += tc.assertions.length
+    assertionPassed += tc.assertions.filter((a) => a.passed).length
+    if (tc.error) errorCount++
+  }
+  const durationMs = new Date(r.finishedAt).getTime() - new Date(r.startedAt).getTime()
+
+  return {
+    passAt1: r.total === 0 ? 0 : r.passed / r.total,
+    assertionRate: assertionTotal === 0 ? 0 : assertionPassed / assertionTotal,
+    errorRate: errorCount / total,
+    avgLatencyMs: durationMs / total,
+  }
 }
 
 function sortResults(results: BenchmarkRunResult[], key: SortKey, dir: SortDir): BenchmarkRunResult[] {
@@ -63,13 +106,17 @@ function sortResults(results: BenchmarkRunResult[], key: SortKey, dir: SortDir):
         return a.modelName.localeCompare(b.modelName)
       case 'benchmarkVersion':
         return a.benchmarkVersion - b.benchmarkVersion
-      case 'duration':
-        return new Date(a.finishedAt).getTime() - new Date(a.startedAt).getTime() - (new Date(b.finishedAt).getTime() - new Date(b.startedAt).getTime())
+      case 'assertionRate':
+        return computeMetrics(a).assertionRate - computeMetrics(b).assertionRate
+      case 'errorRate':
+        return computeMetrics(a).errorRate - computeMetrics(b).errorRate
+      case 'avgLatency':
+        return computeMetrics(a).avgLatencyMs - computeMetrics(b).avgLatencyMs
       case 'startedAt':
         return new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
-      case 'passRate':
+      case 'passAt1':
       default:
-        return passRate(a) - passRate(b)
+        return computeMetrics(a).passAt1 - computeMetrics(b).passAt1
     }
   })
   return dir === 'asc' ? sorted : sorted.reverse()
@@ -83,17 +130,19 @@ function BenchmarkDetail() {
 
   const [tab, setTab] = useState<Tab>('testCases')
   const [benchmark, setBenchmark] = useState<Benchmark | null>(null)
+  const [versions, setVersions] = useState<BenchmarkVersion[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [results, setResults] = useState<BenchmarkRunResult[] | null>(null)
   const [runs, setRuns] = useState<BenchmarkRun[]>([])
   const [runModalOpen, setRunModalOpen] = useState(false)
   const [starting, setStarting] = useState(false)
+  const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const [testCaseSearch, setTestCaseSearch] = useState('')
   const [activeTags, setActiveTags] = useState<Set<string>>(new Set())
   const [resultSearch, setResultSearch] = useState('')
-  const [sortKey, setSortKey] = useState<SortKey>('passRate')
+  const [sortKey, setSortKey] = useState<SortKey>('passAt1')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
   const [testCaseModal, setTestCaseModal] = useState<TestCaseModalState>(null)
@@ -113,6 +162,12 @@ function BenchmarkDetail() {
       .catch((err: Error) => setError(err.message))
   }, [name])
 
+  const reloadVersions = useCallback(() => {
+    listBenchmarkVersions(name)
+      .then(setVersions)
+      .catch(() => setVersions([]))
+  }, [name])
+
   const reloadResults = useCallback(() => {
     getBenchmarkResults(name)
       .then(setResults)
@@ -121,6 +176,7 @@ function BenchmarkDetail() {
 
   useEffect(() => {
     reloadBenchmark()
+    reloadVersions()
     reloadResults()
     listModels()
       .then(setModels)
@@ -128,7 +184,7 @@ function BenchmarkDetail() {
     listBenchmarkRuns()
       .then((all) => setRuns(all.filter((r) => r.benchmarkName === name)))
       .catch(() => setRuns([]))
-  }, [name, reloadBenchmark, reloadResults])
+  }, [name, reloadBenchmark, reloadVersions, reloadResults])
 
   useEffect(() => {
     const unsubscribeStatus = subscribe('benchmark.status', (event) => {
@@ -187,6 +243,24 @@ function BenchmarkDetail() {
     })
   }
 
+  const latestVersion = versions.length > 0 ? versions[versions.length - 1] : null
+  const draftDiffersFromLatest = !latestVersion || JSON.stringify(latestVersion.testCases) !== JSON.stringify(testCases)
+
+  const handlePublish = async () => {
+    setPublishing(true)
+    setError(null)
+    try {
+      await publishBenchmarkVersion(name)
+      showToast('Published a new version')
+      reloadBenchmark()
+      reloadVersions()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setPublishing(false)
+    }
+  }
+
   const handleSaveTestCaseModal = async (tc: { prompt: string; assertions: Assertion[]; tags?: string[] }) => {
     if (!testCaseModal) return
 
@@ -240,11 +314,11 @@ function BenchmarkDetail() {
     }
   }
 
-  const handleRun = async (modelNames: string[]) => {
+  const handleRun = async (version: number, modelNames: string[]) => {
     setStarting(true)
     setError(null)
     try {
-      const run = await startBenchmarkRun(name, modelNames)
+      const run = await startBenchmarkRun(name, version, modelNames)
       setRuns((prev) => [run, ...prev])
       setRunModalOpen(false)
       setTab('results')
@@ -313,7 +387,7 @@ function BenchmarkDetail() {
       <div className="page-header">
         <h2>
           <Link to="/benchmarks">Benchmarks</Link> / {name}
-          {benchmark && <span className="badge version-badge">v{benchmark.version}</span>}
+          {benchmark && <span className="badge version-badge">{benchmark.version === 0 ? 'unpublished' : `v${benchmark.version}`}</span>}
         </h2>
       </div>
 
@@ -323,13 +397,20 @@ function BenchmarkDetail() {
         <section className="panel">
           <h3>Benchmark info</h3>
           <dl className="info-list">
-            <dt>Version</dt>
-            <dd>v{benchmark.version}</dd>
-            <dt>Test cases</dt>
+            <dt>Published version</dt>
+            <dd>{benchmark.version === 0 ? 'None yet' : `v${benchmark.version}`}</dd>
+            <dt>Draft test cases</dt>
             <dd>{benchmark.testCases.length}</dd>
             <dt>Created</dt>
             <dd>{new Date(benchmark.createdAt).toLocaleString()}</dd>
           </dl>
+          {testCases.length > 0 && draftDiffersFromLatest && (
+            <p className="hint">
+              {latestVersion
+                ? `Draft test cases differ from the latest published version (v${latestVersion.version}) — publish a new version before running against these changes.`
+                : 'No version has been published yet — publish one from the Test cases tab to enable running this benchmark.'}
+            </p>
+          )}
         </section>
       )}
 
@@ -373,6 +454,16 @@ function BenchmarkDetail() {
                 onClick={() => setGenerateOpen(true)}
               >
                 <Sparkles size={16} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                title={testCases.length === 0 ? 'Add a test case before publishing' : 'Publish version — freezes the current draft'}
+                aria-label="Publish version"
+                disabled={publishing || testCases.length === 0}
+                onClick={handlePublish}
+              >
+                <Tag size={16} />
               </button>
             </div>
           </div>
@@ -479,9 +570,15 @@ function BenchmarkDetail() {
               <button
                 type="button"
                 className="icon-button"
-                title={activeRun ? 'A run is already in progress' : 'Run benchmark'}
+                title={
+                  activeRun
+                    ? 'A run is already in progress'
+                    : !benchmark || benchmark.version === 0
+                      ? 'Publish a version first (Test cases tab)'
+                      : 'Run benchmark'
+                }
                 aria-label="Run benchmark"
-                disabled={!!activeRun}
+                disabled={!!activeRun || !benchmark || benchmark.version === 0}
                 onClick={() => setRunModalOpen(true)}
               >
                 <Plus size={16} />
@@ -491,7 +588,7 @@ function BenchmarkDetail() {
 
           {results === null && (
             <div className="panel-body">
-              <TableSkeleton columns={5} />
+              <TableSkeleton columns={7} />
             </div>
           )}
 
@@ -508,57 +605,79 @@ function BenchmarkDetail() {
           )}
 
           {filteredResults.length > 0 && (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>
-                    <button type="button" className="sort-header" onClick={() => toggleSort('modelName')}>
-                      Model {sortIcon('modelName')}
-                    </button>
-                  </th>
-                  <th>
-                    <button type="button" className="sort-header" onClick={() => toggleSort('benchmarkVersion')}>
-                      Version {sortIcon('benchmarkVersion')}
-                    </button>
-                  </th>
-                  <th>
-                    <button type="button" className="sort-header" onClick={() => toggleSort('passRate')}>
-                      Pass rate {sortIcon('passRate')}
-                    </button>
-                  </th>
-                  <th>
-                    <button type="button" className="sort-header" onClick={() => toggleSort('duration')}>
-                      Duration {sortIcon('duration')}
-                    </button>
-                  </th>
-                  <th>
-                    <button type="button" className="sort-header" onClick={() => toggleSort('startedAt')}>
-                      Started {sortIcon('startedAt')}
-                    </button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {resultPageItems.map((r) => (
-                  <tr key={`${r.benchmarkVersion}-${r.modelName}`}>
-                    <td>
-                      <button type="button" className="result-cell-text" onClick={() => setSelectedResult(r)}>
-                        {r.modelName}
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>
+                      <button type="button" className="sort-header" onClick={() => toggleSort('modelName')}>
+                        Model {sortIcon('modelName')}
                       </button>
-                    </td>
-                    <td>
-                      v{r.benchmarkVersion}
-                      {benchmark && r.benchmarkVersion !== benchmark.version && <span className="hint outdated-badge"> (outdated)</span>}
-                    </td>
-                    <td>
-                      {r.passed}/{r.total} ({Math.round(passRate(r) * 100)}%)
-                    </td>
-                    <td>{formatDuration(r.startedAt, r.finishedAt)}</td>
-                    <td>{new Date(r.startedAt).toLocaleString()}</td>
+                    </th>
+                    <th>
+                      <button type="button" className="sort-header" onClick={() => toggleSort('benchmarkVersion')}>
+                        Version {sortIcon('benchmarkVersion')}
+                      </button>
+                    </th>
+                    <th>
+                      <button type="button" className="sort-header" onClick={() => toggleSort('passAt1')} title="pass@1 — fraction of test cases passed, k=1 sample">
+                        Pass@1 {sortIcon('passAt1')}
+                      </button>
+                    </th>
+                    <th>
+                      <button
+                        type="button"
+                        className="sort-header"
+                        onClick={() => toggleSort('assertionRate')}
+                        title="Fraction of individual assertions passed, across all test cases"
+                      >
+                        Assertion rate {sortIcon('assertionRate')}
+                      </button>
+                    </th>
+                    <th>
+                      <button type="button" className="sort-header" onClick={() => toggleSort('errorRate')} title="Fraction of test cases that errored (no reply at all)">
+                        Errors {sortIcon('errorRate')}
+                      </button>
+                    </th>
+                    <th>
+                      <button type="button" className="sort-header" onClick={() => toggleSort('avgLatency')}>
+                        Avg latency {sortIcon('avgLatency')}
+                      </button>
+                    </th>
+                    <th>
+                      <button type="button" className="sort-header" onClick={() => toggleSort('startedAt')}>
+                        Started {sortIcon('startedAt')}
+                      </button>
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {resultPageItems.map((r) => {
+                    const metrics = computeMetrics(r)
+                    return (
+                      <tr key={`${r.benchmarkVersion}-${r.modelName}`}>
+                        <td>
+                          <button type="button" className="result-cell-text" onClick={() => setSelectedResult(r)}>
+                            {r.modelName}
+                          </button>
+                        </td>
+                        <td>
+                          v{r.benchmarkVersion}
+                          {benchmark && r.benchmarkVersion !== benchmark.version && <span className="hint outdated-badge"> (outdated)</span>}
+                        </td>
+                        <td>
+                          {r.passed}/{r.total} ({Math.round(metrics.passAt1 * 100)}%)
+                        </td>
+                        <td>{Math.round(metrics.assertionRate * 100)}%</td>
+                        <td>{Math.round(metrics.errorRate * 100)}%</td>
+                        <td>{formatMs(metrics.avgLatencyMs)}</td>
+                        <td>{new Date(r.startedAt).toLocaleString()}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
 
           <Pagination
@@ -595,13 +714,35 @@ function BenchmarkDetail() {
         />
       )}
 
-      {runModalOpen && (
-        <RunBenchmarkModal models={models} starting={starting} error={error} onRun={handleRun} onClose={() => setRunModalOpen(false)} />
+      {runModalOpen && benchmark && (
+        <RunBenchmarkModal
+          models={models}
+          versions={versions}
+          defaultVersion={benchmark.version}
+          starting={starting}
+          error={error}
+          onRun={handleRun}
+          onClose={() => setRunModalOpen(false)}
+        />
       )}
 
       {selectedResult && (
         <Modal title={`${selectedResult.modelName} — v${selectedResult.benchmarkVersion}`} onClose={() => setSelectedResult(null)} size="lg">
           {selectedResult.error && <p className="error">{selectedResult.error}</p>}
+          <dl className="info-list">
+            <dt>Pass@1</dt>
+            <dd>
+              {selectedResult.passed}/{selectedResult.total} ({Math.round(computeMetrics(selectedResult).passAt1 * 100)}%)
+            </dd>
+            <dt>Assertion rate</dt>
+            <dd>{Math.round(computeMetrics(selectedResult).assertionRate * 100)}%</dd>
+            <dt>Errors</dt>
+            <dd>{Math.round(computeMetrics(selectedResult).errorRate * 100)}%</dd>
+            <dt>Avg latency</dt>
+            <dd>{formatMs(computeMetrics(selectedResult).avgLatencyMs)}</dd>
+            <dt>Total duration</dt>
+            <dd>{formatDuration(selectedResult.startedAt, selectedResult.finishedAt)}</dd>
+          </dl>
           <div className="benchmark-result-detail">
             {selectedResult.results.map((tcResult) => (
               <TestCaseResultCard key={tcResult.testCaseId} result={tcResult} />
@@ -742,13 +883,16 @@ function GenerateTestCasesModal({ modelOptions, allTags, generating, error, onGe
 
 interface RunBenchmarkModalProps {
   models: Model[]
+  versions: BenchmarkVersion[]
+  defaultVersion: number
   starting: boolean
   error: string | null
-  onRun: (modelNames: string[]) => void
+  onRun: (version: number, modelNames: string[]) => void
   onClose: () => void
 }
 
-function RunBenchmarkModal({ models, starting, error, onRun, onClose }: RunBenchmarkModalProps) {
+function RunBenchmarkModal({ models, versions, defaultVersion, starting, error, onRun, onClose }: RunBenchmarkModalProps) {
+  const [version, setVersion] = useState(defaultVersion)
   const [selectedModels, setSelectedModels] = useState<string[]>([])
 
   const toggleModel = (modelName: string) => {
@@ -757,13 +901,23 @@ function RunBenchmarkModal({ models, starting, error, onRun, onClose }: RunBench
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
-    if (selectedModels.length === 0) return
-    onRun(selectedModels)
+    if (selectedModels.length === 0 || version <= 0) return
+    onRun(version, selectedModels)
   }
 
   return (
     <Modal title="Run benchmark" onClose={onClose}>
       <form className="stacked-form" onSubmit={handleSubmit}>
+        <label>
+          Version
+          <select value={version} onChange={(e) => setVersion(Number(e.target.value))}>
+            {[...versions].reverse().map((v) => (
+              <option key={v.version} value={v.version}>
+                v{v.version} — published {new Date(v.publishedAt).toLocaleDateString()} ({v.testCases.length} test cases)
+              </option>
+            ))}
+          </select>
+        </label>
         {models.length === 0 && <p className="empty-state">No models available. Train or import one on the Models page.</p>}
         {models.length > 0 && (
           <div className="agent-checklist">
@@ -780,7 +934,7 @@ function RunBenchmarkModal({ models, starting, error, onRun, onClose }: RunBench
           <button type="button" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" disabled={starting || selectedModels.length === 0}>
+          <button type="submit" disabled={starting || selectedModels.length === 0 || version <= 0}>
             {starting ? 'Starting…' : 'Run benchmark'}
           </button>
         </div>

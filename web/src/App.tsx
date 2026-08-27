@@ -6,6 +6,7 @@ import BenchmarkDetail from './pages/BenchmarkDetail'
 import Benchmarks from './pages/Benchmarks'
 import DatasetDetail from './pages/DatasetDetail'
 import Datasets from './pages/Datasets'
+import EnvironmentDetail from './pages/EnvironmentDetail'
 import Environments from './pages/Environments'
 import EvaluationDetail from './pages/EvaluationDetail'
 import Evaluations from './pages/Evaluations'
@@ -28,6 +29,7 @@ function App() {
         <Route path="training" element={<Training />} />
         <Route path="training/:id" element={<TrainingRunDetail />} />
         <Route path="environments" element={<Environments />} />
+        <Route path="environments/:name" element={<EnvironmentDetail />} />
         <Route path="agents" element={<Agents />} />
         <Route path="agents/:name" element={<AgentEditor />} />
         <Route path="evaluations" element={<Evaluations />} />

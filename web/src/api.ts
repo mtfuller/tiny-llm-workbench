@@ -109,12 +109,29 @@ export interface TrainingRun {
 export interface Mount {
   hostPath: string
   containerPath: string
+  readOnly?: boolean
+}
+
+export type ToolParameterType = 'string' | 'number' | 'boolean'
+
+export interface ToolParameter {
+  name: string
+  type: ToolParameterType
+  description?: string
+  required: boolean
+}
+
+export interface Tool {
+  name: string
+  description?: string
+  command: string
+  parameters: ToolParameter[]
 }
 
 export interface Environment {
   name: string
   image: string
-  tools: string[]
+  tools: Tool[]
   mounts: Mount[]
   prebuilt: boolean
   createdAt: string
@@ -273,11 +290,23 @@ export interface EvaluationProgressEvent {
 
 export interface Benchmark {
   name: string
-  // version increments each time testCases actually changes (a no-op save
-  // leaves it unchanged) — see BenchmarkRunResult.benchmarkVersion.
+  // version is the number of the most recently PUBLISHED version (0 = none
+  // published yet) — it does not track draft edits. testCases below is the
+  // live, freely-editable draft; publishing (see publishBenchmarkVersion)
+  // snapshots it into an immutable BenchmarkVersion, which is the only
+  // thing a run can actually target.
   version: number
   testCases: TestCase[]
   createdAt: string
+}
+
+// BenchmarkVersion is an immutable snapshot of a benchmark's test cases,
+// created by publishBenchmarkVersion. Once published, a version's testCases
+// never change.
+export interface BenchmarkVersion {
+  version: number
+  testCases: TestCase[]
+  publishedAt: string
 }
 
 // BenchmarkRunResult is one model's durable outcome for a specific version
@@ -300,6 +329,7 @@ export interface BenchmarkRunResult {
 export interface BenchmarkRun {
   id: string
   benchmarkName: string
+  benchmarkVersion: number
   modelNames: string[]
   status: EvalRunStatus
   results: BenchmarkRunResult[]
@@ -477,7 +507,7 @@ export function listEnvironments(): Promise<Environment[]> {
   return fetch('/api/environments').then(json<Environment[]>)
 }
 
-export function createEnvironment(env: { name: string; image: string; tools: string[]; mounts: Mount[] }): Promise<Environment> {
+export function createEnvironment(env: { name: string; image: string; mounts: Mount[] }): Promise<Environment> {
   return fetch('/api/environments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -485,8 +515,48 @@ export function createEnvironment(env: { name: string; image: string; tools: str
   }).then(json<Environment>)
 }
 
+export function getEnvironment(name: string): Promise<Environment> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}`).then(json<Environment>)
+}
+
 export function deleteEnvironment(name: string): Promise<void> {
   return fetch(`/api/environments/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+}
+
+export function updateEnvironmentConfig(name: string, image: string, mounts: Mount[]): Promise<Environment> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image, mounts }),
+  }).then(json<Environment>)
+}
+
+export function addTool(name: string, tool: Tool): Promise<Tool> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}/tools`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(tool),
+  }).then(json<Tool>)
+}
+
+export function updateTool(name: string, index: number, tool: Tool): Promise<Tool> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${index}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(tool),
+  }).then(json<Tool>)
+}
+
+export function deleteTool(name: string, index: number): Promise<void> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${index}`, { method: 'DELETE' }).then(noContent)
+}
+
+export function tryTool(name: string, index: number, instanceId: string, args: Record<string, string>): Promise<Exec> {
+  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${index}/try`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instanceId, args }),
+  }).then(json<Exec>)
 }
 
 export function launchEnvironment(name: string, instanceName?: string): Promise<Instance> {
@@ -619,12 +689,20 @@ export function deleteBenchmark(name: string): Promise<void> {
   return fetch(`/api/benchmarks/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
 }
 
-export function startBenchmarkRun(name: string, modelNames: string[]): Promise<BenchmarkRun> {
+export function startBenchmarkRun(name: string, version: number, modelNames: string[]): Promise<BenchmarkRun> {
   return fetch(`/api/benchmarks/${encodeURIComponent(name)}/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ modelNames }),
+    body: JSON.stringify({ version, modelNames }),
   }).then(json<BenchmarkRun>)
+}
+
+export function publishBenchmarkVersion(name: string): Promise<BenchmarkVersion> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}/versions`, { method: 'POST' }).then(json<BenchmarkVersion>)
+}
+
+export function listBenchmarkVersions(name: string): Promise<BenchmarkVersion[]> {
+  return fetch(`/api/benchmark-versions/${encodeURIComponent(name)}`).then(json<BenchmarkVersion[]>)
 }
 
 export function listBenchmarkRuns(): Promise<BenchmarkRun[]> {

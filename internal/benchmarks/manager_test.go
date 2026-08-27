@@ -10,16 +10,31 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
+// fakeBenchmarkReader keys published versions by (benchmarkName, version),
+// mirroring registry.Registry.GetVersion — a run always targets a specific,
+// already-published version, never a benchmark's live draft test cases.
 type fakeBenchmarkReader struct {
-	benchmarks map[string]registry.Benchmark
+	versions map[string]map[int]registry.BenchmarkVersion
 }
 
-func (f *fakeBenchmarkReader) GetBenchmark(name string) (registry.Benchmark, error) {
-	bm, ok := f.benchmarks[name]
+func (f *fakeBenchmarkReader) GetVersion(benchmarkName string, version int) (registry.BenchmarkVersion, error) {
+	byVersion, ok := f.versions[benchmarkName]
 	if !ok {
-		return registry.Benchmark{}, errors.New("not found")
+		return registry.BenchmarkVersion{}, errors.New("not found")
 	}
-	return bm, nil
+	v, ok := byVersion[version]
+	if !ok {
+		return registry.BenchmarkVersion{}, errors.New("not found")
+	}
+	return v, nil
+}
+
+func newFakeBenchmarkReader(benchmarkName string, versions ...registry.BenchmarkVersion) *fakeBenchmarkReader {
+	byVersion := make(map[int]registry.BenchmarkVersion)
+	for _, v := range versions {
+		byVersion[v.Version] = v
+	}
+	return &fakeBenchmarkReader{versions: map[string]map[int]registry.BenchmarkVersion{benchmarkName: byVersion}}
 }
 
 type fakeModelResolver struct {
@@ -52,9 +67,9 @@ func (f *fakeModelRunner) Generate(ctx context.Context, model, prompt string) (s
 	return f.repliesByPrompt[prompt], nil
 }
 
-func simpleBenchmark(name string) registry.Benchmark {
-	return registry.Benchmark{
-		Name: name,
+func simpleVersion(version int) registry.BenchmarkVersion {
+	return registry.BenchmarkVersion{
+		Version: version,
 		TestCases: []registry.TestCase{
 			{ID: "tc1", Prompt: "say hi", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
 			{ID: "tc2", Prompt: "say bye", Assertions: []registry.Assertion{{Type: "contains", Value: "bye"}}},
@@ -76,17 +91,20 @@ func waitForRunStatus(t *testing.T, m *Manager, id string, want Status, timeout 
 }
 
 func TestStartRunSucceedsWithMixedResults(t *testing.T) {
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": simpleBenchmark("greeting")}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	models := &fakeModelResolver{models: map[string]registry.Model{"tiny": {Name: "tiny", Path: "/models/tiny"}}}
 	runner := &fakeModelRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "see you later"}}
 	m := NewManager(context.Background(), benchReader, models, runner, eventbus.New(), t.TempDir())
 
-	run, err := m.StartRun("greeting", []string{"tiny"})
+	run, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 	if run.Status != StatusRunning {
 		t.Errorf("StartRun().Status = %q, want %q", run.Status, StatusRunning)
+	}
+	if run.BenchmarkVersion != 1 {
+		t.Errorf("StartRun().BenchmarkVersion = %d, want 1", run.BenchmarkVersion)
 	}
 
 	finished := waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
@@ -110,36 +128,45 @@ func TestStartRunSucceedsWithMixedResults(t *testing.T) {
 }
 
 func TestStartRunRequiresModels(t *testing.T) {
-	m := NewManager(context.Background(), &fakeBenchmarkReader{}, &fakeModelResolver{}, &fakeModelRunner{}, eventbus.New(), t.TempDir())
+	m := NewManager(context.Background(), newFakeBenchmarkReader("greeting"), &fakeModelResolver{}, &fakeModelRunner{}, eventbus.New(), t.TempDir())
 
-	if _, err := m.StartRun("greeting", nil); err == nil {
+	if _, err := m.StartRun("greeting", 1, nil); err == nil {
 		t.Error("StartRun() error = nil, want an error when no models are given")
 	}
 }
 
 func TestStartRunUnknownBenchmark(t *testing.T) {
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{}}
+	benchReader := newFakeBenchmarkReader("greeting")
 	m := NewManager(context.Background(), benchReader, &fakeModelResolver{}, &fakeModelRunner{}, eventbus.New(), t.TempDir())
 
-	if _, err := m.StartRun("does-not-exist", []string{"tiny"}); err == nil {
+	if _, err := m.StartRun("does-not-exist", 1, []string{"tiny"}); err == nil {
 		t.Error("StartRun() error = nil, want an error for an unknown benchmark")
 	}
 }
 
-func TestStartRunEmptyBenchmark(t *testing.T) {
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"empty": {Name: "empty"}}}
+func TestStartRunUnknownVersion(t *testing.T) {
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	m := NewManager(context.Background(), benchReader, &fakeModelResolver{}, &fakeModelRunner{}, eventbus.New(), t.TempDir())
 
-	if _, err := m.StartRun("empty", []string{"tiny"}); err == nil {
-		t.Error("StartRun() error = nil, want an error for a benchmark with no test cases")
+	if _, err := m.StartRun("greeting", 99, []string{"tiny"}); err == nil {
+		t.Error("StartRun() error = nil, want an error for an unpublished version")
+	}
+}
+
+func TestStartRunEmptyVersion(t *testing.T) {
+	benchReader := newFakeBenchmarkReader("empty", registry.BenchmarkVersion{Version: 1})
+	m := NewManager(context.Background(), benchReader, &fakeModelResolver{}, &fakeModelRunner{}, eventbus.New(), t.TempDir())
+
+	if _, err := m.StartRun("empty", 1, []string{"tiny"}); err == nil {
+		t.Error("StartRun() error = nil, want an error for a version with no test cases")
 	}
 }
 
 func TestStartRunUnknownModelRecordsErrorPerTestCase(t *testing.T) {
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": simpleBenchmark("greeting")}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	m := NewManager(context.Background(), benchReader, &fakeModelResolver{}, &fakeModelRunner{}, eventbus.New(), t.TempDir())
 
-	run, err := m.StartRun("greeting", []string{"does-not-exist"})
+	run, err := m.StartRun("greeting", 1, []string{"does-not-exist"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -157,11 +184,11 @@ func TestStartRunUnknownModelRecordsErrorPerTestCase(t *testing.T) {
 }
 
 func TestStartRunModelWithNoPathRecordsErrorPerTestCase(t *testing.T) {
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": simpleBenchmark("greeting")}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	models := &fakeModelResolver{models: map[string]registry.Model{"tiny": {Name: "tiny"}}}
 	m := NewManager(context.Background(), benchReader, models, &fakeModelRunner{}, eventbus.New(), t.TempDir())
 
-	run, err := m.StartRun("greeting", []string{"tiny"})
+	run, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -176,12 +203,12 @@ func TestStartRunModelWithNoPathRecordsErrorPerTestCase(t *testing.T) {
 }
 
 func TestStartRunGenerateFailureRecordsErrorPerTestCase(t *testing.T) {
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": simpleBenchmark("greeting")}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	models := &fakeModelResolver{models: map[string]registry.Model{"tiny": {Name: "tiny", Path: "/models/tiny"}}}
 	runner := &fakeModelRunner{genErr: errors.New("mlx_lm.server unreachable")}
 	m := NewManager(context.Background(), benchReader, models, runner, eventbus.New(), t.TempDir())
 
-	run, err := m.StartRun("greeting", []string{"tiny"})
+	run, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -199,7 +226,7 @@ func TestStartRunGenerateFailureRecordsErrorPerTestCase(t *testing.T) {
 }
 
 func TestStartRunMultipleModels(t *testing.T) {
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": simpleBenchmark("greeting")}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	models := &fakeModelResolver{models: map[string]registry.Model{
 		"a": {Name: "a", Path: "/models/a"},
 		"b": {Name: "b", Path: "/models/b"},
@@ -207,7 +234,7 @@ func TestStartRunMultipleModels(t *testing.T) {
 	runner := &fakeModelRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
 	m := NewManager(context.Background(), benchReader, models, runner, eventbus.New(), t.TempDir())
 
-	run, err := m.StartRun("greeting", []string{"a", "b"})
+	run, err := m.StartRun("greeting", 1, []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -224,14 +251,12 @@ func TestStartRunMultipleModels(t *testing.T) {
 }
 
 func TestStartRunPersistsResultStampedWithBenchmarkVersion(t *testing.T) {
-	bm := simpleBenchmark("greeting")
-	bm.Version = 3
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": bm}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(3))
 	models := &fakeModelResolver{models: map[string]registry.Model{"tiny": {Name: "tiny", Path: "/models/tiny"}}}
 	runner := &fakeModelRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
 	m := NewManager(context.Background(), benchReader, models, runner, eventbus.New(), t.TempDir())
 
-	run, err := m.StartRun("greeting", []string{"tiny"})
+	run, err := m.StartRun("greeting", 3, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -251,12 +276,12 @@ func TestStartRunPersistsResultStampedWithBenchmarkVersion(t *testing.T) {
 
 func TestStartRunResultsPersistAcrossManagerInstances(t *testing.T) {
 	resultsDir := t.TempDir()
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": simpleBenchmark("greeting")}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	models := &fakeModelResolver{models: map[string]registry.Model{"tiny": {Name: "tiny", Path: "/models/tiny"}}}
 	runner := &fakeModelRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
 	m := NewManager(context.Background(), benchReader, models, runner, eventbus.New(), resultsDir)
 
-	run, err := m.StartRun("greeting", []string{"tiny"})
+	run, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -275,14 +300,12 @@ func TestStartRunResultsPersistAcrossManagerInstances(t *testing.T) {
 }
 
 func TestStartRunOverwritesResultForSameVersionAndModel(t *testing.T) {
-	bm := simpleBenchmark("greeting")
-	bm.Version = 1
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": bm}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	models := &fakeModelResolver{models: map[string]registry.Model{"tiny": {Name: "tiny", Path: "/models/tiny"}}}
 	runner := &fakeModelRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "see you later"}}
 	m := NewManager(context.Background(), benchReader, models, runner, eventbus.New(), t.TempDir())
 
-	run1, err := m.StartRun("greeting", []string{"tiny"})
+	run1, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -292,7 +315,7 @@ func TestStartRunOverwritesResultForSameVersionAndModel(t *testing.T) {
 	// differently — the previous result for (version 1, tiny) should be
 	// replaced, not appended alongside.
 	runner.repliesByPrompt["say bye"] = "bye!"
-	run2, err := m.StartRun("greeting", []string{"tiny"})
+	run2, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() (second) error = %v", err)
 	}
@@ -312,24 +335,18 @@ func TestStartRunOverwritesResultForSameVersionAndModel(t *testing.T) {
 
 func TestStartRunKeepsSeparateResultsForDifferentVersions(t *testing.T) {
 	resultsDir := t.TempDir()
-	bmV1 := simpleBenchmark("greeting")
-	bmV1.Version = 1
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": bmV1}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1), simpleVersion(2))
 	models := &fakeModelResolver{models: map[string]registry.Model{"tiny": {Name: "tiny", Path: "/models/tiny"}}}
 	runner := &fakeModelRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
 	m := NewManager(context.Background(), benchReader, models, runner, eventbus.New(), resultsDir)
 
-	run1, err := m.StartRun("greeting", []string{"tiny"})
+	run1, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 	waitForRunStatus(t, m, run1.ID, StatusSucceeded, time.Second)
 
-	// Simulate the benchmark's test cases having since changed (version 2)
-	// and running against the same model again — both versions' results
-	// should coexist.
-	benchReader.benchmarks["greeting"] = registry.Benchmark{Name: "greeting", Version: 2, TestCases: bmV1.TestCases}
-	run2, err := m.StartRun("greeting", []string{"tiny"})
+	run2, err := m.StartRun("greeting", 2, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() (v2) error = %v", err)
 	}
@@ -345,7 +362,7 @@ func TestStartRunKeepsSeparateResultsForDifferentVersions(t *testing.T) {
 }
 
 func TestListResultsEmptyForUnknownBenchmark(t *testing.T) {
-	m := NewManager(context.Background(), &fakeBenchmarkReader{}, &fakeModelResolver{}, &fakeModelRunner{}, eventbus.New(), t.TempDir())
+	m := NewManager(context.Background(), newFakeBenchmarkReader("never-run"), &fakeModelResolver{}, &fakeModelRunner{}, eventbus.New(), t.TempDir())
 
 	results, err := m.ListResults("never-run")
 	if err != nil {
@@ -357,19 +374,19 @@ func TestListResultsEmptyForUnknownBenchmark(t *testing.T) {
 }
 
 func TestListRunsMostRecentFirst(t *testing.T) {
-	benchReader := &fakeBenchmarkReader{benchmarks: map[string]registry.Benchmark{"greeting": simpleBenchmark("greeting")}}
+	benchReader := newFakeBenchmarkReader("greeting", simpleVersion(1))
 	models := &fakeModelResolver{models: map[string]registry.Model{"tiny": {Name: "tiny", Path: "/models/tiny"}}}
 	runner := &fakeModelRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
 	m := NewManager(context.Background(), benchReader, models, runner, eventbus.New(), t.TempDir())
 
-	first, err := m.StartRun("greeting", []string{"tiny"})
+	first, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 	waitForRunStatus(t, m, first.ID, StatusSucceeded, time.Second)
 
 	time.Sleep(2 * time.Millisecond)
-	second, err := m.StartRun("greeting", []string{"tiny"})
+	second, err := m.StartRun("greeting", 1, []string{"tiny"})
 	if err != nil {
 		t.Fatalf("StartRun() (second) error = %v", err)
 	}

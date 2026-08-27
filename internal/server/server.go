@@ -66,7 +66,12 @@ type trainingManager interface {
 type environmentStore interface {
 	ListEnvironments() ([]registry.Environment, error)
 	SaveEnvironment(e registry.Environment) error
+	GetEnvironment(name string) (registry.Environment, error)
 	DeleteEnvironment(name string) error
+	UpdateConfig(name, image string, mounts []registry.Mount) error
+	AddTool(name string, tool registry.Tool) error
+	UpdateTool(name string, index int, tool registry.Tool) error
+	DeleteTool(name string, index int) error
 }
 
 // environmentManager is the subset of environments.Manager the server needs.
@@ -76,6 +81,7 @@ type environmentManager interface {
 	ListInstances(ctx context.Context) ([]environments.Instance, error)
 	StartExec(instanceID, command string) (*environments.Exec, error)
 	GetExec(id string) (*environments.Exec, bool)
+	TryTool(instanceID string, tool registry.Tool, args map[string]string) (*environments.Exec, error)
 }
 
 // agentStore is the subset of registry.Registry the server needs for Agent
@@ -121,11 +127,13 @@ type benchmarkStore interface {
 	AddTestCases(benchmarkName string, tcs []registry.TestCase) error
 	UpdateTestCase(benchmarkName string, index int, tc registry.TestCase) error
 	DeleteTestCase(benchmarkName string, index int) error
+	PublishVersion(benchmarkName string) (registry.BenchmarkVersion, error)
+	ListVersions(benchmarkName string) ([]registry.BenchmarkVersion, error)
 }
 
 // benchmarkManager is the subset of benchmarks.Manager the server needs.
 type benchmarkManager interface {
-	StartRun(benchmarkName string, modelNames []string) (*benchmarks.Run, error)
+	StartRun(benchmarkName string, version int, modelNames []string) (*benchmarks.Run, error)
 	ListRuns() []*benchmarks.Run
 	GetRun(id string) (*benchmarks.Run, bool)
 	ListResults(benchmarkName string) ([]benchmarks.RunResult, error)
@@ -196,7 +204,13 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/training/runs/{id}/cancel", cancelTrainingRunHandler(deps.Training))
 	mux.HandleFunc("GET /api/environments", listEnvironmentsHandler(deps.Environments))
 	mux.HandleFunc("POST /api/environments", createEnvironmentHandler(deps.Environments))
+	mux.HandleFunc("GET /api/environments/{name}", getEnvironmentHandler(deps.Environments))
 	mux.HandleFunc("DELETE /api/environments/{name}", deleteEnvironmentHandler(deps.Environments))
+	mux.HandleFunc("PUT /api/environments/{name}/config", updateEnvironmentConfigHandler(deps.Environments))
+	mux.HandleFunc("POST /api/environments/{name}/tools", addToolHandler(deps.Environments))
+	mux.HandleFunc("PUT /api/environments/{name}/tools/{index}", updateToolHandler(deps.Environments))
+	mux.HandleFunc("DELETE /api/environments/{name}/tools/{index}", deleteToolHandler(deps.Environments))
+	mux.HandleFunc("POST /api/environments/{name}/tools/{index}/try", tryToolHandler(deps.Environments, deps.Instances))
 	mux.HandleFunc("POST /api/environments/{name}/launch", launchEnvironmentHandler(deps.Instances))
 	mux.HandleFunc("GET /api/environments/instances", listInstancesHandler(deps.Instances))
 	mux.HandleFunc("POST /api/environments/instances/{id}/stop", stopInstanceHandler(deps.Instances))
@@ -225,6 +239,10 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("PUT /api/benchmarks/{name}/test-cases/{index}", updateTestCaseHandler(deps.Benchmarks))
 	mux.HandleFunc("DELETE /api/benchmarks/{name}/test-cases/{index}", deleteTestCaseHandler(deps.Benchmarks))
 	mux.HandleFunc("POST /api/benchmarks/{name}/test-cases/generate", generateTestCasesHandler(deps.Benchmarks, deps.TestCaseGen))
+	mux.HandleFunc("POST /api/benchmarks/{name}/versions", publishBenchmarkVersionHandler(deps.Benchmarks))
+	// A sibling of /api/benchmarks/{name}, not nested (/api/benchmarks/{name}/versions), for the same
+	// ServeMux-ambiguity reason as /api/benchmark-results/{name} below.
+	mux.HandleFunc("GET /api/benchmark-versions/{name}", listBenchmarkVersionsHandler(deps.Benchmarks))
 	mux.HandleFunc("POST /api/benchmarks/{name}/runs", startBenchmarkRunHandler(deps.BenchRuns))
 	mux.HandleFunc("GET /api/benchmarks/runs", listBenchmarkRunsHandler(deps.BenchRuns))
 	mux.HandleFunc("GET /api/benchmarks/runs/{id}", getBenchmarkRunHandler(deps.BenchRuns))

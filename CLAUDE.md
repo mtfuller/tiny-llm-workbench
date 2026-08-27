@@ -203,6 +203,82 @@ choice:
   (Docker is the source of truth), not by persisting our own run-history JSON like Phase 1's training
   runs — the container already *is* the durable record. See `internal/docker` and
   `internal/environments`.
+
+  **2026-08-27 addendum — workspace revamp: real tools, tool I/O schema, per-environment playground:**
+  the user asked for Environments to feel like "a project workspace to build out and construct
+  environments" rather than a flat definitions/instances list, plus real (not just descriptive) tools on
+  the prebuilt environments and the ability to launch an environment and try a tool interactively. Two
+  design decisions were surfaced to the user first (both answered via `AskUserQuestion`, both
+  "Recommended" options): tool I/O schema is a **simple typed parameter list**
+  (`registry.ToolParameter{Name, Type: string|number|boolean, Description, Required}`), not full JSON
+  Schema — consistent with the project's existing preference for deterministic, non-LLM-graded surfaces
+  (keyword-match decision nodes, `contains`/`regex` assertions) over anything requiring a model to emit
+  complex structured output; and the built-in `web_search` tool hits the **DuckDuckGo Instant Answer API**
+  (`https://api.duckduckgo.com/`), chosen specifically for being free and keyless, fitting the "no cloud
+  dependency without discussion" project ethos.
+
+  `registry.Environment.Tools` changed from `[]string` (purely descriptive labels) to `[]registry.Tool`
+  (`Name, Description, Command, Parameters []ToolParameter`) — a real, runnable definition. `Mount`
+  gained `ReadOnly bool`, wired all the way through `internal/docker.Client.Launch`'s
+  `mount.Mount{ReadOnly: ...}`. New index-addressed CRUD on the registry (`UpdateConfig`, `AddTool`,
+  `UpdateTool`, `DeleteTool`) mirrors the established Benchmark-TestCase/Dataset-Example
+  load-mutate-save pattern exactly. The three prebuilt environments (`OfficeWorker`, `SoftwareDev`,
+  `WebSearch`) were given real tools: `read_file` (`cat {{path}}`), `write_file`
+  (`printf '%s' {{content}} > {{path}}`), `read_directory` (`ls -la {{path}}`), and (WebSearch only)
+  `web_search` (`curl -s -G --data-urlencode q={{query}} --data format=json ... https://api.duckduckgo.com/`).
+
+  New `internal/environments/tools.go`: `RenderToolCommand(tool, args)` validates args against the
+  tool's declared parameters (required-ness, and type-checking number/boolean values) and substitutes
+  them into the command template. Substitution always wraps each value in single quotes (escaping
+  embedded single quotes via `'\''`), and — this took some care to get right — **templates must never
+  add their own quotes around a placeholder**: a placeholder is either a whole standalone shell word
+  (`cat {{path}}`) or a literal prefix sharing the same shell word with no space (`q={{query}}`), since
+  adjacent quoted/unquoted parts of one POSIX shell word concatenate correctly on their own. An earlier
+  draft of `web_search`'s command wrapped the placeholder in its own double quotes
+  (`--data-urlencode "q={{query}}"`) and was caught and fixed before ever running — nesting a
+  single-quoted substituted value inside an already-double-quoted template string doesn't compose.
+  `Manager.TryTool(instanceID, tool, args)` renders and runs the command via the existing `StartExec`
+  (same async, eventbus-streamed mechanism the plain ad hoc exec box already used), so trying a tool in
+  the UI looks and behaves identically to running a raw command, just with arguments collected as a form.
+  This is deliberately separate from `RunToolSync` (the Agent "tool" node's blocking mechanism, driven by
+  a single unnamed `{{input}}` placeholder) — the two were not merged; an Agent's tool node still doesn't
+  invoke a named `registry.Tool` at all, out of scope for this change.
+
+  New routes: `GET /api/environments/{name}`, `PUT /api/environments/{name}/config`,
+  `POST /api/environments/{name}/tools`, `PUT|DELETE /api/environments/{name}/tools/{index}`,
+  `POST /api/environments/{name}/tools/{index}/try`. `POST /api/environments` now creates an
+  environment with no tools — matching the Benchmarks/Datasets precedent of starting a resource empty
+  and adding to it afterward from its own page, rather than cramming tool definitions into the create
+  form.
+
+  The frontend gained a new per-environment workspace page (`EnvironmentDetail.tsx`, routed at
+  `/environments/:name`) with three tabs: **Configuration** (edit image + mounts, each mount with a
+  read-only checkbox), **Tools** (list/add/edit/delete tools — `panel-flush`/toolbar/pagination matching
+  the Datasets/Benchmarks list convention, a modal with a parameter editor extracted into
+  `ToolEditor.tsx`'s `ToolParameterFields`, mirroring how `TestCaseEditor.tsx`'s `AssertionFields` was
+  extracted), and **Playground** (launch/stop instances of this environment, pick one + a tool, render a
+  form from the tool's declared parameters — text/number input or a true/false/unset select for
+  boolean — and run it, showing live output via the same `environment.exec.output`/`environment.exec.status`
+  SSE subscription the old inline exec box used). The list page (`Environments.tsx`) was simplified to
+  just Launch/Delete actions plus links into each environment's/instance's workspace; the old inline
+  "Run a command" exec box was removed from it (that capability now lives in the Playground tab, scoped
+  to tool-shaped commands rather than an arbitrary free-text one — Playground doesn't expose the "give it
+  a raw command line" affordance the old box had).
+
+  **A real bug found via live browser + Docker verification, not just unit tests:** the Playground's own
+  tool-try flow raced the SSE "done" event ahead of the `tryTool` HTTP response the UI seeds `activeExec`
+  from — for a fast-finishing tool (most of them; `cat`/`printf`/`ls` inside a container complete in
+  milliseconds), the "done" event could arrive and be dropped (no matching `activeExec.id` yet) before
+  the UI ever started listening for it, leaving the status stuck at "running" forever with no further
+  event to correct it. This is the exact class of bug already on record (see
+  `feedback_sse_needs_poll_fallback` in memory) applied here for the first time to Environments. Fixed
+  the same way Training/Evaluations/Benchmarks do: a `useEffect` polls `getExec` every second while
+  `activeExec.status === 'running'`, reconciling regardless of whether the SSE event was seen. Verified
+  live end-to-end against real Docker containers (not mocked): launched a real `WebSearch` instance, ran
+  the real `web_search` tool and got a real DuckDuckGo API JSON response back from inside the container;
+  ran `read_file` against a path containing a space (`/tmp/my file.txt`) and confirmed the rendered
+  command was correctly quoted (`cat '/tmp/my file.txt'`) and returned the exact file contents — first
+  reproducing the stuck-at-"running" race live, then confirming the poll-fallback fix resolved it.
 - **Agent canvas format**: how a node/edge agent graph is serialized and persisted, and the node type
   taxonomy beyond the input/prompt/output/decision nodes the README already names (Phase 3).
   **Decided:** the canvas UI is built with React Flow (`@xyflow/react`) rather than a hand-rolled
@@ -397,6 +473,44 @@ choice:
   uses for its create action), opening a `RunBenchmarkModal` with the model checklist. The icon-button
   disables itself (not the modal's submit button) while a run is active, since the point is to stop a
   second run from being started at all, not to let the modal open and then block submission.
+
+  **2026-08-27 addendum — publish/immutable-version model, standard metrics, pagination everywhere:**
+  the earlier "Version auto-increments whenever TestCases changes" design was replaced entirely: a
+  benchmark's `TestCases` is now explicitly a *draft* (freely add/edit/delete/generate, never affects
+  `Version`), and `Version` only ever changes via a new, explicit `PublishVersion` call, which snapshots
+  the current draft into an immutable `registry.BenchmarkVersion` (`versions.json`, alongside
+  `definition.json`) and is the *only* thing a run can target — `internal/benchmarks.Manager.StartRun`
+  now takes an explicit `version int` and calls `GetVersion(name, version)`, not `GetBenchmark`. This
+  guarantees a run's results always trace back to an exact, unchanging test suite: editing the draft
+  after publishing has zero effect on any already-published version (verified live — published v1 with
+  "Say hello.", edited the draft to "Say hello. Please.", ran v1 again, and the result modal showed the
+  real model reply against the original unedited "Say hello." prompt). `SaveBenchmark` was simplified to
+  just preserve `Version`/`CreatedAt` on every draft save, full stop — no more diffing. New routes:
+  `POST /api/benchmarks/{name}/versions` (publish) and `GET /api/benchmark-versions/{name}` (list, a
+  sibling of `/api/benchmarks/{name}` for the same ServeMux-ambiguity reason as `/api/benchmark-results`).
+  The frontend gained a `Tag`-icon "Publish version" button in the Test cases tab toolbar (disabled once
+  the draft is empty), a banner on the info card when the draft differs from the latest published version
+  (or none has ever been published), and the Run modal gained a version `<select>` defaulting to latest.
+
+  Benchmark results also gained standard-style metrics, computed entirely client-side from each
+  `RunResult`'s existing per-test-case data — no backend/persisted-shape change, so historical results get
+  them for free: **Pass@1** (identical to the existing pass rate by definition, since each test case runs
+  exactly once — k=1 pass@k *is* the pass rate, not an approximation of it; a real, distinct pass@k would
+  need actual multi-sample generation, deliberately out of scope per explicit user decision), **assertion
+  rate** (fraction of individual assertions passed across all test cases — finer-grained than whole-test-
+  case pass/fail), **error rate** (fraction of test cases that couldn't even get a reply), and **avg
+  latency** (the run's own wall-clock duration ÷ test case count — exact, not approximate, since test
+  cases run strictly sequentially, confirmed by reading `internal/benchmarks.Manager.run`). The results
+  table's "Duration" column was replaced by "Avg latency"; total run duration moved into the per-result
+  detail modal's new metrics summary instead. The table gained a `.table-scroll` (`overflow-x: auto`)
+  wrapper since `.panel-flush`'s own `overflow: hidden` would otherwise just clip the extra columns.
+
+  Per explicit user request ("all list views need pagination"), every list on the site was audited:
+  `EvaluationDetail.tsx` was the one remaining gap (its test cases table, agent-comparison results table,
+  and run history list had none) and got the same `usePagination`/`Pagination` treatment every other list
+  page already uses. Live/streaming feeds (Home's live activity log, a running agent's chat/step log, a
+  training run's live event log) were deliberately treated as exempt — they're bounded live tails of an
+  event stream, not a browsable historical resource list, so pagination doesn't apply to them.
 
   **2026-08-27 addendum — per-test-case CRUD + generation, mirroring Datasets exactly:** creating a
   benchmark no longer requires any test cases upfront (`saveBenchmarkHandler`'s "at least one test case"

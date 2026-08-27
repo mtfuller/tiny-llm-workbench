@@ -89,6 +89,7 @@ func (c *Client) Ping(ctx context.Context) error {
 type Mount struct {
 	HostPath      string
 	ContainerPath string
+	ReadOnly      bool
 }
 
 // pullIfMissing pulls image if it isn't already present locally.
@@ -125,9 +126,10 @@ func (c *Client) Launch(ctx context.Context, name, environmentName, image string
 	mountSpecs := make([]mount.Mount, 0, len(mounts))
 	for _, m := range mounts {
 		mountSpecs = append(mountSpecs, mount.Mount{
-			Type:   mount.TypeBind,
-			Source: m.HostPath,
-			Target: m.ContainerPath,
+			Type:     mount.TypeBind,
+			Source:   m.HostPath,
+			Target:   m.ContainerPath,
+			ReadOnly: m.ReadOnly,
 		})
 	}
 

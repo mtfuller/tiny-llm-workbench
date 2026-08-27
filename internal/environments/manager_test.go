@@ -276,3 +276,132 @@ func TestRunToolSyncRequiresCommand(t *testing.T) {
 		t.Error("RunToolSync() error = nil, want an error for an empty command")
 	}
 }
+
+func TestRenderToolCommandSubstitutesAndQuotes(t *testing.T) {
+	tool := registry.Tool{
+		Command:    "cat {{path}}",
+		Parameters: []registry.ToolParameter{{Name: "path", Type: registry.ToolParamString, Required: true}},
+	}
+
+	got, err := RenderToolCommand(tool, map[string]string{"path": "/some path/with spaces.txt"})
+	if err != nil {
+		t.Fatalf("RenderToolCommand() error = %v", err)
+	}
+	want := `cat '/some path/with spaces.txt'`
+	if got != want {
+		t.Errorf("RenderToolCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestRenderToolCommandEscapesEmbeddedSingleQuotes(t *testing.T) {
+	tool := registry.Tool{
+		Command:    "printf '%s' {{content}} > {{path}}",
+		Parameters: []registry.ToolParameter{{Name: "content", Type: registry.ToolParamString}, {Name: "path", Type: registry.ToolParamString}},
+	}
+
+	got, err := RenderToolCommand(tool, map[string]string{"content": "it's a test", "path": "/tmp/out.txt"})
+	if err != nil {
+		t.Fatalf("RenderToolCommand() error = %v", err)
+	}
+	want := `printf '%s' 'it'\''s a test' > '/tmp/out.txt'`
+	if got != want {
+		t.Errorf("RenderToolCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestRenderToolCommandMissingRequiredParameter(t *testing.T) {
+	tool := registry.Tool{
+		Command:    "cat {{path}}",
+		Parameters: []registry.ToolParameter{{Name: "path", Type: registry.ToolParamString, Required: true}},
+	}
+
+	if _, err := RenderToolCommand(tool, map[string]string{}); err == nil {
+		t.Error("RenderToolCommand() error = nil, want an error for a missing required parameter")
+	}
+}
+
+func TestRenderToolCommandOptionalParameterOmitted(t *testing.T) {
+	tool := registry.Tool{
+		Command:    "ls {{flags}}{{path}}",
+		Parameters: []registry.ToolParameter{{Name: "flags", Type: registry.ToolParamString}, {Name: "path", Type: registry.ToolParamString, Required: true}},
+	}
+
+	got, err := RenderToolCommand(tool, map[string]string{"path": "/tmp"})
+	if err != nil {
+		t.Fatalf("RenderToolCommand() error = %v", err)
+	}
+	want := "ls {{flags}}'/tmp'"
+	if got != want {
+		t.Errorf("RenderToolCommand() = %q, want %q (an omitted optional parameter's placeholder is left as-is)", got, want)
+	}
+}
+
+func TestRenderToolCommandValidatesNumberType(t *testing.T) {
+	tool := registry.Tool{
+		Command:    "seq {{count}}",
+		Parameters: []registry.ToolParameter{{Name: "count", Type: registry.ToolParamNumber, Required: true}},
+	}
+
+	if _, err := RenderToolCommand(tool, map[string]string{"count": "not-a-number"}); err == nil {
+		t.Error("RenderToolCommand() error = nil, want an error for a non-numeric value on a number parameter")
+	}
+
+	got, err := RenderToolCommand(tool, map[string]string{"count": "5"})
+	if err != nil {
+		t.Fatalf("RenderToolCommand() error = %v", err)
+	}
+	if got != "seq '5'" {
+		t.Errorf("RenderToolCommand() = %q, want %q", got, "seq '5'")
+	}
+}
+
+func TestRenderToolCommandValidatesBooleanType(t *testing.T) {
+	tool := registry.Tool{
+		Command:    "echo {{verbose}}",
+		Parameters: []registry.ToolParameter{{Name: "verbose", Type: registry.ToolParamBoolean, Required: true}},
+	}
+
+	if _, err := RenderToolCommand(tool, map[string]string{"verbose": "yes"}); err == nil {
+		t.Error("RenderToolCommand() error = nil, want an error for a non-boolean value on a boolean parameter")
+	}
+}
+
+func TestTryToolStartsExecWithRenderedCommand(t *testing.T) {
+	d := &fakeDocker{execOutput: []string{"file contents\n"}, execExit: 0}
+	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+
+	tool := registry.Tool{
+		Command:    "cat {{path}}",
+		Parameters: []registry.ToolParameter{{Name: "path", Type: registry.ToolParamString, Required: true}},
+	}
+
+	exec, err := m.TryTool("abc123", tool, map[string]string{"path": "/etc/hostname"})
+	if err != nil {
+		t.Fatalf("TryTool() error = %v", err)
+	}
+
+	finished := waitForExecStatus(t, m, exec.ID, ExecDone, time.Second)
+	if finished.Output != "file contents\n" {
+		t.Errorf("finished.Output = %q, want %q", finished.Output, "file contents\n")
+	}
+	if len(d.execCommands) != 1 || d.execCommands[0][2] != "cat '/etc/hostname'" {
+		t.Errorf("d.execCommands = %v, want the rendered command", d.execCommands)
+	}
+}
+
+func TestTryToolValidationErrorNeverStartsExec(t *testing.T) {
+	d := &fakeDocker{}
+	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+
+	tool := registry.Tool{
+		Command:    "cat {{path}}",
+		Parameters: []registry.ToolParameter{{Name: "path", Type: registry.ToolParamString, Required: true}},
+	}
+
+	if _, err := m.TryTool("abc123", tool, map[string]string{}); err == nil {
+		t.Error("TryTool() error = nil, want an error for a missing required parameter")
+	}
+	if len(d.execCommands) != 0 {
+		t.Errorf("d.execCommands = %v, want no exec started when validation fails", d.execCommands)
+	}
+}
