@@ -2,6 +2,8 @@ import { Route, Routes } from 'react-router-dom'
 import Layout from './Layout'
 import AgentEditor from './pages/AgentEditor'
 import Agents from './pages/Agents'
+import BenchmarkDetail from './pages/BenchmarkDetail'
+import Benchmarks from './pages/Benchmarks'
 import DatasetDetail from './pages/DatasetDetail'
 import Datasets from './pages/Datasets'
 import Environments from './pages/Environments'
@@ -30,6 +32,8 @@ function App() {
         <Route path="agents/:name" element={<AgentEditor />} />
         <Route path="evaluations" element={<Evaluations />} />
         <Route path="evaluations/:name" element={<EvaluationDetail />} />
+        <Route path="benchmarks" element={<Benchmarks />} />
+        <Route path="benchmarks/:name" element={<BenchmarkDetail />} />
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>

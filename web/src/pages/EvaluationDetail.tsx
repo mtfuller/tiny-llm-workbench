@@ -16,7 +16,7 @@ import {
 } from '../api'
 import { useEventStream } from '../eventStream'
 import Modal from '../Modal'
-import { TestCaseFields, toDraftTestCases, toPayloadTestCases, type DraftTestCase } from '../TestCaseEditor'
+import { formatAssertion, TestCaseFields, toDraftTestCases, toPayloadTestCases, type DraftTestCase } from '../TestCaseEditor'
 
 function formatDuration(startedAt: string, finishedAt?: string): string {
   const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
@@ -183,9 +183,7 @@ function EvaluationDetail() {
                   <td>
                     {tc.assertions.map((a, i) => (
                       <div key={i}>
-                        <code>
-                          {a.type} "{a.value}"
-                        </code>
+                        <code title={a.type === 'json_schema' ? a.value : undefined}>{formatAssertion(a)}</code>
                       </div>
                     ))}
                   </td>
@@ -338,9 +336,7 @@ function EvaluationDetail() {
               <li key={i}>
                 <span className={`badge ${a.passed ? 'badge-purple' : ''}`}>{a.passed ? 'pass' : 'fail'}</span>
                 <span className="event-data">
-                  <code>
-                    {a.type} "{a.value}"
-                  </code>
+                  <code title={a.type === 'json_schema' ? a.value : undefined}>{formatAssertion(a)}</code>
                   {a.error && <div className="error">{a.error}</div>}
                 </span>
               </li>

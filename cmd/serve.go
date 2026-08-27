@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
+	"github.com/mtfuller/tiny-llm-workbench/internal/benchmarks"
 	"github.com/mtfuller/tiny-llm-workbench/internal/color"
 	"github.com/mtfuller/tiny-llm-workbench/internal/datasetgen"
 	"github.com/mtfuller/tiny-llm-workbench/internal/docker"
@@ -24,6 +25,7 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/mlxrunner"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/server"
+	"github.com/mtfuller/tiny-llm-workbench/internal/testcasegen"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
 )
 
@@ -55,6 +57,7 @@ URL in a browser. Stop it with Ctrl+C.`,
 		// must outlive whichever request happened to trigger starting it.
 		runner := mlxrunner.New(ctx)
 		generator := datasetgen.New(runner)
+		testCaseGenerator := testcasegen.New(runner)
 
 		// trainingMgr's context (ctx, not the per-request context an HTTP
 		// handler would otherwise capture) bounds how long a run can keep
@@ -83,6 +86,8 @@ URL in a browser. Stop it with Ctrl+C.`,
 
 		evaluationsMgr := evaluations.NewManager(ctx, reg, agentsMgr, environmentsMgr, bus)
 
+		benchmarksMgr := benchmarks.NewManager(ctx, reg, reg, runner, bus, filepath.Join(reg.Root(), "benchmark-results"))
+
 		handler, err := server.New(server.Deps{
 			Bus:          bus,
 			Models:       reg,
@@ -96,6 +101,9 @@ URL in a browser. Stop it with Ctrl+C.`,
 			AgentRuns:    agentsMgr,
 			Evaluations:  reg,
 			EvalRuns:     evaluationsMgr,
+			Benchmarks:   reg,
+			BenchRuns:    benchmarksMgr,
+			TestCaseGen:  testCaseGenerator,
 			RegistryRoot: reg.Root(),
 		})
 		if err != nil {

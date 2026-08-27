@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
+	"github.com/mtfuller/tiny-llm-workbench/internal/benchmarks"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
@@ -49,11 +50,22 @@ type fakeModelRunner struct {
 	completion string
 	err        error
 	calls      []fakeModelRunnerCall
+
+	positions      []mlxrunner.TokenPosition
+	tokenProbErr   error
+	tokenProbCalls []fakeTokenProbCall
 }
 
 type fakeModelRunnerCall struct {
 	model    string
 	messages []mlxrunner.ChatMessage
+}
+
+type fakeTokenProbCall struct {
+	model     string
+	prompt    string
+	maxTokens int
+	topN      int
 }
 
 func (f *fakeModelRunner) Chat(ctx context.Context, model string, messages []mlxrunner.ChatMessage) (string, error) {
@@ -62,6 +74,14 @@ func (f *fakeModelRunner) Chat(ctx context.Context, model string, messages []mlx
 		return "", f.err
 	}
 	return f.completion, nil
+}
+
+func (f *fakeModelRunner) TokenProbabilities(ctx context.Context, model, prompt string, maxTokens, topN int) ([]mlxrunner.TokenPosition, error) {
+	f.tokenProbCalls = append(f.tokenProbCalls, fakeTokenProbCall{model: model, prompt: prompt, maxTokens: maxTokens, topN: topN})
+	if f.tokenProbErr != nil {
+		return nil, f.tokenProbErr
+	}
+	return f.positions, nil
 }
 
 type fakeDatasetStore struct {
@@ -404,9 +424,125 @@ func (f *fakeEvaluationManager) GetRun(id string) (*evaluations.Run, bool) {
 	return f.getResult, f.getOK
 }
 
+type fakeBenchmarkStore struct {
+	list      []registry.Benchmark
+	listErr   error
+	saveErr   error
+	saved     []registry.Benchmark
+	get       registry.Benchmark
+	getErr    error
+	deleteErr error
+	deleted   []string
+
+	addTestCasesErr error
+	addedTestCases  [][]registry.TestCase
+
+	updateTestCaseErr error
+	updatedTestCase   registry.TestCase
+	updatedIndex      int
+
+	deleteTestCaseErr error
+	deletedIndex      int
+}
+
+func (f *fakeBenchmarkStore) ListBenchmarks() ([]registry.Benchmark, error) {
+	return f.list, f.listErr
+}
+
+func (f *fakeBenchmarkStore) SaveBenchmark(b registry.Benchmark) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.saved = append(f.saved, b)
+	return nil
+}
+
+func (f *fakeBenchmarkStore) GetBenchmark(name string) (registry.Benchmark, error) {
+	return f.get, f.getErr
+}
+
+func (f *fakeBenchmarkStore) DeleteBenchmark(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+
+func (f *fakeBenchmarkStore) AddTestCases(benchmarkName string, tcs []registry.TestCase) error {
+	if f.addTestCasesErr != nil {
+		return f.addTestCasesErr
+	}
+	f.addedTestCases = append(f.addedTestCases, tcs)
+	return nil
+}
+
+func (f *fakeBenchmarkStore) UpdateTestCase(benchmarkName string, index int, tc registry.TestCase) error {
+	if f.updateTestCaseErr != nil {
+		return f.updateTestCaseErr
+	}
+	f.updatedIndex = index
+	f.updatedTestCase = tc
+	return nil
+}
+
+func (f *fakeBenchmarkStore) DeleteTestCase(benchmarkName string, index int) error {
+	if f.deleteTestCaseErr != nil {
+		return f.deleteTestCaseErr
+	}
+	f.deletedIndex = index
+	return nil
+}
+
+type fakeTestCaseGenerator struct {
+	prompts  []string
+	err      error
+	gotModel string
+	gotSeed  string
+	gotN     int
+}
+
+func (f *fakeTestCaseGenerator) Variations(ctx context.Context, model, seedPrompt string, n int) ([]string, error) {
+	f.gotModel = model
+	f.gotSeed = seedPrompt
+	f.gotN = n
+	return f.prompts, f.err
+}
+
+type fakeBenchmarkManager struct {
+	startResult *benchmarks.Run
+	startErr    error
+	started     []string
+
+	runs []*benchmarks.Run
+
+	getResult *benchmarks.Run
+	getOK     bool
+
+	results    []benchmarks.RunResult
+	resultsErr error
+}
+
+func (f *fakeBenchmarkManager) StartRun(benchmarkName string, modelNames []string) (*benchmarks.Run, error) {
+	f.started = append(f.started, benchmarkName)
+	return f.startResult, f.startErr
+}
+
+func (f *fakeBenchmarkManager) ListRuns() []*benchmarks.Run {
+	return f.runs
+}
+
+func (f *fakeBenchmarkManager) GetRun(id string) (*benchmarks.Run, bool) {
+	return f.getResult, f.getOK
+}
+
+func (f *fakeBenchmarkManager) ListResults(benchmarkName string) ([]benchmarks.RunResult, error) {
+	return f.results, f.resultsErr
+}
+
 // testDeps builds a minimal Deps with working fakes for tests that don't
-// care about the Models/Dataset/Training/Environments/Agents/Evaluations API
-// surface.
+// care about the Models/Dataset/Training/Environments/Agents/Evaluations/
+// Benchmarks API surface.
 func testDeps() Deps {
 	return Deps{
 		Bus:          eventbus.New(),
@@ -421,5 +557,8 @@ func testDeps() Deps {
 		AgentRuns:    &fakeAgentManager{},
 		Evaluations:  &fakeEvaluationStore{},
 		EvalRuns:     &fakeEvaluationManager{},
+		Benchmarks:   &fakeBenchmarkStore{},
+		BenchRuns:    &fakeBenchmarkManager{},
+		TestCaseGen:  &fakeTestCaseGenerator{},
 	}
 }

@@ -32,12 +32,12 @@ func TestCompleteReturnsFirstChoiceMessageContent(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{httpClient: server.Client()}
-	text, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}})
+	result, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0)
 	if err != nil {
 		t.Fatalf("complete() error = %v", err)
 	}
-	if text != "hello there" {
-		t.Errorf("complete() = %q, want %q", text, "hello there")
+	if result.text != "hello there" {
+		t.Errorf("complete().text = %q, want %q", result.text, "hello there")
 	}
 }
 
@@ -50,7 +50,7 @@ func TestCompleteSendsPromptAsUserMessage(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{httpClient: server.Client()}
-	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}); err != nil {
+	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0); err != nil {
 		t.Fatalf("complete() error = %v", err)
 	}
 	if len(gotBody.Messages) != 1 || gotBody.Messages[0].Role != "user" || gotBody.Messages[0].Content != "hi" {
@@ -73,7 +73,7 @@ func TestCompleteSendsFullMessageHistoryVerbatim(t *testing.T) {
 	}
 
 	r := &Runner{httpClient: server.Client()}
-	if _, err := r.complete(context.Background(), server.URL, history); err != nil {
+	if _, err := r.complete(context.Background(), server.URL, history, 0, 0); err != nil {
 		t.Fatalf("complete() error = %v", err)
 	}
 	if len(gotBody.Messages) != len(history) {
@@ -95,7 +95,7 @@ func TestCompleteSendsMaxTokensCap(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{httpClient: server.Client(), MaxTokens: 64}
-	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}); err != nil {
+	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0); err != nil {
 		t.Fatalf("complete() error = %v", err)
 	}
 	if gotBody.MaxTokens != 64 {
@@ -112,7 +112,7 @@ func TestCompleteDefaultsMaxTokensWhenUnset(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{httpClient: server.Client()}
-	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}); err != nil {
+	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0); err != nil {
 		t.Fatalf("complete() error = %v", err)
 	}
 	if gotBody.MaxTokens != defaultMaxTokens {
@@ -129,7 +129,7 @@ func TestCompleteSendsRepetitionPenalty(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{httpClient: server.Client(), RepetitionPenalty: 1.15}
-	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}); err != nil {
+	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0); err != nil {
 		t.Fatalf("complete() error = %v", err)
 	}
 	if gotBody.RepetitionPenalty != 1.15 {
@@ -146,12 +146,123 @@ func TestCompleteDefaultsRepetitionPenaltyWhenUnset(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{httpClient: server.Client()}
-	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}); err != nil {
+	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0); err != nil {
 		t.Fatalf("complete() error = %v", err)
 	}
 	if gotBody.RepetitionPenalty != defaultRepetitionPenalty {
 		t.Errorf("request repetition_penalty = %v, want defaultRepetitionPenalty (%v) when unset", gotBody.RepetitionPenalty, defaultRepetitionPenalty)
 	}
+}
+
+func TestCompleteRequestsTopLogprobsOnlyWhenAsked(t *testing.T) {
+	var gotBody chatCompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	r := &Runner{httpClient: server.Client()}
+	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0); err != nil {
+		t.Fatalf("complete() error = %v", err)
+	}
+	if gotBody.TopLogprobs != 0 || gotBody.Logprobs {
+		t.Errorf("request top_logprobs/logprobs = %d/%v, want 0/false for a plain call", gotBody.TopLogprobs, gotBody.Logprobs)
+	}
+
+	if _, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 5, 10); err != nil {
+		t.Fatalf("complete() error = %v", err)
+	}
+	if gotBody.TopLogprobs != 10 || !gotBody.Logprobs || gotBody.MaxTokens != 5 {
+		t.Errorf("request = %+v, want top_logprobs=10 logprobs=true max_tokens=5", gotBody)
+	}
+}
+
+func TestCompleteParsesLogprobsContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{
+			"choices": [{
+				"message": {"role": "assistant", "content": "hi there"},
+				"logprobs": {
+					"content": [
+						{"id": 1, "token": "hi", "logprob": -0.1, "top_logprobs": [
+							{"id": 1, "token": "hi", "logprob": -0.1},
+							{"id": 2, "token": "hey", "logprob": -1.5}
+						]},
+						{"id": 3, "token": " there", "logprob": -0.05, "top_logprobs": [
+							{"id": 3, "token": " there", "logprob": -0.05}
+						]}
+					]
+				}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	r := &Runner{httpClient: server.Client()}
+	result, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 5, 10)
+	if err != nil {
+		t.Fatalf("complete() error = %v", err)
+	}
+	if len(result.logprobs) != 2 {
+		t.Fatalf("len(result.logprobs) = %d, want 2", len(result.logprobs))
+	}
+	if result.logprobs[0].Token != "hi" || len(result.logprobs[0].TopLogprobs) != 2 {
+		t.Errorf("result.logprobs[0] = %+v, want token=hi with 2 candidates", result.logprobs[0])
+	}
+	if result.logprobs[1].Token != " there" || result.logprobs[1].LogProb != -0.05 {
+		t.Errorf("result.logprobs[1] = %+v, want token=\" there\" logprob=-0.05", result.logprobs[1])
+	}
+}
+
+func TestTokenProbabilitiesConvertsCandidates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/chat/completions":
+			w.Write([]byte(`{
+				"choices": [{
+					"message": {"role": "assistant", "content": "hi"},
+					"logprobs": {
+						"content": [
+							{"id": 1, "token": "hi", "logprob": -0.1, "top_logprobs": [
+								{"id": 1, "token": "hi", "logprob": -0.1},
+								{"id": 2, "token": "hey", "logprob": -1.5}
+							]}
+						]
+					}
+				}]
+			}`))
+		}
+	}))
+	defer server.Close()
+
+	r := New(context.Background())
+	r.httpClient = server.Client()
+	r.mu.Lock()
+	r.servers["test-model"] = &serverProc{baseURL: server.URL, ready: closedChan(), done: make(chan struct{})}
+	r.mu.Unlock()
+
+	positions, err := r.TokenProbabilities(context.Background(), "test-model", "hi", 5, 10)
+	if err != nil {
+		t.Fatalf("TokenProbabilities() error = %v", err)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("len(positions) = %d, want 1", len(positions))
+	}
+	if positions[0].Token != "hi" || len(positions[0].TopCandidates) != 2 {
+		t.Fatalf("positions[0] = %+v, want token=hi with 2 candidates", positions[0])
+	}
+	if positions[0].TopCandidates[1].Token != "hey" || positions[0].TopCandidates[1].LogProb != -1.5 {
+		t.Errorf("positions[0].TopCandidates[1] = %+v, want token=hey logprob=-1.5", positions[0].TopCandidates[1])
+	}
+}
+
+func closedChan() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
 }
 
 func TestCompleteSurfacesNonOKStatus(t *testing.T) {
@@ -162,7 +273,7 @@ func TestCompleteSurfacesNonOKStatus(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{httpClient: server.Client()}
-	_, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}})
+	_, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0)
 	if err == nil || !strings.Contains(err.Error(), "model not loaded") {
 		t.Errorf("complete() error = %v, want it to include the response body", err)
 	}
@@ -175,7 +286,7 @@ func TestCompleteErrorsOnNoChoices(t *testing.T) {
 	defer server.Close()
 
 	r := &Runner{httpClient: server.Client()}
-	_, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}})
+	_, err := r.complete(context.Background(), server.URL, []chatMessage{{Role: "user", Content: "hi"}}, 0, 0)
 	if err == nil {
 		t.Error("complete() error = nil, want an error when the response has no choices")
 	}

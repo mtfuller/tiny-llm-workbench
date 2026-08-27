@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
+	"github.com/mtfuller/tiny-llm-workbench/internal/assertions"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
@@ -36,12 +37,12 @@ const (
 
 // TestCaseResult is one test case's outcome for one agent.
 type TestCaseResult struct {
-	TestCaseID string            `json:"testCaseId"`
-	Prompt     string            `json:"prompt"`
-	Reply      string            `json:"reply"`
-	Assertions []AssertionResult `json:"assertions"`
-	Passed     bool              `json:"passed"`
-	Error      string            `json:"error,omitempty"`
+	TestCaseID string              `json:"testCaseId"`
+	Prompt     string              `json:"prompt"`
+	Reply      string              `json:"reply"`
+	Assertions []assertions.Result `json:"assertions"`
+	Passed     bool                `json:"passed"`
+	Error      string              `json:"error,omitempty"`
 }
 
 // AgentResult aggregates one agent's results across every test case.
@@ -223,7 +224,7 @@ func (m *Manager) run(run *Run, eval registry.Evaluation) {
 }
 
 func (m *Manager) runTestCase(agentName string, tc registry.TestCase) TestCaseResult {
-	result := TestCaseResult{TestCaseID: tc.ID, Prompt: tc.Prompt}
+	result := TestCaseResult{TestCaseID: tc.ID, Prompt: tc.Prompt, Assertions: []assertions.Result{}}
 
 	agentRun, err := m.agentRunner.StartRun(agentName)
 	if err != nil {
@@ -238,7 +239,7 @@ func (m *Manager) runTestCase(agentName string, tc registry.TestCase) TestCaseRe
 	}
 
 	result.Reply = reply.Content
-	result.Assertions, result.Passed = checkAssertions(tc.Assertions, reply.Content)
+	result.Assertions, result.Passed = assertions.CheckAll(tc.Assertions, reply.Content)
 
 	return result
 }

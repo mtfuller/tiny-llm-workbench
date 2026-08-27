@@ -255,6 +255,196 @@ choice:
   `SendMessage`) per agent, so agents don't share conversation history across test cases within a run.
   See `internal/evaluations`.
 
+  **2026-08-27 addendum — richer assertion types, shared checker:** the assertion set grew beyond
+  `contains`/`not_contains`/`regex` to also cover `json_schema` (validate that the reply contains a JSON
+  value conforming to a user-supplied JSON Schema) and `similarity` (pass if the reply is at least a
+  given normalized-Levenshtein similarity ratio — `registry.Assertion.Threshold`, in (0, 1] — to a
+  reference text; a "close diff" check, not exact match). The user wanted both Evaluations and Benchmarks
+  to have the same richer set, which changed the earlier duplication tradeoff (see the **Benchmarks**
+  bullet below): the checker was extracted into a new `internal/assertions` package (`Check`/`CheckAll`),
+  and both `internal/evaluations` and `internal/benchmarks` import it instead of keeping their own
+  copies. `json_schema` validation uses `github.com/santhosh-tekuri/jsonschema/v6` (new dependency, no
+  transitive deps, chosen over hand-rolling JSON Schema semantics) — compiled fresh per check, since
+  usage is one-off per test case, not a hot loop worth caching. Because tiny local models often preface a
+  JSON reply with commentary or wrap it in a markdown code fence, `json_schema` doesn't require the whole
+  reply to be JSON: `extractJSONValue` scans for the first balanced `{...}`/`[...]` substring (tracking
+  string-literal state so braces inside a JSON string don't throw off the balance count) and validates
+  that. `similarity` lowercases both sides before comparing, matching `contains`'s existing
+  case-insensitivity reasoning. The frontend's `TestCaseFields` (`web/src/TestCaseEditor.tsx`) grew a
+  multi-line textarea for `json_schema` (schema text is rarely one line) and a small numeric threshold
+  input for `similarity`, auto-defaulted to 0.85 the moment that type is selected so the field is never
+  silently invalid; a new `formatAssertion` helper renders a one-line human-readable summary
+  (`similar to "..." (≥ 85%)`, `matches JSON schema`) everywhere assertions are displayed read-only.
+  Verified live: created a benchmark with one `similarity` and one `json_schema` assertion, ran it against
+  the real fused Qwen2 model, and confirmed both failed for the right, precisely-surfaced reasons against
+  a real generated reply ("That's one wrong!" is neither similar to the reference text nor contains any
+  JSON — the UI showed the exact `reply does not contain a JSON value` error from `internal/assertions`).
+- **Model visualization tools**: how the Models detail page inspects a model's actual weight file and
+  probes its behavior — architecture topology, a per-tensor weight heatmap, and a token-probability
+  ("confidence") tool.
+  **Decided:** a design doc for this proposed reading `.safetensors` files entirely client-side, using
+  the browser's `File.slice()` API against a user-picked file — deliberately not followed here. TLW
+  already knows a registry model's on-disk path server-side (`registry.Model.Path`), so there's nothing
+  to gain from asking the user to re-locate a file the app already has, and reading exact byte ranges via
+  `os.File.ReadAt` achieves the same "don't load the whole file" goal from the backend instead. New
+  `internal/safetensors` package: `ParseModelDir` reads only the 8-byte length prefix + JSON header of a
+  model's `.safetensors` file(s) (handling both a single file and a sharded
+  `model.safetensors.index.json` + multiple shard files) to locate every tensor's byte range without
+  reading any weight data; `DeriveArchitecture` turns that into layer count / hidden size / vocab size /
+  parameter count (preferring `config.json`'s own fields when present, falling back to regex-matching
+  `\.layers\.(\d+)\.` against tensor names — sorted numerically, not alphabetically, so layer 10 doesn't
+  sort before layer 2); `ExtractHeatmap` reads one tensor's exact bytes via a single `ReadAt`, decodes
+  F32/F16/BF16 (hand-verified float16↔float32 bit math, including subnormals), and subsamples down to a
+  fixed grid (default 200×200) plus min/max/mean/std computed over every element. Verified by hand
+  against a real fused/dequantized TLW-trained model (Qwen2 0.5B, F16, 494M params) — the derived
+  parameter count and estimated byte size matched that model's own `model.safetensors.index.json`
+  metadata exactly. New `GET /api/models/{name}/architecture` and `GET /api/models/{name}/heatmap`
+  endpoints call this package directly (no mockable interface — it's pure filesystem I/O, tested with
+  real hand-built `.safetensors` files in `internal/safetensors`'s own tests, the same way
+  `internal/registry` tests real files rather than mocking `os`).
+  For token probabilities: `mlxrunner.Runner` gained `TokenProbabilities`, wrapping the same
+  `/v1/chat/completions` endpoint `Chat`/`Generate` use with `top_logprobs`/`logprobs` request fields —
+  confirmed by reading mlx_lm.server's source (0.31.3) that both endpoints share the same
+  logprobs-computing code path, and that a response entry's top-level `id`/`token`/`logprob` is always
+  the single most-likely candidate (not necessarily the token actually generated, though the two are the
+  same whenever decoding is greedy — mlx_lm.server's own default and one TLW never overrides), with the
+  full top-N list available under `top_logprobs`. New `POST /api/models/{name}/token-probabilities`
+  endpoint clamps `maxTokens`/`topLogprobs` server-side (50 / 10 — mlx_lm.server's own hard cap is 11)
+  regardless of what the frontend requests, so a page reload or a modified client request can't spawn a
+  runaway generation. The heatmap's color scale intentionally uses the app's own `--ok`/`--accent` theme
+  tokens (green/negative ↔ terracotta/positive) rather than a generic scientific blue-red scale, read via
+  `getComputedStyle` at render time so it adapts to light/dark mode automatically.
+
+- **Benchmarks**: how a test suite is defined and run when the target is a raw model rather than an
+  agent, and how results get compared across models.
+  **Decided:** Benchmarks is Evaluations' sibling, not something built on top of it — same shape of test
+  case (a prompt plus assertions, reusing `registry.TestCase`/`registry.Assertion` directly, no new type
+  needed there). Assertion-checking itself originally lived duplicated in
+  `internal/evaluations/assertions.go` and `internal/benchmarks/assertions.go` (deliberately — the two
+  features are conceptually independent, one checks agent replies, the other model replies, and the
+  original `contains`/`not_contains`/`regex` checker was small enough that duplicating it beat a
+  cross-package dependency). That call was reversed once the user asked for the same richer assertion set
+  in both places — see the **Evaluation runner** bullet above for the resulting shared
+  `internal/assertions` package; duplicating an increasingly non-trivial checker that must now behave
+  identically in both features stopped being the cheaper option. `registry.Benchmark`
+  (`benchmarks/<name>/definition.json`) mirrors `registry.Evaluation` minus the `Environment` field —
+  there's no agent-run lifecycle or environment to launch, so a benchmark run
+  (`internal/benchmarks.Manager`, mirroring `internal/evaluations.Manager`'s async
+  StartRun/ListRuns/GetRun/eventbus-progress shape) sends each test case's prompt straight to
+  `mlxrunner.Runner.Generate(ctx, model.Path, prompt)` for each selected registry model — one independent
+  generation per test case, no chat history, no agent or environment overhead. A model with no local
+  `Path` (or an unresolvable name) fails every one of its test cases with a recorded per-result error
+  rather than failing the whole run, so a bad model selection doesn't hide the results for the other
+  selected models in the comparison. Routes/handlers/frontend (`Benchmarks`/`BenchmarkDetail` pages,
+  reusing `TestCaseFields`/`toDraftTestCases`/`toPayloadTestCases` from `TestCaseEditor.tsx` — already
+  target-agnostic) directly mirror Evaluations' equivalents, including the results table shape (rows =
+  target, columns = test cases, a score column) since that layout already reads as a side-by-side model
+  comparison without changes. Fully verified live: created a real benchmark, ran it against the real
+  fused Qwen2 model over a real `mlx_lm.server` subprocess, and got back its actual generated reply
+  (checked against the `contains "hello"` assertion, correctly failing on a real "Good morning!" reply).
+  The sidebar also gained two `sidebar-nav-label` section headings at this point — "Workbench" (Models,
+  Datasets, Training) and "Automation" (Environments, Agents, Evaluations, Benchmarks) — grouping what
+  had been one flat nav list; `.sidebar-nav-label`/`.sidebar-nav-section` already existed in `index.css`
+  (plural, evidently anticipating this) but were unused until now.
+
+  **2026-08-27 addendum — versioning, durable per-model results, redesigned detail page:**
+  `registry.Benchmark` gained a `Version int` field, computed inside `SaveBenchmark` itself (not taken
+  from the caller): a first save gets Version 1, and a later save only bumps it if `TestCases` actually
+  changed (`reflect.DeepEqual` against the stored definition) — a no-op re-save (open the editor, save
+  without changing anything) leaves the version untouched, so it's a meaningful "this test suite changed"
+  signal rather than an edit-count. `SaveBenchmark` also now sets/preserves `CreatedAt` itself for the
+  same reason (this uncovered a real pre-existing bug: neither `saveBenchmarkHandler` nor
+  `saveEvaluationHandler` ever actually set `CreatedAt` — it always serialized as the zero time. Fixed
+  here for Benchmarks since it's directly load-bearing for versioning's "first save vs. later save"
+  branch; the identical bug in Evaluations is untouched, out of scope for this change).
+
+  Run results changed from "one ephemeral, in-memory `Run` covering N models, shown once and then gone on
+  restart" to a durable, queryable comparison: `internal/benchmarks.Manager` gained a `resultsDir`
+  (`NewManager`'s new final parameter; wired in `cmd/serve.go` to `<registry root>/benchmark-results`) and
+  persists one `RunResult` per (BenchmarkVersion, ModelName) to a `<resultsDir>/<benchmarkName>.json` file
+  — `persistResult` upserts by that key (a matching existing entry is replaced, not appended), so
+  re-running the same benchmark version against the same model overwrites its previous result exactly as
+  asked, while a different version or a different model gets its own row. This is a Manager-owned
+  persistence directory, not something routed through `registry` — the natural `registry.Benchmark`-owning
+  location would be a results.json file colocated with `definition.json`, but `RunResult` embeds
+  `internal/assertions.Result` (via `benchmarks.TestCaseResult`), and `internal/assertions` already
+  imports `registry` for `registry.Assertion`, so `registry` importing `internal/benchmarks`/
+  `internal/assertions` back would cycle. Mirrors `internal/training.Manager`'s existing
+  own-directory-under-registry-root persistence pattern instead. The ephemeral `Run`/`ListRuns`/`GetRun`
+  API is unchanged in spirit and kept — it's now purely a progress-tracking mechanism (is a run active,
+  live per-test-case progress over the eventbus) since the durable comparison data lives in
+  `ListResults`/`GET /api/benchmark-results/{name}` instead. That route is a sibling of
+  `/api/benchmarks/{name}`, not nested under it as `/api/benchmarks/{name}/results` — Go's `net/http`
+  `ServeMux` refused that shape as genuinely ambiguous against the already-existing
+  `GET /api/benchmarks/runs/{id}` (both are 2-segment GET patterns with the wildcard in a different
+  position; `/api/benchmarks/runs/results` would satisfy either).
+
+  The benchmark detail page was restructured into two views per the user's request: a "Test cases" tab
+  (the test suite, editable) and a "Run results" tab (every persisted `RunResult` across every version and
+  model ever tried, sortable by model/version/pass rate/duration/started-at — defaulting to pass rate
+  descending, which is the actual point: "see all the models you've tested and sort on more performant").
+  A result whose version doesn't match the benchmark's current version is visually flagged "(outdated)"
+  rather than hidden — deliberately not filtered out, so edit history stays visible, but clearly marked so
+  a stale comparison isn't mistaken for a fair one. Both tabs' list chrome (search input, `panel-flush` +
+  `panel-toolbar`, empty/loading states, `Pagination`) was matched to the existing Datasets/Evaluations
+  list-page convention per explicit user request, rather than the plainer unpaginated tables the page
+  first shipped with.
+
+  A further pass moved the page's always-visible "Run against" card (model checklist + Run button) out of
+  the layout entirely: the first card is now plain "Benchmark info" (version, test case count, created
+  date — general info about the resource, nothing actionable), and starting a run is a `Plus` icon-button
+  in the **Run results** tab's own list-toolbar (matching the "+" pattern every other list page already
+  uses for its create action), opening a `RunBenchmarkModal` with the model checklist. The icon-button
+  disables itself (not the modal's submit button) while a run is active, since the point is to stop a
+  second run from being started at all, not to let the modal open and then block submission.
+
+  **2026-08-27 addendum — per-test-case CRUD + generation, mirroring Datasets exactly:** creating a
+  benchmark no longer requires any test cases upfront (`saveBenchmarkHandler`'s "at least one test case"
+  validation was removed) — `Benchmarks.tsx`'s create modal is now just a name field, and submitting
+  navigates straight to the new benchmark's (empty) detail page, same reasoning as a Dataset starting
+  empty. Test cases are managed the same way Dataset examples are: `registry.TestCase` gained `Tags
+  []string`, and three new registry methods (`AddTestCases`, `UpdateTestCase`, `DeleteTestCase` — index-
+  addressed, mirroring `AppendExamples`/`UpdateExample`/`DeleteExample`) each load-mutate-save through the
+  existing `SaveBenchmark`, so version-bump detection keeps working for free rather than needing its own
+  copy of the diffing logic. `AddTestCases` always assigns a fresh server-side ID
+  (`tc-<unixnano>-<i>`), ignoring any ID the client sent; `UpdateTestCase` preserves the existing ID at
+  that index. New routes: `POST .../test-cases`, `PUT .../test-cases/{index}`,
+  `DELETE .../test-cases/{index}`.
+
+  A new `internal/testcasegen` package mirrors `internal/datasetgen` for "generate test case prompt
+  variations" (`POST .../test-cases/generate`), but deliberately only varies the **prompt** — a
+  generated variation reuses the seed's own assertions/tags unchanged, rather than asking the model to
+  also invent new pass/fail criteria. This isn't a shortcut; tiny local models are unreliable at
+  emitting structured/parseable output (the same reasoning already behind Phase 3's keyword-match
+  decision nodes and the deterministic assertion types), so having the model generate JSON Schema
+  documents or regex patterns it can't validate itself isn't a fight worth having — paraphrasing a
+  prompt while assertions stay fixed is what "test the same thing, asked differently" actually means.
+  Confirmed live that this caution is warranted: asked for 2 variations with an explicit "respond with
+  ONLY a JSON array of strings" instruction, and Qwen2.5-0.5B-Instruct returned a JSON *object* with
+  typo'd keys instead (`{"promt1": "...", "promt2": "..."}`) — correctly rejected by
+  `testcasegen.parsePrompts` with a clear "no JSON array found" error rather than silently accepting
+  garbage, and that error surfaced legibly in the UI. The feature's plumbing (validation, the real
+  mlx_lm.server round trip, and clean error propagation all the way to the modal) is fully verified;
+  getting a specific tiny model to reliably nail the exact output format on every attempt is a separate,
+  unbounded problem this project already declines to fight elsewhere.
+
+  The frontend reused rather than duplicated: `AssertionFields` was extracted out of `TestCaseFields`
+  (the multi-test-case bulk editor, still used by Evaluations) into its own component so a
+  single-test-case modal could reuse the same assertion-row UI without the "Test case N / Remove"
+  wrapper; `toPayloadAssertions`/`toDraftAssertions` were exported alongside it. `TagFilterDropdown` was
+  extracted from `DatasetDetail.tsx` (where it was previously a page-local component) into its own
+  `web/src/TagFilterDropdown.tsx` so `BenchmarkDetail.tsx` could use the identical tag-filter popover
+  rather than a second copy — this was a pure extraction, no behavior change to Datasets.
+
+  **Not fixed here (flagged separately):** both the new `GenerateTestCasesModal` and the pre-existing
+  Dataset `GenerateVariationsModal` populate their model suggestion dropdown from registry models'
+  `.name`, but `mlxrunner.Runner` needs a trained model's `.path` (no name→path resolution exists inside
+  it) — typing a registry model's display name into either modal makes `mlx_lm.server` hang (observed
+  live: ~0% CPU, no progress, had to be killed manually) rather than failing fast, because it treats the
+  name as an unresolvable Hugging Face repo id. This is a pre-existing gap in the already-shipped Dataset
+  feature that the new Benchmarks feature simply inherited by mirroring it — worth fixing in both places
+  together, not in scope for this change.
+
 Once the user decides one of these, record it here (a short "Decided:" note under the relevant bullet)
 so it doesn't get re-litigated by a later session.
 

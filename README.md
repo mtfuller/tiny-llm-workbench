@@ -28,6 +28,8 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
 - **Evaluations** — Define test suites against your agents: starting environment state, an initial
   prompt, and assertions to check. TLW ships with a tiny LLM fine-tuned to generate evaluation test
   variations from a single example, and lets you compare results across agents.
+- **Benchmarks** — Define test suites (a prompt plus assertions) run directly against a set of models,
+  no agent or environment involved — the main way to compare how different models actually perform.
 
 ## Roadmap
 

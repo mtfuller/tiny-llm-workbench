@@ -6,6 +6,7 @@ toolchain go1.24.2
 
 require (
 	github.com/docker/docker v24.0.9+incompatible
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.10.2
 )
 
@@ -26,6 +27,7 @@ require (
 	github.com/stretchr/testify v1.12.1 // indirect
 	golang.org/x/net v0.0.0-20201021035429-f5854403a974 // indirect
 	golang.org/x/sys v0.13.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )

@@ -13,6 +13,48 @@ export interface ModelDetail {
   trainingRun?: TrainingRun
 }
 
+export type TensorBlock = 'embedding' | 'layer' | 'norm' | 'lm_head' | 'other'
+
+export interface TensorSummary {
+  name: string
+  dtype: string
+  shape: number[]
+  numElements: number
+  block: TensorBlock
+  layer?: number
+}
+
+export interface Architecture {
+  modelType?: string
+  numLayers: number
+  hiddenSize?: number
+  vocabSize?: number
+  numParameters: number
+  estimatedBytes: number
+  tensors: TensorSummary[]
+}
+
+export interface HeatmapData {
+  rows: number
+  cols: number
+  grid: number[]
+  min: number
+  max: number
+  mean: number
+  std: number
+}
+
+export interface TokenProbability {
+  token: string
+  logprob: number
+}
+
+export interface TokenPosition {
+  token: string
+  logprob: number
+  topCandidates: TokenProbability[]
+}
+
 export interface Example {
   input: string
   output: string
@@ -160,17 +202,23 @@ export interface AgentStepEvent {
   output: string
 }
 
-export type AssertionType = 'contains' | 'not_contains' | 'regex'
+export type AssertionType = 'contains' | 'not_contains' | 'regex' | 'json_schema' | 'similarity'
 
 export interface Assertion {
   type: AssertionType
   value: string
+  // threshold is only meaningful for "similarity" (the minimum required
+  // similarity ratio, in (0, 1]).
+  threshold?: number
 }
 
 export interface TestCase {
   id: string
   prompt: string
   assertions: Assertion[]
+  // tags are only used by Benchmarks today, for filtering the test case
+  // list — same role as Example.tags for datasets.
+  tags?: string[]
 }
 
 export interface Evaluation {
@@ -223,6 +271,50 @@ export interface EvaluationProgressEvent {
   passed: boolean
 }
 
+export interface Benchmark {
+  name: string
+  // version increments each time testCases actually changes (a no-op save
+  // leaves it unchanged) — see BenchmarkRunResult.benchmarkVersion.
+  version: number
+  testCases: TestCase[]
+  createdAt: string
+}
+
+// BenchmarkRunResult is one model's durable outcome for a specific version
+// of a benchmark's test cases — running the same benchmark version against
+// the same model again overwrites its previous result. This is the
+// persisted, queryable comparison data the benchmark detail page's "run
+// results" view sorts and lists; BenchmarkRun below is only the ephemeral
+// in-progress/just-finished execution that produced it.
+export interface BenchmarkRunResult {
+  benchmarkVersion: number
+  modelName: string
+  results: TestCaseResult[]
+  passed: number
+  total: number
+  startedAt: string
+  finishedAt: string
+  error?: string
+}
+
+export interface BenchmarkRun {
+  id: string
+  benchmarkName: string
+  modelNames: string[]
+  status: EvalRunStatus
+  results: BenchmarkRunResult[]
+  startedAt: string
+  finishedAt?: string
+  error?: string
+}
+
+export interface BenchmarkProgressEvent {
+  runId: string
+  modelName: string
+  testCaseId: string
+  passed: boolean
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
@@ -266,6 +358,36 @@ export function chatWithModel(name: string, messages: ChatTurn[]): Promise<{ com
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages }),
   }).then(json<{ completion: string }>)
+}
+
+// getModelArchitecture reads a model's derived topology straight from its
+// .safetensors header(s) on disk — no tensor weight bytes are transferred.
+export function getModelArchitecture(name: string): Promise<Architecture> {
+  return fetch(`/api/models/${encodeURIComponent(name)}/architecture`).then(json<Architecture>)
+}
+
+// getModelHeatmap fetches a single tensor's values, subsampled down to
+// gridSize x gridSize (default matches the backend's own default) plus
+// summary statistics over the full tensor.
+export function getModelHeatmap(name: string, tensor: string, gridSize?: number): Promise<HeatmapData> {
+  const params = new URLSearchParams({ tensor })
+  if (gridSize) params.set('grid', String(gridSize))
+  return fetch(`/api/models/${encodeURIComponent(name)}/heatmap?${params}`).then(json<HeatmapData>)
+}
+
+// getTokenProbabilities generates a short completion for prompt and returns,
+// for each generated token, the top candidate tokens the model considered.
+export function getTokenProbabilities(
+  name: string,
+  prompt: string,
+  maxTokens?: number,
+  topLogprobs?: number,
+): Promise<{ positions: TokenPosition[] }> {
+  return fetch(`/api/models/${encodeURIComponent(name)}/token-probabilities`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, maxTokens, topLogprobs }),
+  }).then(json<{ positions: TokenPosition[] }>)
 }
 
 export function listDatasets(): Promise<DatasetSummary[]> {
@@ -475,6 +597,77 @@ export function listEvaluationRuns(): Promise<EvaluationRun[]> {
 
 export function getEvaluationRun(id: string): Promise<EvaluationRun> {
   return fetch(`/api/evaluations/runs/${encodeURIComponent(id)}`).then(json<EvaluationRun>)
+}
+
+export function listBenchmarks(): Promise<Benchmark[]> {
+  return fetch('/api/benchmarks').then(json<Benchmark[]>)
+}
+
+export function saveBenchmark(benchmark: { name: string; testCases: TestCase[] }): Promise<Benchmark> {
+  return fetch('/api/benchmarks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(benchmark),
+  }).then(json<Benchmark>)
+}
+
+export function getBenchmark(name: string): Promise<Benchmark> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}`).then(json<Benchmark>)
+}
+
+export function deleteBenchmark(name: string): Promise<void> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+}
+
+export function startBenchmarkRun(name: string, modelNames: string[]): Promise<BenchmarkRun> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modelNames }),
+  }).then(json<BenchmarkRun>)
+}
+
+export function listBenchmarkRuns(): Promise<BenchmarkRun[]> {
+  return fetch('/api/benchmarks/runs').then(json<BenchmarkRun[]>)
+}
+
+export function getBenchmarkRun(id: string): Promise<BenchmarkRun> {
+  return fetch(`/api/benchmarks/runs/${encodeURIComponent(id)}`).then(json<BenchmarkRun>)
+}
+
+export function getBenchmarkResults(name: string): Promise<BenchmarkRunResult[]> {
+  return fetch(`/api/benchmark-results/${encodeURIComponent(name)}`).then(json<BenchmarkRunResult[]>)
+}
+
+export function addTestCases(name: string, testCases: TestCase[]): Promise<TestCase[]> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}/test-cases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ testCases }),
+  }).then(json<TestCase[]>)
+}
+
+export function updateTestCase(name: string, index: number, testCase: TestCase): Promise<TestCase> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}/test-cases/${index}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(testCase),
+  }).then(json<TestCase>)
+}
+
+export function deleteTestCase(name: string, index: number): Promise<void> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}/test-cases/${index}`, { method: 'DELETE' }).then(noContent)
+}
+
+export function generateTestCases(
+  name: string,
+  req: { model: string; seedPrompt: string; assertions: Assertion[]; tags?: string[]; count: number },
+): Promise<TestCase[]> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}/test-cases/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  }).then(json<TestCase[]>)
 }
 
 export interface SystemInfo {

@@ -1,4 +1,4 @@
-import { Activity, BarChart3, Box, ClipboardCheck, Container, Database, Settings, Workflow } from 'lucide-react'
+import { Activity, BarChart3, Box, ClipboardCheck, Container, Database, Settings, Trophy, Workflow } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useEventStream } from './eventStream'
@@ -11,14 +11,30 @@ interface NavItem {
   end?: boolean
 }
 
-const navItems: NavItem[] = [
-  { to: '/', label: 'Home', icon: Activity, end: true },
-  { to: '/models', label: 'Models', icon: Box },
-  { to: '/datasets', label: 'Datasets', icon: Database },
-  { to: '/training', label: 'Training', icon: BarChart3 },
-  { to: '/environments', label: 'Environments', icon: Container },
-  { to: '/agents', label: 'Agents', icon: Workflow },
-  { to: '/evaluations', label: 'Evaluations', icon: ClipboardCheck },
+interface NavSection {
+  label?: string
+  items: NavItem[]
+}
+
+const navSections: NavSection[] = [
+  { items: [{ to: '/', label: 'Home', icon: Activity, end: true }] },
+  {
+    label: 'Workbench',
+    items: [
+      { to: '/models', label: 'Models', icon: Box },
+      { to: '/datasets', label: 'Datasets', icon: Database },
+      { to: '/training', label: 'Training', icon: BarChart3 },
+    ],
+  },
+  {
+    label: 'Automation',
+    items: [
+      { to: '/environments', label: 'Environments', icon: Container },
+      { to: '/agents', label: 'Agents', icon: Workflow },
+      { to: '/evaluations', label: 'Evaluations', icon: ClipboardCheck },
+      { to: '/benchmarks', label: 'Benchmarks', icon: Trophy },
+    ],
+  },
 ]
 
 function Logo() {
@@ -51,22 +67,25 @@ function Layout() {
         </div>
 
         <nav className="sidebar-nav">
-          <div className="sidebar-nav-section">
-            {navItems.map((item) => {
-              const Icon = item.icon
-              return (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.end}
-                  className={({ isActive }) => `nav-item${isActive ? ' nav-item-active' : ''}`}
-                >
-                  <Icon size={17} strokeWidth={2} />
-                  {item.label}
-                </NavLink>
-              )
-            })}
-          </div>
+          {navSections.map((section) => (
+            <div className="sidebar-nav-section" key={section.label ?? 'root'}>
+              {section.label && <div className="sidebar-nav-label">{section.label}</div>}
+              {section.items.map((item) => {
+                const Icon = item.icon
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.end}
+                    className={({ isActive }) => `nav-item${isActive ? ' nav-item-active' : ''}`}
+                  >
+                    <Icon size={17} strokeWidth={2} />
+                    {item.label}
+                  </NavLink>
+                )
+              })}
+            </div>
+          ))}
         </nav>
 
         <div className="sidebar-footer">

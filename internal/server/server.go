@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
+	"github.com/mtfuller/tiny-llm-workbench/internal/benchmarks"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
@@ -27,9 +28,11 @@ type modelStore interface {
 }
 
 // modelRunner is the subset of mlxrunner.Runner the server needs to chat
-// with a registry model from the Models detail page's "Run model" modal.
+// with a registry model from the Models detail page's "Run model" modal,
+// and to compute its token-probability visualization.
 type modelRunner interface {
 	Chat(ctx context.Context, model string, messages []mlxrunner.ChatMessage) (string, error)
+	TokenProbabilities(ctx context.Context, model, prompt string, maxTokens, topN int) ([]mlxrunner.TokenPosition, error)
 }
 
 // datasetStore is the subset of registry.Registry the server needs for
@@ -108,6 +111,31 @@ type evaluationManager interface {
 	GetRun(id string) (*evaluations.Run, bool)
 }
 
+// benchmarkStore is the subset of registry.Registry the server needs for
+// Benchmark definitions.
+type benchmarkStore interface {
+	ListBenchmarks() ([]registry.Benchmark, error)
+	SaveBenchmark(b registry.Benchmark) error
+	GetBenchmark(name string) (registry.Benchmark, error)
+	DeleteBenchmark(name string) error
+	AddTestCases(benchmarkName string, tcs []registry.TestCase) error
+	UpdateTestCase(benchmarkName string, index int, tc registry.TestCase) error
+	DeleteTestCase(benchmarkName string, index int) error
+}
+
+// benchmarkManager is the subset of benchmarks.Manager the server needs.
+type benchmarkManager interface {
+	StartRun(benchmarkName string, modelNames []string) (*benchmarks.Run, error)
+	ListRuns() []*benchmarks.Run
+	GetRun(id string) (*benchmarks.Run, bool)
+	ListResults(benchmarkName string) ([]benchmarks.RunResult, error)
+}
+
+// testCaseGenerator is the subset of testcasegen.Generator the server needs.
+type testCaseGenerator interface {
+	Variations(ctx context.Context, model, seedPrompt string, n int) ([]string, error)
+}
+
 // Deps are the server's dependencies, all provided by the caller so they can
 // be swapped for fakes in tests.
 type Deps struct {
@@ -123,6 +151,9 @@ type Deps struct {
 	AgentRuns    agentManager
 	Evaluations  evaluationStore
 	EvalRuns     evaluationManager
+	Benchmarks   benchmarkStore
+	BenchRuns    benchmarkManager
+	TestCaseGen  testCaseGenerator
 
 	// RegistryRoot is a plain config value (not behavior), shown read-only
 	// on the Settings page.
@@ -146,6 +177,9 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /api/models/{name}", getModelHandler(deps.Models, deps.Training))
 	mux.HandleFunc("DELETE /api/models/{name}", deleteModelHandler(deps.Models))
 	mux.HandleFunc("POST /api/models/{name}/chat", chatWithModelHandler(deps.Models, deps.ModelRunner))
+	mux.HandleFunc("GET /api/models/{name}/architecture", getModelArchitectureHandler(deps.Models))
+	mux.HandleFunc("GET /api/models/{name}/heatmap", getModelHeatmapHandler(deps.Models))
+	mux.HandleFunc("POST /api/models/{name}/token-probabilities", tokenProbabilitiesHandler(deps.Models, deps.ModelRunner))
 	mux.HandleFunc("GET /api/datasets", listDatasetsHandler(deps.Datasets))
 	mux.HandleFunc("POST /api/datasets", createDatasetHandler(deps.Datasets))
 	mux.HandleFunc("GET /api/datasets/{name}", getDatasetHandler(deps.Datasets))
@@ -183,6 +217,23 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/evaluations/{name}/runs", startEvaluationRunHandler(deps.EvalRuns))
 	mux.HandleFunc("GET /api/evaluations/runs", listEvaluationRunsHandler(deps.EvalRuns))
 	mux.HandleFunc("GET /api/evaluations/runs/{id}", getEvaluationRunHandler(deps.EvalRuns))
+	mux.HandleFunc("GET /api/benchmarks", listBenchmarksHandler(deps.Benchmarks))
+	mux.HandleFunc("POST /api/benchmarks", saveBenchmarkHandler(deps.Benchmarks))
+	mux.HandleFunc("GET /api/benchmarks/{name}", getBenchmarkHandler(deps.Benchmarks))
+	mux.HandleFunc("DELETE /api/benchmarks/{name}", deleteBenchmarkHandler(deps.Benchmarks))
+	mux.HandleFunc("POST /api/benchmarks/{name}/test-cases", addTestCasesHandler(deps.Benchmarks))
+	mux.HandleFunc("PUT /api/benchmarks/{name}/test-cases/{index}", updateTestCaseHandler(deps.Benchmarks))
+	mux.HandleFunc("DELETE /api/benchmarks/{name}/test-cases/{index}", deleteTestCaseHandler(deps.Benchmarks))
+	mux.HandleFunc("POST /api/benchmarks/{name}/test-cases/generate", generateTestCasesHandler(deps.Benchmarks, deps.TestCaseGen))
+	mux.HandleFunc("POST /api/benchmarks/{name}/runs", startBenchmarkRunHandler(deps.BenchRuns))
+	mux.HandleFunc("GET /api/benchmarks/runs", listBenchmarkRunsHandler(deps.BenchRuns))
+	mux.HandleFunc("GET /api/benchmarks/runs/{id}", getBenchmarkRunHandler(deps.BenchRuns))
+	// A sibling of /api/benchmarks/{name} rather than nested under it
+	// (/api/benchmarks/{name}/results) because that shape is genuinely
+	// ambiguous with /api/benchmarks/runs/{id} to Go's ServeMux — both are
+	// 2-segment GET patterns with the wildcard in a different position, and
+	// e.g. "/api/benchmarks/runs/results" would match either.
+	mux.HandleFunc("GET /api/benchmark-results/{name}", listBenchmarkResultsHandler(deps.BenchRuns))
 
 	return mux, nil
 }

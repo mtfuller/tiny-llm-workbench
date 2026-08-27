@@ -213,6 +213,11 @@ a.nav-item:hover {
   max-width: 960px;
   margin: 0 auto;
   padding: 2.5rem 2.5rem 4rem;
+  /* Lets a child (e.g. .model-detail-grid) use @container queries keyed to
+     the actual content column's width rather than the viewport's — the
+     sidebar eats a fixed chunk of the viewport, so a viewport-width media
+     query collapses a grid far later than the page actually needs it to. */
+  container-type: inline-size;
 }
 
 /* The agent canvas is a workspace, not a document — let it use the full
@@ -319,6 +324,11 @@ a.nav-item:hover {
   padding: 1.25rem 1.5rem;
   margin-bottom: 1.5rem;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 5%, transparent);
+  /* Lets a child use @container queries keyed to *this card's* own width
+     rather than the viewport's — the sidebar eats a fixed chunk of the
+     viewport, so a viewport-width media query collapses a grid far later
+     than the card actually needs it to. */
+  container-type: inline-size;
 }
 
 .panel-flush {
@@ -501,6 +511,81 @@ a.nav-item:hover {
 .badge-purple {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.version-badge {
+  margin-left: 0.6rem;
+  vertical-align: middle;
+}
+
+.outdated-badge {
+  font-style: italic;
+}
+
+.result-cell-text {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.result-cell-text:hover {
+  text-decoration: underline;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+
+.tab-button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.6rem 0.2rem;
+  margin-right: 1.25rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  cursor: pointer;
+}
+
+.tab-button:hover {
+  color: var(--text);
+}
+
+.tab-button-active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.sort-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.sort-icon-inactive {
+  opacity: 0.35;
+}
+
+.benchmark-result-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
 /* List toolbar (search + actions) — lives inside the same .panel as the
@@ -1439,11 +1524,22 @@ textarea {
 .assertion-row {
   display: flex;
   gap: 0.5rem;
-  align-items: center;
+  align-items: flex-start;
 }
 
-.assertion-row input {
+.assertion-row input,
+.assertion-row textarea {
   flex: 1;
+}
+
+.assertion-row textarea.assertion-json-schema {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  resize: vertical;
+}
+
+.assertion-row input.assertion-threshold {
+  flex: 0 0 4.5rem;
 }
 
 .assertion-row .danger-button {
@@ -1724,4 +1820,391 @@ textarea {
 .confirm-actions {
   justify-content: flex-end;
   margin-top: 1rem;
+}
+
+/* Model detail page — a grid of cards instead of one long stack. Model
+   info / Training run are small enough to sit side by side; Architecture
+   (with its own internal master-detail grid) spans the full width via
+   .model-detail-card-wide. Collapses to one column once the content column
+   itself (not the viewport) gets too narrow for two. */
+.model-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.model-detail-grid > .panel {
+  margin-bottom: 0;
+}
+
+.model-detail-card-wide {
+  grid-column: 1 / -1;
+}
+
+@container (max-width: 640px) {
+  .model-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Model architecture visualizer */
+
+/* .arch-grid is the master-detail layout: .arch-nav (block/tensor browser)
+   on the left, .arch-detail (selected tensor's shape/dtype + heatmap) on
+   the right. Collapses to one column once its own card (not the viewport —
+   the sidebar eats a fixed chunk of that) gets too narrow for both. */
+.arch-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 0.85rem;
+  align-items: start;
+  margin-top: 1rem;
+}
+
+@container (max-width: 480px) {
+  .arch-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.arch-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.arch-detail {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.85rem;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.arch-detail-empty {
+  margin: auto;
+  text-align: center;
+}
+
+.arch-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.arch-detail-header code {
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.arch-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.arch-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text) 70%, transparent);
+}
+
+.arch-layer-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.8rem;
+}
+
+.arch-layer-picker .icon-button {
+  padding: 0.25rem;
+}
+
+.arch-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  background: transparent;
+  color: inherit;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.arch-nav-row:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  filter: none;
+}
+
+.arch-nav-row-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.arch-nav-row-name {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-tensor-row-muted {
+  margin: 0;
+  padding: 0.35rem 0.5rem;
+}
+
+/* Architecture flow diagram — a small, colorful, non-editable illustration
+   of how the whole stack connects (Embedding → every layer → Norm → LM
+   Head), distinct from the .arch-grid master-detail browser below it. */
+
+.arch-diagram {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 1rem 0.5rem;
+  margin: 0.75rem 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 2%, var(--surface));
+}
+
+.arch-diagram-layers {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.3rem;
+  row-gap: 0.6rem;
+}
+
+.arch-diagram-arrow {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--text) 30%, transparent);
+}
+
+/* .arch-diagram-layers aligns its columns to flex-start (top) since a
+   group's badge makes some columns taller than others — the arrows between
+   them need their own nudge down to stay level with the bars instead of
+   the badges. */
+.arch-diagram-layers .arch-diagram-arrow {
+  margin-top: 16px;
+}
+
+.arch-diagram-node {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.arch-diagram-node:hover {
+  transform: scale(1.12);
+  filter: none;
+}
+
+.arch-diagram-node-embedding,
+.arch-diagram-node-norm,
+.arch-diagram-node-lmhead {
+  height: 30px;
+  padding: 0 0.65rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.arch-diagram-node-embedding {
+  background: var(--accent);
+}
+
+.arch-diagram-node-norm {
+  background: var(--warn);
+}
+
+.arch-diagram-node-lmhead {
+  background: #d0447a;
+}
+
+/* A layer (or a run of dimensionally-identical layers, collapsed into one
+   group by ArchitectureDiagram's groupLayers) renders as a vertical bar —
+   the button is the whole clickable column (bar + badge), not just the bar
+   itself, for a bigger hit target. */
+.arch-diagram-layer-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.arch-diagram-layer-group:hover .arch-diagram-node-layer {
+  transform: scaleX(1.2);
+  filter: none;
+}
+
+.arch-diagram-layer-group-active .arch-diagram-node-layer {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.arch-diagram-node-layer {
+  display: block;
+  width: 16px;
+  height: 46px;
+  border-radius: 4px;
+  transition: transform 0.1s ease;
+}
+
+.arch-diagram-layer-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+
+/* Layer weight heatmap */
+
+.heatmap-panel {
+  margin-top: 0.75rem;
+}
+
+.heatmap-canvas {
+  width: 100%;
+  max-width: 400px;
+  aspect-ratio: 1;
+  display: block;
+  margin: 0 auto;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.heatmap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 0.6rem;
+  font-size: 0.76rem;
+  color: color-mix(in srgb, var(--text) 60%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.heatmap-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+.heatmap-swatch-neg {
+  background: var(--ok);
+}
+
+.heatmap-swatch-pos {
+  background: var(--accent);
+}
+
+/* Token probability visualizer */
+
+.tokprob-sequence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 1rem 0;
+}
+
+.tokprob-chip {
+  background: color-mix(in srgb, var(--accent) var(--tokprob-confidence, 0%), var(--surface));
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.82rem;
+  white-space: pre;
+}
+
+.tokprob-chip:hover {
+  filter: none;
+  border-color: var(--accent);
+}
+
+.tokprob-chip-active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tokprob-detail h4 {
+  font-size: 0.85rem;
+  margin: 0 0 0.6rem;
+}
+
+.tokprob-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.tokprob-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+}
+
+.tokprob-bar-token {
+  flex-shrink: 0;
+  width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.tokprob-bar-track {
+  flex: 1;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: 999px;
+  overflow: hidden;
+  height: 10px;
+}
+
+.tokprob-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.tokprob-bar-pct {
+  flex-shrink: 0;
+  width: 3.5rem;
+  text-align: right;
+  color: color-mix(in srgb, var(--text) 60%, transparent);
+  font-variant-numeric: tabular-nums;
 }

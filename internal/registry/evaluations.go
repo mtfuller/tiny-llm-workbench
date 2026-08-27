@@ -11,18 +11,27 @@ import (
 
 const evaluationMetadataFile = "definition.json"
 
-// Assertion is a deterministic check against an agent's reply text.
-// Type is one of "contains", "not_contains", "regex".
+// Assertion is a deterministic check against a reply's text. Type is one of
+// "contains", "not_contains", "regex", "json_schema", "similarity".
+//
+// Value's meaning depends on Type: the substring/pattern to check for
+// contains/not_contains/regex, the JSON Schema document for json_schema, or
+// the reference text to compare against for similarity. Threshold is only
+// used by "similarity" (the minimum required similarity ratio, in (0, 1]).
 type Assertion struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
+	Type      string  `json:"type"`
+	Value     string  `json:"value"`
+	Threshold float64 `json:"threshold,omitempty"`
 }
 
-// TestCase is one prompt + the assertions its reply must satisfy.
+// TestCase is one prompt + the assertions its reply must satisfy. Tags are
+// optional, freeform labels (only used by Benchmarks today, for filtering
+// the test case list — same role as Example.Tags for datasets).
 type TestCase struct {
 	ID         string      `json:"id"`
 	Prompt     string      `json:"prompt"`
 	Assertions []Assertion `json:"assertions"`
+	Tags       []string    `json:"tags,omitempty"`
 }
 
 // Evaluation is a registry-tracked test suite run against a set of agents.

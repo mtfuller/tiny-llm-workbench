@@ -132,7 +132,7 @@ func (r *Runner) chat(ctx context.Context, model string, messages []chatMessage)
 		return "", err
 	}
 
-	text, err := r.complete(ctx, srv.baseURL, messages)
+	result, err := r.complete(ctx, srv.baseURL, messages, 0, 0)
 	if err != nil {
 		return "", err
 	}
@@ -141,7 +141,53 @@ func (r *Runner) chat(ctx context.Context, model string, messages []chatMessage)
 	srv.lastUsed = time.Now()
 	r.mu.Unlock()
 
-	return text, nil
+	return result.text, nil
+}
+
+// TokenProbability is one candidate token considered at a generated
+// position, with its log-probability.
+type TokenProbability struct {
+	Token   string  `json:"token"`
+	LogProb float64 `json:"logprob"`
+}
+
+// TokenPosition is a single generated token, plus the top candidates the
+// model considered at that position — the model's "confidence" at each
+// generation step.
+type TokenPosition struct {
+	Token         string             `json:"token"`
+	LogProb       float64            `json:"logprob"`
+	TopCandidates []TokenProbability `json:"topCandidates"`
+}
+
+// TokenProbabilities generates up to maxTokens tokens from prompt and
+// returns, for each one, the top topN candidate tokens mlx_lm.server
+// considered and their log-probabilities. Backs the Models page's token
+// probability visualizer.
+func (r *Runner) TokenProbabilities(ctx context.Context, model, prompt string, maxTokens, topN int) ([]TokenPosition, error) {
+	srv, err := r.ensure(model)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := r.complete(ctx, srv.baseURL, []chatMessage{{Role: "user", Content: prompt}}, maxTokens, topN)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	srv.lastUsed = time.Now()
+	r.mu.Unlock()
+
+	positions := make([]TokenPosition, len(result.logprobs))
+	for i, e := range result.logprobs {
+		candidates := make([]TokenProbability, len(e.TopLogprobs))
+		for j, c := range e.TopLogprobs {
+			candidates[j] = TokenProbability{Token: c.Token, LogProb: c.LogProb}
+		}
+		positions[i] = TokenPosition{Token: e.Token, LogProb: e.LogProb, TopCandidates: candidates}
+	}
+	return positions, nil
 }
 
 // chatMessage/chatCompletionRequest/-Response mirror mlx_lm.server's
@@ -172,6 +218,12 @@ type chatCompletionRequest struct {
 	Messages          []chatMessage `json:"messages"`
 	MaxTokens         int           `json:"max_tokens"`
 	RepetitionPenalty float64       `json:"repetition_penalty"`
+	// TopLogprobs asks mlx_lm.server to return, for each generated token,
+	// the top-N candidate tokens it considered and their log-probabilities
+	// (see logprobEntry) — omitted (0) for a plain Generate/Chat call,
+	// which skips the extra computation entirely.
+	TopLogprobs int  `json:"top_logprobs,omitempty"`
+	Logprobs    bool `json:"logprobs,omitempty"`
 }
 
 // defaultMaxTokens caps how long a single completion can run. Confirmed by
@@ -190,16 +242,51 @@ const defaultMaxTokens = 256
 // on small models without visibly hurting coherent replies.
 const defaultRepetitionPenalty = 1.3
 
+// logprobCandidate is one candidate token in a logprobEntry's top_logprobs
+// list.
+type logprobCandidate struct {
+	Token   string  `json:"token"`
+	LogProb float64 `json:"logprob"`
+}
+
+// logprobEntry is one generated token position in the response's
+// logprobs.content array. mlx_lm.server (0.31.3) sets Token/LogProb here to
+// its single most-likely candidate — the same as the token actually
+// generated whenever decoding is greedy (mlx_lm.server's own default
+// temperature is 0.0, which TLW never overrides).
+type logprobEntry struct {
+	Token       string             `json:"token"`
+	LogProb     float64            `json:"logprob"`
+	TopLogprobs []logprobCandidate `json:"top_logprobs"`
+}
+
 type chatCompletionResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message  chatMessage `json:"message"`
+		Logprobs *struct {
+			Content []logprobEntry `json:"content"`
+		} `json:"logprobs"`
 	} `json:"choices"`
 }
 
-func (r *Runner) complete(ctx context.Context, baseURL string, messages []chatMessage) (string, error) {
-	maxTokens := r.MaxTokens
+// completionResult is complete's internal result — text for a plain
+// Generate/Chat call, logprobs additionally populated when the caller asked
+// for top_logprobs.
+type completionResult struct {
+	text     string
+	logprobs []logprobEntry
+}
+
+// complete posts messages to baseURL's /v1/chat/completions. maxTokens and
+// topLogprobs of 0 mean "use the Runner's own defaults" and "don't compute
+// logprobs" respectively — the latter is skipped by mlx_lm.server entirely
+// when omitted, so a plain chat reply doesn't pay for the extra computation.
+func (r *Runner) complete(ctx context.Context, baseURL string, messages []chatMessage, maxTokens, topLogprobs int) (completionResult, error) {
 	if maxTokens == 0 {
-		maxTokens = defaultMaxTokens
+		maxTokens = r.MaxTokens
+		if maxTokens == 0 {
+			maxTokens = defaultMaxTokens
+		}
 	}
 
 	repetitionPenalty := r.RepetitionPenalty
@@ -212,37 +299,44 @@ func (r *Runner) complete(ctx context.Context, baseURL string, messages []chatMe
 		Messages:          messages,
 		MaxTokens:         maxTokens,
 		RepetitionPenalty: repetitionPenalty,
+		TopLogprobs:       topLogprobs,
+		Logprobs:          topLogprobs > 0,
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return completionResult{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("build request: %w", err)
+		return completionResult{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("request mlx_lm.server: %w", err)
+		return completionResult{}, fmt.Errorf("request mlx_lm.server: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("mlx_lm.server returned status %d: %s", resp.StatusCode, respBody)
+		return completionResult{}, fmt.Errorf("mlx_lm.server returned status %d: %s", resp.StatusCode, respBody)
 	}
 
 	var completion chatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&completion); err != nil {
-		return "", fmt.Errorf("decode mlx_lm.server response: %w", err)
+		return completionResult{}, fmt.Errorf("decode mlx_lm.server response: %w", err)
 	}
 	if len(completion.Choices) == 0 {
-		return "", errors.New("mlx_lm.server returned no choices")
+		return completionResult{}, errors.New("mlx_lm.server returned no choices")
 	}
 
-	return completion.Choices[0].Message.Content, nil
+	choice := completion.Choices[0]
+	result := completionResult{text: choice.Message.Content}
+	if choice.Logprobs != nil {
+		result.logprobs = choice.Logprobs.Content
+	}
+	return result, nil
 }
 
 // ensure returns a ready server for model, starting one if none is running
