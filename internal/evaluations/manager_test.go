@@ -3,6 +3,7 @@ package evaluations
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 )
 
 type fakeEvaluationReader struct {
-	evals map[string]registry.Evaluation
-	err   error
+	evals    map[string]registry.Evaluation
+	versions map[string]map[int]registry.EvaluationVersion
+	err      error
 }
 
 func (f *fakeEvaluationReader) GetEvaluation(name string) (registry.Evaluation, error) {
@@ -28,6 +30,18 @@ func (f *fakeEvaluationReader) GetEvaluation(name string) (registry.Evaluation, 
 	return eval, nil
 }
 
+func (f *fakeEvaluationReader) GetEvaluationVersion(name string, version int) (registry.EvaluationVersion, error) {
+	byVersion, ok := f.versions[name]
+	if !ok {
+		return registry.EvaluationVersion{}, errors.New("no such evaluation")
+	}
+	v, ok := byVersion[version]
+	if !ok {
+		return registry.EvaluationVersion{}, errors.New("no such version")
+	}
+	return v, nil
+}
+
 // fakeAgentRunner replies to every SendMessage with the next canned reply
 // keyed by prompt, so different test cases can get different replies.
 type fakeAgentRunner struct {
@@ -35,7 +49,9 @@ type fakeAgentRunner struct {
 	startErr        error
 	sendErr         error
 	startedAgents   []string
+	startedInInst   []string // instanceIDs passed to StartRunInInstance
 	sentPrompts     []string
+	stoppedRunIDs   []string
 }
 
 func (f *fakeAgentRunner) StartRun(agentName string) (*agents.Run, error) {
@@ -46,6 +62,15 @@ func (f *fakeAgentRunner) StartRun(agentName string) (*agents.Run, error) {
 	return &agents.Run{ID: "run-" + agentName, AgentName: agentName}, nil
 }
 
+func (f *fakeAgentRunner) StartRunInInstance(agentName, instanceID string) (*agents.Run, error) {
+	f.startedAgents = append(f.startedAgents, agentName)
+	f.startedInInst = append(f.startedInInst, instanceID)
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
+	return &agents.Run{ID: "run-" + agentName, AgentName: agentName, InstanceID: instanceID}, nil
+}
+
 func (f *fakeAgentRunner) SendMessage(runID, message string) (agents.ChatMessage, error) {
 	f.sentPrompts = append(f.sentPrompts, message)
 	if f.sendErr != nil {
@@ -54,11 +79,22 @@ func (f *fakeAgentRunner) SendMessage(runID, message string) (agents.ChatMessage
 	return agents.ChatMessage{Role: "assistant", Content: f.repliesByPrompt[message]}, nil
 }
 
+func (f *fakeAgentRunner) StopRun(runID string) error {
+	f.stoppedRunIDs = append(f.stoppedRunIDs, runID)
+	return nil
+}
+
 type fakeEnvironmentLauncher struct {
 	launchResult environments.Instance
 	launchErr    error
 	launched     []string
 	stoppedIDs   []string
+
+	// toolOutputByCommand, if set, returns a canned output for a given
+	// command; commands not present return ("", nil).
+	toolOutputByCommand map[string]string
+	toolErrByCommand    map[string]error
+	ranCommands         []string
 }
 
 func (f *fakeEnvironmentLauncher) Launch(ctx context.Context, environmentName, instanceName string) (environments.Instance, error) {
@@ -71,14 +107,33 @@ func (f *fakeEnvironmentLauncher) Stop(ctx context.Context, instanceID string) e
 	return nil
 }
 
+func (f *fakeEnvironmentLauncher) RunToolSync(ctx context.Context, instanceID, command string) (string, error) {
+	f.ranCommands = append(f.ranCommands, command)
+	if f.toolErrByCommand != nil {
+		if err, ok := f.toolErrByCommand[command]; ok {
+			return f.toolOutputByCommand[command], err
+		}
+	}
+	return f.toolOutputByCommand[command], nil
+}
+
 func simpleEvaluation(name string) registry.Evaluation {
-	return registry.Evaluation{
-		Name: name,
+	return registry.Evaluation{Name: name, Version: 1}
+}
+
+func simpleVersion() registry.EvaluationVersion {
+	return registry.EvaluationVersion{
+		Version: 1,
 		TestCases: []registry.TestCase{
 			{ID: "tc1", Prompt: "say hi", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
 			{ID: "tc2", Prompt: "say bye", Assertions: []registry.Assertion{{Type: "contains", Value: "bye"}}},
 		},
 	}
+}
+
+func newTestManager(t *testing.T, evalReader evaluationReader, runner agentRunner, envs environmentLauncher) *Manager {
+	t.Helper()
+	return NewManager(context.Background(), evalReader, runner, envs, eventbus.New(), filepath.Join(t.TempDir(), "results"))
 }
 
 func waitForRunStatus(t *testing.T, m *Manager, id string, want Status, timeout time.Duration) *Run {
@@ -95,11 +150,14 @@ func waitForRunStatus(t *testing.T, m *Manager, id string, want Status, timeout 
 }
 
 func TestStartRunSucceedsWithMixedResults(t *testing.T) {
-	evalReader := &fakeEvaluationReader{evals: map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")}}
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")},
+		versions: map[string]map[int]registry.EvaluationVersion{"greeting": {1: simpleVersion()}},
+	}
 	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "see you later"}}
-	m := NewManager(context.Background(), evalReader, runner, &fakeEnvironmentLauncher{}, eventbus.New())
+	m := newTestManager(t, evalReader, runner, &fakeEnvironmentLauncher{})
 
-	run, err := m.StartRun("greeting", []string{"greeter"})
+	run, err := m.StartRun("greeting", 1, []string{"greeter"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -108,13 +166,13 @@ func TestStartRunSucceedsWithMixedResults(t *testing.T) {
 	}
 
 	finished := waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
-	if len(finished.AgentResults) != 1 {
-		t.Fatalf("finished.AgentResults = %+v, want 1 agent", finished.AgentResults)
+	if len(finished.Results) != 1 {
+		t.Fatalf("finished.Results = %+v, want 1 agent", finished.Results)
 	}
 
-	ar := finished.AgentResults[0]
+	ar := finished.Results[0]
 	if ar.AgentName != "greeter" || ar.Total != 2 || ar.Passed != 1 {
-		t.Errorf("AgentResult = %+v, want greeter with 1/2 passed (tc2's reply doesn't contain 'bye')", ar)
+		t.Errorf("RunResult = %+v, want greeter with 1/2 passed (tc2's reply doesn't contain 'bye')", ar)
 	}
 	if !ar.Results[0].Passed {
 		t.Errorf("Results[0] = %+v, want passed (reply contains 'hello')", ar.Results[0])
@@ -122,91 +180,245 @@ func TestStartRunSucceedsWithMixedResults(t *testing.T) {
 	if ar.Results[1].Passed {
 		t.Errorf("Results[1] = %+v, want failed (reply doesn't contain 'bye')", ar.Results[1])
 	}
+
+	// No Environment configured, so agents run via plain StartRun.
+	if len(runner.startedInInst) != 0 {
+		t.Errorf("runner.startedInInst = %v, want none — no Environment configured", runner.startedInInst)
+	}
 }
 
 func TestStartRunRequiresAgents(t *testing.T) {
-	m := NewManager(context.Background(), &fakeEvaluationReader{}, &fakeAgentRunner{}, &fakeEnvironmentLauncher{}, eventbus.New())
+	m := newTestManager(t, &fakeEvaluationReader{}, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
 
-	if _, err := m.StartRun("greeting", nil); err == nil {
+	if _, err := m.StartRun("greeting", 1, nil); err == nil {
 		t.Error("StartRun() error = nil, want an error when no agents are given")
 	}
 }
 
 func TestStartRunUnknownEvaluation(t *testing.T) {
 	evalReader := &fakeEvaluationReader{evals: map[string]registry.Evaluation{}}
-	m := NewManager(context.Background(), evalReader, &fakeAgentRunner{}, &fakeEnvironmentLauncher{}, eventbus.New())
+	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
 
-	if _, err := m.StartRun("does-not-exist", []string{"greeter"}); err == nil {
+	if _, err := m.StartRun("does-not-exist", 1, []string{"greeter"}); err == nil {
 		t.Error("StartRun() error = nil, want an error for an unknown evaluation")
 	}
 }
 
-func TestStartRunEmptyEvaluation(t *testing.T) {
-	evalReader := &fakeEvaluationReader{evals: map[string]registry.Evaluation{"empty": {Name: "empty"}}}
-	m := NewManager(context.Background(), evalReader, &fakeAgentRunner{}, &fakeEnvironmentLauncher{}, eventbus.New())
+func TestStartRunUnknownVersion(t *testing.T) {
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")},
+		versions: map[string]map[int]registry.EvaluationVersion{},
+	}
+	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
 
-	if _, err := m.StartRun("empty", []string{"greeter"}); err == nil {
-		t.Error("StartRun() error = nil, want an error for an evaluation with no test cases")
+	if _, err := m.StartRun("greeting", 1, []string{"greeter"}); err == nil {
+		t.Error("StartRun() error = nil, want an error for a version that hasn't been published")
 	}
 }
 
-func TestStartRunLaunchesAndStopsEnvironment(t *testing.T) {
-	eval := simpleEvaluation("greeting")
-	eval.Environment = "WebSearch"
-	evalReader := &fakeEvaluationReader{evals: map[string]registry.Evaluation{"greeting": eval}}
-	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
-	envs := &fakeEnvironmentLauncher{launchResult: environments.Instance{ID: "container-1"}}
-	m := NewManager(context.Background(), evalReader, runner, envs, eventbus.New())
+func TestStartRunEmptyVersion(t *testing.T) {
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"empty": {Name: "empty", Version: 1}},
+		versions: map[string]map[int]registry.EvaluationVersion{"empty": {1: {Version: 1}}},
+	}
+	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
 
-	run, err := m.StartRun("greeting", []string{"greeter"})
+	if _, err := m.StartRun("empty", 1, []string{"greeter"}); err == nil {
+		t.Error("StartRun() error = nil, want an error for a version with no test cases")
+	}
+}
+
+func TestRunTestCaseLaunchesSetupAndVerifyInSameInstance(t *testing.T) {
+	eval := registry.Evaluation{Name: "coding", Environment: "SoftwareDev", Version: 1}
+	ver := registry.EvaluationVersion{
+		Version: 1,
+		TestCases: []registry.TestCase{
+			{
+				ID:         "tc1",
+				Prompt:     "write hello.txt",
+				Setup:      []string{"mkdir -p /repo"},
+				Assertions: []registry.Assertion{{Type: "contains", Value: "done"}},
+				VerifyCommands: []registry.VerifyStep{
+					{Command: "cat /repo/hello.txt", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
+				},
+			},
+		},
+	}
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"coding": eval},
+		versions: map[string]map[int]registry.EvaluationVersion{"coding": {1: ver}},
+	}
+	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"write hello.txt": "done"}}
+	envs := &fakeEnvironmentLauncher{
+		launchResult:        environments.Instance{ID: "container-1"},
+		toolOutputByCommand: map[string]string{"cat /repo/hello.txt": "hello world"},
+	}
+	m := newTestManager(t, evalReader, runner, envs)
+
+	run, err := m.StartRun("coding", 1, []string{"coder"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 
 	finished := waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
-	if finished.InstanceID != "container-1" {
-		t.Errorf("finished.InstanceID = %q, want %q", finished.InstanceID, "container-1")
+	ar := finished.Results[0]
+	if ar.Passed != 1 || ar.Total != 1 {
+		t.Fatalf("RunResult = %+v, want 1/1 passed", ar)
 	}
-	if len(envs.launched) != 1 || envs.launched[0] != "WebSearch" {
-		t.Errorf("envs.launched = %v, want [WebSearch]", envs.launched)
+	tcResult := ar.Results[0]
+	if tcResult.InstanceID != "container-1" {
+		t.Errorf("TestCaseResult.InstanceID = %q, want %q", tcResult.InstanceID, "container-1")
+	}
+	if len(tcResult.VerifyResults) != 1 || !tcResult.VerifyResults[0].Passed {
+		t.Errorf("TestCaseResult.VerifyResults = %+v, want a single passing verify step", tcResult.VerifyResults)
+	}
+
+	// Setup ran before the agent's turn, and the agent's turn used the SAME
+	// instance Setup ran in (via StartRunInInstance), not a fresh one.
+	if len(envs.ranCommands) != 2 || envs.ranCommands[0] != "mkdir -p /repo" || envs.ranCommands[1] != "cat /repo/hello.txt" {
+		t.Errorf("envs.ranCommands = %v, want [mkdir -p /repo, cat /repo/hello.txt]", envs.ranCommands)
+	}
+	if len(runner.startedInInst) != 1 || runner.startedInInst[0] != "container-1" {
+		t.Errorf("runner.startedInInst = %v, want [container-1] — the agent must act in the same instance Setup/Verify use", runner.startedInInst)
+	}
+	if len(envs.launched) != 1 || envs.launched[0] != "SoftwareDev" {
+		t.Errorf("envs.launched = %v, want [SoftwareDev]", envs.launched)
 	}
 	if len(envs.stoppedIDs) != 1 || envs.stoppedIDs[0] != "container-1" {
-		t.Errorf("envs.stoppedIDs = %v, want [container-1]", envs.stoppedIDs)
+		t.Errorf("envs.stoppedIDs = %v, want [container-1] — Evaluations owns this instance's lifecycle", envs.stoppedIDs)
+	}
+	if len(runner.stoppedRunIDs) != 1 {
+		t.Errorf("runner.stoppedRunIDs = %v, want the agent run cleaned up too", runner.stoppedRunIDs)
 	}
 }
 
-func TestStartRunEnvironmentLaunchFailureFailsRun(t *testing.T) {
-	eval := simpleEvaluation("greeting")
-	eval.Environment = "WebSearch"
-	evalReader := &fakeEvaluationReader{evals: map[string]registry.Evaluation{"greeting": eval}}
-	envs := &fakeEnvironmentLauncher{launchErr: errors.New("docker daemon unreachable")}
-	m := NewManager(context.Background(), evalReader, &fakeAgentRunner{}, envs, eventbus.New())
+func TestRunTestCaseSetupCommandFailureFailsTestCaseWithoutRunningAgent(t *testing.T) {
+	eval := registry.Evaluation{Name: "coding", Environment: "SoftwareDev", Version: 1}
+	ver := registry.EvaluationVersion{
+		Version: 1,
+		TestCases: []registry.TestCase{
+			{ID: "tc1", Prompt: "write hello.txt", Setup: []string{"exit 1"}},
+		},
+	}
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"coding": eval},
+		versions: map[string]map[int]registry.EvaluationVersion{"coding": {1: ver}},
+	}
+	runner := &fakeAgentRunner{}
+	envs := &fakeEnvironmentLauncher{
+		launchResult:     environments.Instance{ID: "container-1"},
+		toolErrByCommand: map[string]error{"exit 1": errors.New("command exited with status 1")},
+	}
+	m := newTestManager(t, evalReader, runner, envs)
 
-	run, err := m.StartRun("greeting", []string{"greeter"})
+	run, err := m.StartRun("coding", 1, []string{"coder"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 
-	finished := waitForRunStatus(t, m, run.ID, StatusFailed, time.Second)
-	if finished.Error == "" {
-		t.Error("finished.Error is empty, want the launch failure recorded")
+	finished := waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
+	tcResult := finished.Results[0].Results[0]
+	if tcResult.Error == "" {
+		t.Error("TestCaseResult.Error is empty, want the setup failure recorded")
+	}
+	if len(runner.startedAgents) != 0 {
+		t.Errorf("runner.startedAgents = %v, want none — a failed setup must not start the agent", runner.startedAgents)
+	}
+	if len(envs.stoppedIDs) != 1 {
+		t.Errorf("envs.stoppedIDs = %v, want the instance still cleaned up despite the setup failure", envs.stoppedIDs)
+	}
+}
+
+func TestRunTestCaseSetupWithoutEnvironmentFailsWithClearError(t *testing.T) {
+	eval := registry.Evaluation{Name: "coding", Version: 1} // no Environment configured
+	ver := registry.EvaluationVersion{
+		Version:   1,
+		TestCases: []registry.TestCase{{ID: "tc1", Prompt: "write hello.txt", Setup: []string{"mkdir -p /repo"}}},
+	}
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"coding": eval},
+		versions: map[string]map[int]registry.EvaluationVersion{"coding": {1: ver}},
+	}
+	runner := &fakeAgentRunner{}
+	envs := &fakeEnvironmentLauncher{}
+	m := newTestManager(t, evalReader, runner, envs)
+
+	run, err := m.StartRun("coding", 1, []string{"coder"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	finished := waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
+	tcResult := finished.Results[0].Results[0]
+	if tcResult.Error == "" {
+		t.Error("TestCaseResult.Error is empty, want a clear misconfiguration error")
+	}
+	if len(envs.launched) != 0 {
+		t.Errorf("envs.launched = %v, want none — there's no Environment to launch", envs.launched)
+	}
+	if len(runner.startedAgents) != 0 {
+		t.Errorf("runner.startedAgents = %v, want none", runner.startedAgents)
+	}
+}
+
+func TestRunTestCaseVerifyCommandFailingAssertionFailsTestCaseEvenWithPassingReply(t *testing.T) {
+	eval := registry.Evaluation{Name: "coding", Environment: "SoftwareDev", Version: 1}
+	ver := registry.EvaluationVersion{
+		Version: 1,
+		TestCases: []registry.TestCase{
+			{
+				ID:         "tc1",
+				Prompt:     "write hello.txt",
+				Assertions: []registry.Assertion{{Type: "contains", Value: "done"}},
+				VerifyCommands: []registry.VerifyStep{
+					{Command: "cat /repo/hello.txt", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
+				},
+			},
+		},
+	}
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"coding": eval},
+		versions: map[string]map[int]registry.EvaluationVersion{"coding": {1: ver}},
+	}
+	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"write hello.txt": "done"}}
+	envs := &fakeEnvironmentLauncher{
+		launchResult:        environments.Instance{ID: "container-1"},
+		toolOutputByCommand: map[string]string{"cat /repo/hello.txt": "the file is empty"},
+	}
+	m := newTestManager(t, evalReader, runner, envs)
+
+	run, err := m.StartRun("coding", 1, []string{"coder"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	finished := waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
+	tcResult := finished.Results[0].Results[0]
+	if tcResult.Passed {
+		t.Error("TestCaseResult.Passed = true, want false — the verify command's assertion failed")
+	}
+	if len(tcResult.VerifyResults) != 1 || tcResult.VerifyResults[0].Passed {
+		t.Errorf("TestCaseResult.VerifyResults = %+v, want a single failing verify step", tcResult.VerifyResults)
 	}
 }
 
 func TestStartRunAgentStartFailureRecordsErrorPerTestCase(t *testing.T) {
-	evalReader := &fakeEvaluationReader{evals: map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")}}
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")},
+		versions: map[string]map[int]registry.EvaluationVersion{"greeting": {1: simpleVersion()}},
+	}
 	runner := &fakeAgentRunner{startErr: errors.New("no such agent")}
-	m := NewManager(context.Background(), evalReader, runner, &fakeEnvironmentLauncher{}, eventbus.New())
+	m := newTestManager(t, evalReader, runner, &fakeEnvironmentLauncher{})
 
-	run, err := m.StartRun("greeting", []string{"greeter"})
+	run, err := m.StartRun("greeting", 1, []string{"greeter"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 
 	finished := waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
-	ar := finished.AgentResults[0]
+	ar := finished.Results[0]
 	if ar.Passed != 0 || ar.Total != 2 {
-		t.Errorf("AgentResult = %+v, want 0/2 passed", ar)
+		t.Errorf("RunResult = %+v, want 0/2 passed", ar)
 	}
 	for _, r := range ar.Results {
 		if r.Error == "" {
@@ -216,18 +428,21 @@ func TestStartRunAgentStartFailureRecordsErrorPerTestCase(t *testing.T) {
 }
 
 func TestListRunsMostRecentFirst(t *testing.T) {
-	evalReader := &fakeEvaluationReader{evals: map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")}}
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")},
+		versions: map[string]map[int]registry.EvaluationVersion{"greeting": {1: simpleVersion()}},
+	}
 	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
-	m := NewManager(context.Background(), evalReader, runner, &fakeEnvironmentLauncher{}, eventbus.New())
+	m := newTestManager(t, evalReader, runner, &fakeEnvironmentLauncher{})
 
-	first, err := m.StartRun("greeting", []string{"greeter"})
+	first, err := m.StartRun("greeting", 1, []string{"greeter"})
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 	waitForRunStatus(t, m, first.ID, StatusSucceeded, time.Second)
 
 	time.Sleep(2 * time.Millisecond)
-	second, err := m.StartRun("greeting", []string{"greeter"})
+	second, err := m.StartRun("greeting", 1, []string{"greeter"})
 	if err != nil {
 		t.Fatalf("StartRun() (second) error = %v", err)
 	}
@@ -236,5 +451,40 @@ func TestListRunsMostRecentFirst(t *testing.T) {
 	runs := m.ListRuns()
 	if len(runs) != 2 || runs[0].ID != second.ID || runs[1].ID != first.ID {
 		t.Errorf("ListRuns() = %+v, want [second, first]", runs)
+	}
+}
+
+func TestListResultsPersistsAcrossRuns(t *testing.T) {
+	evalReader := &fakeEvaluationReader{
+		evals:    map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")},
+		versions: map[string]map[int]registry.EvaluationVersion{"greeting": {1: simpleVersion()}},
+	}
+	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
+	m := newTestManager(t, evalReader, runner, &fakeEnvironmentLauncher{})
+
+	run, err := m.StartRun("greeting", 1, []string{"greeter"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
+
+	results, err := m.ListResults("greeting")
+	if err != nil {
+		t.Fatalf("ListResults() error = %v", err)
+	}
+	if len(results) != 1 || results[0].AgentName != "greeter" || results[0].EvaluationVersion != 1 {
+		t.Errorf("ListResults() = %+v, want a single greeter/v1 result", results)
+	}
+}
+
+func TestListResultsEmptyForUnknownEvaluation(t *testing.T) {
+	m := newTestManager(t, &fakeEvaluationReader{}, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
+
+	results, err := m.ListResults("never-run")
+	if err != nil {
+		t.Fatalf("ListResults() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("ListResults() = %+v, want empty", results)
 	}
 }

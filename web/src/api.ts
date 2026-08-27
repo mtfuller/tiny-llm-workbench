@@ -283,20 +283,29 @@ export interface Assertion {
   threshold?: number
 }
 
+// VerifyStep is a shell command run in a test case's launched Environment
+// instance after the agent's turn finishes, checked with the same
+// assertion types used against a reply — Evaluations only. The command's
+// exit code is deliberately not itself pass/fail; only its assertions are.
+export interface VerifyStep {
+  command: string
+  assertions: Assertion[]
+}
+
 export interface TestCase {
   id: string
   prompt: string
+  // setup and verifyCommands are Evaluations-only (a Benchmark's test
+  // cases leave them unset — there's no Environment to prepare or verify):
+  // setup runs in sequence in the test case's launched instance before the
+  // agent's turn; verifyCommands run after, checking the environment's
+  // resulting state.
+  setup?: string[]
   assertions: Assertion[]
-  // tags are only used by Benchmarks today, for filtering the test case
-  // list — same role as Example.tags for datasets.
+  verifyCommands?: VerifyStep[]
+  // tags are only used by Benchmarks/Evaluations, for filtering the test
+  // case list — same role as Example.tags for datasets.
   tags?: string[]
-}
-
-export interface Evaluation {
-  name: string
-  environment?: string
-  testCases: TestCase[]
-  createdAt: string
 }
 
 export type EvalRunStatus = 'running' | 'succeeded' | 'failed'
@@ -306,30 +315,75 @@ export interface AssertionResult extends Assertion {
   error?: string
 }
 
-export interface TestCaseResult {
-  testCaseId: string
-  prompt: string
-  reply: string
+export interface VerifyStepResult {
+  command: string
+  output: string
   assertions: AssertionResult[]
   passed: boolean
   error?: string
 }
 
-export interface AgentResult {
+export interface TestCaseResult {
+  testCaseId: string
+  prompt: string
+  instanceId?: string
+  reply: string
+  assertions: AssertionResult[]
+  verifyResults?: VerifyStepResult[]
+  passed: boolean
+  error?: string
+}
+
+// Evaluation mirrors Benchmark's draft/published-version split exactly
+// (see Benchmark below) — Environment is the one difference: a live
+// setting (like an Agent's own Environment binding), not versioned
+// content, since it's not part of "what does this test suite check." For
+// a test case's setup/verifyCommands to mean anything, the agent(s) this
+// evaluation runs against should themselves be bound to this same
+// Environment — setup/verify run in the exact instance the agent's own
+// Tool nodes act in during its turn, not a second, separate container.
+export interface Evaluation {
+  name: string
+  environment?: string
+  version: number
+  testCases: TestCase[]
+  createdAt: string
+}
+
+// EvaluationVersion is an immutable snapshot of an evaluation's test
+// cases, created by publishEvaluationVersion. Once published, a version's
+// testCases never change.
+export interface EvaluationVersion {
+  version: number
+  testCases: TestCase[]
+  publishedAt: string
+}
+
+// EvaluationRunResult is one agent's durable outcome for a specific
+// version of an evaluation's test cases — running the same evaluation
+// version against the same agent again overwrites its previous result.
+// This is the persisted, queryable comparison data the evaluation detail
+// page's "run results" view sorts and lists; EvaluationRun below is only
+// the ephemeral in-progress/just-finished execution that produced it.
+export interface EvaluationRunResult {
+  evaluationVersion: number
   agentName: string
   results: TestCaseResult[]
   passed: number
   total: number
+  startedAt: string
+  finishedAt: string
+  error?: string
 }
 
 export interface EvaluationRun {
   id: string
   evaluationName: string
+  evaluationVersion: number
   agentNames: string[]
   environmentName?: string
-  instanceId?: string
   status: EvalRunStatus
-  agentResults: AgentResult[]
+  results: EvaluationRunResult[]
   startedAt: string
   finishedAt?: string
   error?: string
@@ -772,7 +826,10 @@ export function listEvaluations(): Promise<Evaluation[]> {
   return fetch('/api/evaluations').then(json<Evaluation[]>)
 }
 
-export function saveEvaluation(evaluation: { name: string; environment?: string; testCases: TestCase[] }): Promise<Evaluation> {
+// saveEvaluation creates a new evaluation with no test cases at all —
+// they're added afterward from its detail page, the same way a Benchmark
+// starts empty.
+export function saveEvaluation(evaluation: { name: string; environment?: string }): Promise<Evaluation> {
   return fetch('/api/evaluations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -788,12 +845,30 @@ export function deleteEvaluation(name: string): Promise<void> {
   return fetch(`/api/evaluations/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
 }
 
-export function startEvaluationRun(name: string, agentNames: string[]): Promise<EvaluationRun> {
+// updateEvaluationConfig updates only the Environment binding — a live
+// setting, not versioned content, so this never touches test cases.
+export function updateEvaluationConfig(name: string, environment: string): Promise<Evaluation> {
+  return fetch(`/api/evaluations/${encodeURIComponent(name)}/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ environment }),
+  }).then(json<Evaluation>)
+}
+
+export function startEvaluationRun(name: string, version: number, agentNames: string[]): Promise<EvaluationRun> {
   return fetch(`/api/evaluations/${encodeURIComponent(name)}/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agentNames }),
+    body: JSON.stringify({ version, agentNames }),
   }).then(json<EvaluationRun>)
+}
+
+export function publishEvaluationVersion(name: string): Promise<EvaluationVersion> {
+  return fetch(`/api/evaluations/${encodeURIComponent(name)}/versions`, { method: 'POST' }).then(json<EvaluationVersion>)
+}
+
+export function listEvaluationVersions(name: string): Promise<EvaluationVersion[]> {
+  return fetch(`/api/evaluation-versions/${encodeURIComponent(name)}`).then(json<EvaluationVersion[]>)
 }
 
 export function listEvaluationRuns(): Promise<EvaluationRun[]> {
@@ -802,6 +877,41 @@ export function listEvaluationRuns(): Promise<EvaluationRun[]> {
 
 export function getEvaluationRun(id: string): Promise<EvaluationRun> {
   return fetch(`/api/evaluations/runs/${encodeURIComponent(id)}`).then(json<EvaluationRun>)
+}
+
+export function getEvaluationResults(name: string): Promise<EvaluationRunResult[]> {
+  return fetch(`/api/evaluation-results/${encodeURIComponent(name)}`).then(json<EvaluationRunResult[]>)
+}
+
+export function addEvaluationTestCases(name: string, testCases: TestCase[]): Promise<TestCase[]> {
+  return fetch(`/api/evaluations/${encodeURIComponent(name)}/test-cases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ testCases }),
+  }).then(json<TestCase[]>)
+}
+
+export function updateEvaluationTestCase(name: string, index: number, testCase: TestCase): Promise<TestCase> {
+  return fetch(`/api/evaluations/${encodeURIComponent(name)}/test-cases/${index}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(testCase),
+  }).then(json<TestCase>)
+}
+
+export function deleteEvaluationTestCase(name: string, index: number): Promise<void> {
+  return fetch(`/api/evaluations/${encodeURIComponent(name)}/test-cases/${index}`, { method: 'DELETE' }).then(noContent)
+}
+
+export function generateEvaluationTestCases(
+  name: string,
+  req: { model: string; seedPrompt: string; assertions: Assertion[]; tags?: string[]; count: number },
+): Promise<TestCase[]> {
+  return fetch(`/api/evaluations/${encodeURIComponent(name)}/test-cases/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  }).then(json<TestCase[]>)
 }
 
 export function listBenchmarks(): Promise<Benchmark[]> {

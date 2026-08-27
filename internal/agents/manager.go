@@ -47,13 +47,18 @@ type toolReader interface {
 // unlike Phase 1's training runs, losing it on a `tlw serve` restart isn't
 // costly enough to warrant persisting to disk. InstanceID is set for the
 // run's lifetime if the agent has an Environment configured, so its Tool
-// nodes all share one running container across turns.
+// nodes all share one running container across turns. ownsInstance is
+// unexported (never serialized) — it's true only when StartRun itself
+// launched InstanceID; a run started via StartRunInInstance reuses an
+// instance some other caller (Evaluations) owns the lifecycle of, so
+// StopRun must not stop it out from under them.
 type Run struct {
-	ID         string        `json:"id"`
-	AgentName  string        `json:"agentName"`
-	InstanceID string        `json:"instanceId,omitempty"`
-	Messages   []ChatMessage `json:"messages"`
-	CreatedAt  time.Time     `json:"createdAt"`
+	ID           string        `json:"id"`
+	AgentName    string        `json:"agentName"`
+	InstanceID   string        `json:"instanceId,omitempty"`
+	Messages     []ChatMessage `json:"messages"`
+	CreatedAt    time.Time     `json:"createdAt"`
+	ownsInstance bool
 }
 
 // Manager starts chat runs against saved agents and drives each turn
@@ -115,6 +120,7 @@ func (m *Manager) StartRun(agentName string) (*Run, error) {
 			return nil, fmt.Errorf("launch environment %q: %w", agent.Environment, err)
 		}
 		run.InstanceID = instance.ID
+		run.ownsInstance = true
 	}
 
 	m.mu.Lock()
@@ -124,17 +130,45 @@ func (m *Manager) StartRun(agentName string) (*Run, error) {
 	return run, nil
 }
 
-// StopRun ends a chat session, stopping its Environment instance (if any).
-// It's idempotent: stopping an unknown or already-stopped run isn't an
-// error, since callers use this for best-effort cleanup (e.g. the Run
-// modal closing).
+// StartRunInInstance begins a new chat session against agentName, reusing
+// an already-launched Environment instance (instanceID) instead of
+// launching a fresh one — used by Evaluations, which owns instanceID's
+// whole lifecycle itself (it runs Setup commands before the agent's turn
+// and Verify commands after, all against the same container the agent's
+// Tool nodes act in during SendMessage). StopRun will not stop an instance
+// started this way; the caller remains responsible for it.
+func (m *Manager) StartRunInInstance(agentName, instanceID string) (*Run, error) {
+	if _, err := m.agents.GetAgent(agentName); err != nil {
+		return nil, fmt.Errorf("look up agent %q: %w", agentName, err)
+	}
+
+	run := &Run{
+		ID:         newRunID(),
+		AgentName:  agentName,
+		InstanceID: instanceID,
+		Messages:   []ChatMessage{},
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	m.mu.Lock()
+	m.runs[run.ID] = run
+	m.mu.Unlock()
+
+	return run, nil
+}
+
+// StopRun ends a chat session, stopping its Environment instance if this
+// run itself launched it (StartRun; not StartRunInInstance, whose instance
+// belongs to the caller). It's idempotent: stopping an unknown or
+// already-stopped run isn't an error, since callers use this for
+// best-effort cleanup (e.g. the Run modal closing).
 func (m *Manager) StopRun(runID string) error {
 	m.mu.Lock()
 	run, ok := m.runs[runID]
 	delete(m.runs, runID)
 	m.mu.Unlock()
 
-	if !ok || run.InstanceID == "" {
+	if !ok || run.InstanceID == "" || !run.ownsInstance {
 		return nil
 	}
 

@@ -564,6 +564,94 @@ choice:
   the real fused Qwen2 model, and confirmed both failed for the right, precisely-surfaced reasons against
   a real generated reply ("That's one wrong!" is neither similar to the reference text nor contains any
   JSON — the UI showed the exact `reply does not contain a JSON value` error from `internal/assertions`).
+
+  **2026-08-27 addendum — Evaluations rebuilt to mirror Benchmarks, plus real setup/verify scenarios:**
+  the user asked for Evaluations to become "like Benchmarks, but slightly different" — every test case
+  gets setup work to prepare the environment before the agent's turn, and assertions checked at the end —
+  so evaluators can build real software-dev/knowledge-work/office-work scenarios and verify the agent
+  actually completed them, not just what it said. Three real forks were surfaced via `AskUserQuestion`
+  first (all "Recommended" chosen): **setup is a list of literal shell commands** run in sequence (reusing
+  `RunToolSync`, the exact mechanism Tool nodes/the Playground already use) rather than a structured
+  catalog-tool-call list; **each test case gets its own fresh instance per agent** (not one shared instance
+  for the whole run) so one scenario's file changes can never leak into another's; and **assertions can
+  check environment state**, not just the agent's reply — a test case can declare `VerifyCommands` (a
+  shell command run after the agent's turn, checked with the same assertion types against its own output).
+  A fourth, deeper fork emerged only once the design got concrete: for setup/verify to mean anything they
+  have to run in the *same* container the agent's own Tool nodes act in during its turn — asked again, and
+  the user chose to **keep Evaluation's own separate `Environment` field** (rather than just reusing
+  whichever Environment the agent itself happens to be bound to), which meant `agents.Manager` needed a way
+  to run a turn inside an instance somebody else already launched.
+
+  `registry.TestCase` (shared with Benchmarks) gained `Setup []string` and `VerifyCommands []VerifyStep`
+  (`VerifyStep{Command string, Assertions []Assertion}`), both `omitempty` and left unset by Benchmarks —
+  there's no Environment to prepare or verify when testing a model directly. A `VerifyStep`'s command exit
+  code is deliberately *not* itself pass/fail (a command like `grep` legitimately exits non-zero for "not
+  found") — only its assertions against the captured output decide pass/fail, keeping the same
+  deterministic-assertion philosophy as everywhere else.
+
+  `registry.Evaluation` was rebuilt to mirror `registry.Benchmark`'s draft/published-version split exactly
+  (`Version int`, `EvaluationVersion` immutable snapshots, `PublishEvaluationVersion`/
+  `ListEvaluationVersions`/`GetEvaluationVersion`, `AddEvaluationTestCases`/`UpdateEvaluationTestCase`/
+  `DeleteEvaluationTestCase`) — named distinctly from Benchmark's identically-shaped methods only because
+  both types share the `*Registry` receiver in the same package, so `PublishVersion` etc. can't be declared
+  twice. `Environment` stays a live setting on the mutable `Evaluation`, not part of a published version's
+  snapshot — the same reasoning as an Agent's own `Environment` binding not being part of its graph.
+
+  `agents.Manager` gained `StartRunInInstance(agentName, instanceID string) (*Run, error)` — starts a chat
+  run reusing an already-launched instance instead of launching its own, for exactly this case. `Run`
+  gained an unexported `ownsInstance bool` (never serialized) so `StopRun` only calls `envs.Stop` for a run
+  that actually launched its own instance via `StartRun`; a `StartRunInInstance` run's instance is left
+  alone since the caller (Evaluations) owns its lifecycle. This is the one piece of this feature that isn't
+  a mechanical Benchmarks-mirror — a small, deliberate widening of `agents.Manager`'s contract to support a
+  caller-supplied instance.
+
+  `internal/evaluations.Manager.runTestCase` is the new core: per (agent, test case), it launches a fresh
+  instance from the evaluation's `Environment` (skipped entirely if unset — a test case that declares
+  setup/verify but has no Environment configured fails immediately with a clear misconfiguration error
+  rather than silently skipping them), runs `Setup` commands in it (a failed setup command fails the whole
+  test case without ever starting the agent — a broken starting scenario can't produce a trustworthy
+  result), starts the agent's turn via `StartRunInInstance` against that same instance so its Tool nodes
+  act on exactly what Setup prepared, checks the reply against `Assertions` as before, then runs
+  `VerifyCommands` against the same instance and checks each one's own assertions, before stopping the
+  instance and the agent run. Durable per-agent results now persist the same way Benchmarks' do
+  (`RunResult` keyed by `(EvaluationVersion, AgentName)`, upserted to `<registry
+  root>/evaluation-results/<name>.json`) — the ephemeral `Run`/`ListRuns`/`GetRun` API is now purely
+  progress-tracking, mirroring Benchmarks' split between live-run and durable-result data exactly.
+
+  New routes mirror Benchmarks' 1:1: `POST .../test-cases`, `PUT/DELETE .../test-cases/{index}`,
+  `POST .../test-cases/generate`, `POST .../versions`, `GET /api/evaluation-versions/{name}` (a sibling of
+  `/api/evaluations/{name}`, same ServeMux-ambiguity reasoning as `/api/benchmark-versions`), and
+  `GET /api/evaluation-results/{name}` (ditto, sibling of `/api/evaluations/{name}` rather than nested
+  under `/api/evaluations/{name}/results`, which would collide with `/api/evaluations/runs/{id}`). One new
+  route Benchmarks has no equivalent of: `PUT /api/evaluations/{name}/config`, updating only the
+  `Environment` binding — a live setting, so it never touches `TestCases`/`Version`/`CreatedAt`.
+
+  The frontend's `TestCaseEditor.tsx` lost its old bulk multi-test-case editor (`TestCaseFields`/
+  `DraftTestCase`/`emptyTestCase`/`toDraftTestCases`/`toPayloadTestCases`) — Evaluations moved to the same
+  per-test-case add/edit/delete modal pattern Benchmarks already uses (`AssertionFields` reused directly,
+  no wrapper), so the bulk editor had no remaining callers. It gained `VerifyStepFields` (a new component
+  nesting `AssertionFields` one level deeper, mirroring how a test case's own assertions nest, but one
+  step per verify command) plus `DraftVerifyStep`/`toDraftVerifySteps`/`toPayloadVerifySteps`. `Setup`
+  itself needed no shared component — it's a single plain multi-line textarea (one shell command per line)
+  local to `EvaluationDetail.tsx`'s test case modal. `EvaluationDetail.tsx` and `Evaluations.tsx` were
+  otherwise rebuilt to mirror `BenchmarkDetail.tsx`/`Benchmarks.tsx` structurally (versioned info card with
+  a publish button, Test cases/Run results tabs, sortable results table with the same
+  pass@1/assertion-rate/error-rate/avg-latency metrics computed client-side — extended here to also count
+  verify-step assertions, not just reply assertions), plus the Environment-binding edit control Benchmarks
+  has no equivalent of, and a result detail flow one level deeper than Benchmarks' (clicking a test case
+  card opens its own modal showing the reply, its assertions, and every verify step's command/output/
+  assertions, since a single inline card no longer has room for all of that).
+
+  Fully verified live end-to-end against a real Docker container — no mocks: bound a `file-writer` agent
+  (Environment `SoftwareDev`, graph Input → Tool `write_file` with `content: "{{Input}}"` → Output) to a
+  new evaluation also configured with `Environment: SoftwareDev`; the test case's prompt was "hello from
+  setup test", `Setup: ["mkdir -p /repo"]`, and one `VerifyCommand` (`cat /repo/output.txt`, asserting
+  `contains "hello from setup test"`), with zero reply assertions since `write_file` itself produces no
+  stdout. Published v1 and ran it against `file-writer`: the run succeeded, and the persisted result showed
+  the verify step's actual captured output — `"hello from setup test"` — reading back exactly what the
+  agent's Tool node had written into the *same* container Setup had just prepared, with the assertion
+  correctly passing. This is the core, previously-unbuilt claim of the whole feature (setup → agent action
+  → verify all sharing one real instance) confirmed against real infrastructure, not test doubles.
 - **Model visualization tools**: how the Models detail page inspects a model's actual weight file and
   probes its behavior — architecture topology, a per-tensor weight heatmap, and a token-probability
   ("confidence") tool.
@@ -621,8 +709,8 @@ choice:
   `Path` (or an unresolvable name) fails every one of its test cases with a recorded per-result error
   rather than failing the whole run, so a bad model selection doesn't hide the results for the other
   selected models in the comparison. Routes/handlers/frontend (`Benchmarks`/`BenchmarkDetail` pages,
-  reusing `TestCaseFields`/`toDraftTestCases`/`toPayloadTestCases` from `TestCaseEditor.tsx` — already
-  target-agnostic) directly mirror Evaluations' equivalents, including the results table shape (rows =
+  reusing `AssertionFields` from `TestCaseEditor.tsx` — already target-agnostic) directly mirror
+  Evaluations' equivalents, including the results table shape (rows =
   target, columns = test cases, a score column) since that layout already reads as a side-by-side model
   comparison without changes. Fully verified live: created a real benchmark, ran it against the real
   fused Qwen2 model over a real `mlx_lm.server` subprocess, and got back its actual generated reply

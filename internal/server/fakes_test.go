@@ -523,6 +523,27 @@ type fakeEvaluationStore struct {
 	getErr    error
 	deleteErr error
 	deleted   []string
+
+	updateEnvErr    error
+	updatedEnv      string
+	updatedEnvEvals []string
+
+	addTestCasesErr error
+	addedTestCases  [][]registry.TestCase
+
+	updateTestCaseErr error
+	updatedTestCase   registry.TestCase
+	updatedIndex      int
+
+	deleteTestCaseErr error
+	deletedIndex      int
+
+	publishErr    error
+	publishResult registry.EvaluationVersion
+	published     []string
+
+	versions    []registry.EvaluationVersion
+	versionsErr error
 }
 
 func (f *fakeEvaluationStore) ListEvaluations() ([]registry.Evaluation, error) {
@@ -549,6 +570,53 @@ func (f *fakeEvaluationStore) DeleteEvaluation(name string) error {
 	return nil
 }
 
+func (f *fakeEvaluationStore) UpdateEnvironment(name, environment string) (registry.Evaluation, error) {
+	if f.updateEnvErr != nil {
+		return registry.Evaluation{}, f.updateEnvErr
+	}
+	f.updatedEnvEvals = append(f.updatedEnvEvals, name)
+	f.updatedEnv = environment
+	f.get.Environment = environment
+	return f.get, nil
+}
+
+func (f *fakeEvaluationStore) AddEvaluationTestCases(evaluationName string, tcs []registry.TestCase) error {
+	if f.addTestCasesErr != nil {
+		return f.addTestCasesErr
+	}
+	f.addedTestCases = append(f.addedTestCases, tcs)
+	return nil
+}
+
+func (f *fakeEvaluationStore) UpdateEvaluationTestCase(evaluationName string, index int, tc registry.TestCase) error {
+	if f.updateTestCaseErr != nil {
+		return f.updateTestCaseErr
+	}
+	f.updatedIndex = index
+	f.updatedTestCase = tc
+	return nil
+}
+
+func (f *fakeEvaluationStore) DeleteEvaluationTestCase(evaluationName string, index int) error {
+	if f.deleteTestCaseErr != nil {
+		return f.deleteTestCaseErr
+	}
+	f.deletedIndex = index
+	return nil
+}
+
+func (f *fakeEvaluationStore) PublishEvaluationVersion(evaluationName string) (registry.EvaluationVersion, error) {
+	if f.publishErr != nil {
+		return registry.EvaluationVersion{}, f.publishErr
+	}
+	f.published = append(f.published, evaluationName)
+	return f.publishResult, nil
+}
+
+func (f *fakeEvaluationStore) ListEvaluationVersions(evaluationName string) ([]registry.EvaluationVersion, error) {
+	return f.versions, f.versionsErr
+}
+
 type fakeEvaluationManager struct {
 	startResult *evaluations.Run
 	startErr    error
@@ -558,9 +626,12 @@ type fakeEvaluationManager struct {
 
 	getResult *evaluations.Run
 	getOK     bool
+
+	results    []evaluations.RunResult
+	resultsErr error
 }
 
-func (f *fakeEvaluationManager) StartRun(evaluationName string, agentNames []string) (*evaluations.Run, error) {
+func (f *fakeEvaluationManager) StartRun(evaluationName string, version int, agentNames []string) (*evaluations.Run, error) {
 	f.started = append(f.started, evaluationName)
 	return f.startResult, f.startErr
 }
@@ -571,6 +642,10 @@ func (f *fakeEvaluationManager) ListRuns() []*evaluations.Run {
 
 func (f *fakeEvaluationManager) GetRun(id string) (*evaluations.Run, bool) {
 	return f.getResult, f.getOK
+}
+
+func (f *fakeEvaluationManager) ListResults(evaluationName string) ([]evaluations.RunResult, error) {
+	return f.results, f.resultsErr
 }
 
 type fakeBenchmarkStore struct {

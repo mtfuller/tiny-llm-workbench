@@ -33,9 +33,13 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
   vector store — consistent with the rest of TLW's deterministic, non-LLM-graded decision points.
 - **Agents** — Design agents visually on a canvas: connect prompt, model, tool, knowledge, decision, and
   input/output nodes into a workflow. Each agent can target a specific Environment (for its tool nodes).
-- **Evaluations** — Define test suites against your agents: starting environment state, an initial
-  prompt, and assertions to check. TLW ships with a tiny LLM fine-tuned to generate evaluation test
-  variations from a single example, and lets you compare results across agents.
+- **Evaluations** — Define versioned test suites against your agents: a prompt, optional setup commands
+  to prepare a realistic scenario (seed files, init a repo) in the agent's own Environment before its
+  turn, assertions on the reply, and optional verify commands checking the environment's resulting state
+  afterward — build real software-dev, knowledge-work, or office-work scenarios and see whether an agent
+  actually completed the task, not just what it said. Publish versions, run against multiple agents, and
+  compare durable pass@1/assertion-rate/latency results across runs. TLW ships with a tiny LLM
+  fine-tuned to generate test prompt variations from a single example.
 - **Benchmarks** — Define test suites (a prompt plus assertions) run directly against a set of models,
   no agent or environment involved — the main way to compare how different models actually perform.
 
@@ -107,14 +111,23 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         all work end-to-end.
 - [x] **Phase 4 — Evaluations**
   - [x] Add an Evaluations page to the navbar
-  - [x] Define tests (starting state, prompt, assertions) against a set of agents in one environment —
-        assertions are deterministic (`contains`/`not_contains`/`regex`) checked against an agent's
-        reply, not LLM-graded. An evaluation's optional Environment is really launched for the run's
-        duration (proving the Phase 2 plumbing), but agents can't act on it yet — see the Phase 3 note
-        on Environments not being wired to agent execution.
+  - [x] Define tests (prompt, assertions) against a set of agents in one environment — assertions are
+        deterministic (`contains`/`not_contains`/`regex`/`json_schema`/`similarity`) checked against an
+        agent's reply, not LLM-graded.
   - [x] Run evaluations and compare agent performance — fully verified live: created a real evaluation,
         ran it against a real agent backed by a real local MLX model, and got a live pass/fail
         comparison table with a per-agent score.
+  - [x] Rebuilt to mirror Benchmarks: draft/publish versioning (a run always targets an immutable
+        published version), durable per-agent results across runs, and per-test-case setup/verify
+        commands so a test case can prepare a realistic scenario (setup commands run before the agent's
+        turn) and check the environment's resulting state afterward (verify commands with their own
+        assertions), not just the reply — the point being to actually verify a software-dev/
+        knowledge-work/office-work task got done, not just what the agent said about it. Setup, the
+        agent's own Tool-node actions, and verify commands all run in the exact same freshly-launched
+        Environment instance for that (agent, test case) pair. Fully verified live against a real Docker
+        container: an agent's Tool node wrote a value into a file inside a container a test case's setup
+        step had just prepared, and the test case's verify command read that exact value back out of the
+        same container, with its assertion correctly passing.
 
 Check off items as they land — this list is the source of truth for "what's actually built" and future
 agent sessions rely on it being current. See [CLAUDE.md](CLAUDE.md) for how it's kept in sync.

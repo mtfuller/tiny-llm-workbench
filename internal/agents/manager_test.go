@@ -194,6 +194,53 @@ func TestStopRunUnknownRunIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestStartRunInInstanceReusesGivenInstance(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
+	envs := &fakeEnvironmentRunner{}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, &fakeEnvironmentReader{}, &fakeToolReader{}, &fakeKnowledgeReader{}, eventbus.New())
+
+	run, err := m.StartRunInInstance("greeter", "eval-container-1")
+	if err != nil {
+		t.Fatalf("StartRunInInstance() error = %v", err)
+	}
+	if run.InstanceID != "eval-container-1" {
+		t.Errorf("run.InstanceID = %q, want %q", run.InstanceID, "eval-container-1")
+	}
+	if len(envs.launched) != 0 {
+		t.Errorf("envs.launched = %v, want none — StartRunInInstance must not launch its own instance", envs.launched)
+	}
+}
+
+func TestStartRunInInstanceUnknownAgent(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{}}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, &fakeToolReader{}, &fakeKnowledgeReader{}, eventbus.New())
+
+	if _, err := m.StartRunInInstance("does-not-exist", "container-1"); err == nil {
+		t.Error("StartRunInInstance() error = nil, want an error for an unknown agent")
+	}
+}
+
+func TestStopRunDoesNotStopAnInstanceItDidNotLaunch(t *testing.T) {
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
+	envs := &fakeEnvironmentRunner{}
+	m := NewManager(context.Background(), agents, &fakeLLM{}, envs, &fakeEnvironmentReader{}, &fakeToolReader{}, &fakeKnowledgeReader{}, eventbus.New())
+
+	run, err := m.StartRunInInstance("greeter", "eval-container-1")
+	if err != nil {
+		t.Fatalf("StartRunInInstance() error = %v", err)
+	}
+
+	if err := m.StopRun(run.ID); err != nil {
+		t.Fatalf("StopRun() error = %v", err)
+	}
+	if len(envs.stoppedIDs) != 0 {
+		t.Errorf("envs.stoppedIDs = %v, want none stopped — the caller (Evaluations) owns this instance's lifecycle", envs.stoppedIDs)
+	}
+	if _, ok := m.GetRun(run.ID); ok {
+		t.Error("GetRun() found a run after StopRun(), want it removed from the in-memory run map regardless")
+	}
+}
+
 func TestSendMessageSuccess(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{"greeter": {Name: "greeter", Graph: linearGraph()}}}
 	llm := &fakeLLM{responses: []string{"hello there!"}}

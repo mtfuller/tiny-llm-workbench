@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react'
-import type { Assertion, AssertionType, TestCase } from './api'
+import type { Assertion, AssertionType, VerifyStep } from './api'
 
 export interface DraftAssertion {
   type: AssertionType
@@ -9,19 +9,10 @@ export interface DraftAssertion {
   threshold?: number
 }
 
-export interface DraftTestCase {
-  prompt: string
-  assertions: DraftAssertion[]
-}
-
 const DEFAULT_SIMILARITY_THRESHOLD = 0.85
 
 export function emptyAssertion(): DraftAssertion {
   return { type: 'contains', value: '' }
-}
-
-export function emptyTestCase(): DraftTestCase {
-  return { prompt: '', assertions: [emptyAssertion()] }
 }
 
 // toDraftAssertions seeds the assertion editor from a saved test case's
@@ -29,13 +20,6 @@ export function emptyTestCase(): DraftTestCase {
 export function toDraftAssertions(assertions: Assertion[]): DraftAssertion[] {
   if (assertions.length === 0) return [emptyAssertion()]
   return assertions.map((a) => ({ type: a.type, value: a.value, threshold: a.threshold }))
-}
-
-// toDraftTestCases seeds the editor from a saved evaluation/benchmark's test
-// cases.
-export function toDraftTestCases(testCases: TestCase[]): DraftTestCase[] {
-  if (testCases.length === 0) return [emptyTestCase()]
-  return testCases.map((tc) => ({ prompt: tc.prompt, assertions: toDraftAssertions(tc.assertions) }))
 }
 
 function toPayloadAssertion(a: DraftAssertion): Assertion {
@@ -52,16 +36,29 @@ export function toPayloadAssertions(drafts: DraftAssertion[]): Assertion[] {
   return drafts.filter((a) => a.value.trim()).map(toPayloadAssertion)
 }
 
-// toPayloadTestCases drops blank test cases/assertions and assigns stable
-// ids, ready to send to saveEvaluation/saveBenchmark.
-export function toPayloadTestCases(drafts: DraftTestCase[]): TestCase[] {
+// DraftVerifyStep/emptyVerifyStep/VerifyStepFields are Evaluations-only —
+// a Benchmark's test cases have no Environment to verify against.
+export interface DraftVerifyStep {
+  command: string
+  assertions: DraftAssertion[]
+}
+
+export function emptyVerifyStep(): DraftVerifyStep {
+  return { command: '', assertions: [emptyAssertion()] }
+}
+
+// toDraftVerifySteps seeds the verify-step editor from a saved test case's
+// verifyCommands.
+export function toDraftVerifySteps(steps: VerifyStep[] | undefined): DraftVerifyStep[] {
+  return (steps ?? []).map((s) => ({ command: s.command, assertions: toDraftAssertions(s.assertions) }))
+}
+
+// toPayloadVerifySteps drops steps with a blank command, ready to attach to
+// a test case.
+export function toPayloadVerifySteps(drafts: DraftVerifyStep[]): VerifyStep[] {
   return drafts
-    .filter((tc) => tc.prompt.trim())
-    .map((tc, i) => ({
-      id: `tc-${i}`,
-      prompt: tc.prompt.trim(),
-      assertions: toPayloadAssertions(tc.assertions),
-    }))
+    .filter((s) => s.command.trim())
+    .map((s) => ({ command: s.command.trim(), assertions: toPayloadAssertions(s.assertions) }))
 }
 
 // formatAssertion renders a one-line, human-readable summary of an
@@ -89,10 +86,9 @@ interface AssertionFieldsProps {
 }
 
 // AssertionFields renders the repeated assertion rows (type + value +
-// similarity threshold) for a single test case's assertions — shared
-// between TestCaseFields (the multi-test-case bulk editor used by
-// Evaluations) and any single-test-case editor (Benchmarks' add/edit/
-// generate modals).
+// similarity threshold) for a single test case's (or verify step's)
+// assertions — shared by every add/edit/generate modal in both Evaluations
+// and Benchmarks.
 export function AssertionFields({ assertions, onChange }: AssertionFieldsProps) {
   const updateAssertion = (aIndex: number, patch: Partial<DraftAssertion>) => {
     onChange(assertions.map((a, ai) => (ai === aIndex ? { ...a, ...patch } : a)))
@@ -168,48 +164,48 @@ export function AssertionFields({ assertions, onChange }: AssertionFieldsProps) 
   )
 }
 
-interface TestCaseFieldsProps {
-  testCases: DraftTestCase[]
-  onChange: Dispatch<SetStateAction<DraftTestCase[]>>
+interface VerifyStepFieldsProps {
+  steps: DraftVerifyStep[]
+  onChange: Dispatch<SetStateAction<DraftVerifyStep[]>>
 }
 
-// TestCaseFields renders the repeated "test case card" editing UI (prompt +
-// assertion rows) for editing several test cases at once — used by
-// Evaluations' create/edit flow.
-export function TestCaseFields({ testCases, onChange }: TestCaseFieldsProps) {
-  const updateTestCase = (i: number, patch: Partial<DraftTestCase>) => {
-    onChange((prev) => prev.map((tc, idx) => (idx === i ? { ...tc, ...patch } : tc)))
+// VerifyStepFields renders the repeated "verify step card" editing UI
+// (command + nested assertion rows) for a test case's post-turn
+// environment-state checks — Evaluations only, mirrors how AssertionFields
+// nests inside a test case but one level deeper (each step has its own
+// assertions).
+export function VerifyStepFields({ steps, onChange }: VerifyStepFieldsProps) {
+  const updateStep = (i: number, patch: Partial<DraftVerifyStep>) => {
+    onChange((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)))
   }
 
-  const addTestCase = () => onChange((prev) => [...prev, emptyTestCase()])
-  const removeTestCase = (i: number) => onChange((prev) => prev.filter((_, idx) => idx !== i))
+  const addStep = () => onChange((prev) => [...prev, emptyVerifyStep()])
+  const removeStep = (i: number) => onChange((prev) => prev.filter((_, idx) => idx !== i))
 
   return (
     <>
-      {testCases.map((tc, tcIndex) => (
-        <div key={tcIndex} className="test-case-editor">
+      {steps.map((step, i) => (
+        <div key={i} className="test-case-editor">
           <div className="page-header">
-            <strong>Test case {tcIndex + 1}</strong>
-            {testCases.length > 1 && (
-              <button type="button" className="danger-button" onClick={() => removeTestCase(tcIndex)}>
-                Remove
-              </button>
-            )}
+            <strong>Verify step {i + 1}</strong>
+            <button type="button" className="danger-button" onClick={() => removeStep(i)}>
+              Remove
+            </button>
           </div>
           <label>
-            Prompt
+            Command
             <input
               type="text"
-              placeholder="say hello"
-              value={tc.prompt}
-              onChange={(e) => updateTestCase(tcIndex, { prompt: e.target.value })}
+              placeholder="cat /repo/output.txt"
+              value={step.command}
+              onChange={(e) => updateStep(i, { command: e.target.value })}
             />
           </label>
-          <AssertionFields assertions={tc.assertions} onChange={(assertions) => updateTestCase(tcIndex, { assertions })} />
+          <AssertionFields assertions={step.assertions} onChange={(assertions) => updateStep(i, { assertions })} />
         </div>
       ))}
-      <button type="button" className="button-secondary" onClick={addTestCase}>
-        + Test case
+      <button type="button" className="button-secondary" onClick={addStep}>
+        + Verify step
       </button>
     </>
   )

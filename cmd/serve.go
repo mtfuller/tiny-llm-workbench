@@ -87,7 +87,7 @@ URL in a browser. Stop it with Ctrl+C.`,
 
 		agentsMgr := agents.NewManager(ctx, reg, runner, environmentsMgr, reg, reg, reg, bus)
 
-		evaluationsMgr := evaluations.NewManager(ctx, reg, agentsMgr, environmentsMgr, bus)
+		evaluationsMgr := evaluations.NewManager(ctx, reg, agentsMgr, environmentsMgr, bus, filepath.Join(reg.Root(), "evaluation-results"))
 
 		benchmarksMgr := benchmarks.NewManager(ctx, reg, reg, runner, bus, filepath.Join(reg.Root(), "benchmark-results"))
 

@@ -1,18 +1,18 @@
 import { Plus, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { deleteEvaluation, listEnvironments, listEvaluations, saveEvaluation, type Environment, type Evaluation } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import Modal from '../Modal'
 import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
-import { emptyTestCase, TestCaseFields, toPayloadTestCases, type DraftTestCase } from '../TestCaseEditor'
 import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
 
 function Evaluations() {
   const confirm = useConfirm()
   const showToast = useToast()
+  const navigate = useNavigate()
   const [evaluations, setEvaluations] = useState<Evaluation[] | null>(null)
   const [environments, setEnvironments] = useState<Environment[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -46,20 +46,16 @@ function Evaluations() {
 
   useEffect(resetPage, [search, resetPage])
 
-  const handleCreate = async (name: string, environment: string, testCases: DraftTestCase[]) => {
-    const payloadTestCases = toPayloadTestCases(testCases)
-
-    if (payloadTestCases.length === 0) {
-      setCreateError('At least one test case with a prompt is required.')
-      return
-    }
-
+  const handleCreate = async (name: string, environment: string) => {
     setCreating(true)
     setCreateError(null)
     try {
-      await saveEvaluation({ name, environment: environment || undefined, testCases: payloadTestCases })
+      await saveEvaluation({ name, environment: environment || undefined })
       setCreateOpen(false)
-      reload()
+      // A brand-new evaluation has no test cases yet — send the user
+      // straight to its detail page to add some, rather than leaving them
+      // on the list looking at an empty row.
+      navigate(`/evaluations/${encodeURIComponent(name)}`)
     } catch (err) {
       setCreateError((err as Error).message)
     } finally {
@@ -89,8 +85,9 @@ function Evaluations() {
         <h2>Evaluations</h2>
       </div>
       <p className="hint">
-        Define test cases (a prompt plus assertions on the reply) and run them against a set of agents
-        to compare how they perform.
+        Define test cases — a prompt, optional setup commands to prepare a scenario, and assertions on
+        the reply and the environment's resulting state — and run them against a set of agents to see how
+        well they actually complete real software-dev, knowledge-work, or office-work tasks.
       </p>
 
       <div className="panel panel-flush">
@@ -123,7 +120,7 @@ function Evaluations() {
 
         {!error && evaluations === null && (
           <div className="panel-body">
-            <TableSkeleton columns={4} />
+            <TableSkeleton columns={5} />
           </div>
         )}
 
@@ -145,6 +142,7 @@ function Evaluations() {
               <tr>
                 <th>Name</th>
                 <th>Environment</th>
+                <th>Version</th>
                 <th>Test cases</th>
                 <th></th>
               </tr>
@@ -156,6 +154,7 @@ function Evaluations() {
                     <Link to={`/evaluations/${encodeURIComponent(eval_.name)}`}>{eval_.name}</Link>
                   </td>
                   <td>{eval_.environment || '—'}</td>
+                  <td>v{eval_.version}</td>
                   <td>{eval_.testCases.length}</td>
                   <td className="row-actions">
                     <button
@@ -202,19 +201,18 @@ interface CreateEvaluationModalProps {
   environments: Environment[]
   creating: boolean
   error: string | null
-  onCreate: (name: string, environment: string, testCases: DraftTestCase[]) => void
+  onCreate: (name: string, environment: string) => void
   onClose: () => void
 }
 
 function CreateEvaluationModal({ environments, creating, error, onCreate, onClose }: CreateEvaluationModalProps) {
   const [name, setName] = useState('')
   const [environment, setEnvironment] = useState('')
-  const [testCases, setTestCases] = useState<DraftTestCase[]>([emptyTestCase()])
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
-    onCreate(name.trim(), environment, testCases)
+    onCreate(name.trim(), environment)
   }
 
   return (
@@ -234,11 +232,11 @@ function CreateEvaluationModal({ environments, creating, error, onCreate, onClos
               </option>
             ))}
           </select>
+          <span className="field-hint">
+            Needed only if a test case's setup/verify commands should run against a real environment.
+          </span>
         </label>
-
-        <div className="test-case-list">
-          <TestCaseFields testCases={testCases} onChange={setTestCases} />
-        </div>
+        <p className="hint">You'll add test cases on the evaluation's own page next.</p>
 
         {error && <p className="error">{error}</p>}
         <div className="row-actions confirm-actions">

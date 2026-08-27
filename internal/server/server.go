@@ -128,13 +128,20 @@ type evaluationStore interface {
 	SaveEvaluation(e registry.Evaluation) error
 	GetEvaluation(name string) (registry.Evaluation, error)
 	DeleteEvaluation(name string) error
+	UpdateEnvironment(name, environment string) (registry.Evaluation, error)
+	AddEvaluationTestCases(evaluationName string, tcs []registry.TestCase) error
+	UpdateEvaluationTestCase(evaluationName string, index int, tc registry.TestCase) error
+	DeleteEvaluationTestCase(evaluationName string, index int) error
+	PublishEvaluationVersion(evaluationName string) (registry.EvaluationVersion, error)
+	ListEvaluationVersions(evaluationName string) ([]registry.EvaluationVersion, error)
 }
 
 // evaluationManager is the subset of evaluations.Manager the server needs.
 type evaluationManager interface {
-	StartRun(evaluationName string, agentNames []string) (*evaluations.Run, error)
+	StartRun(evaluationName string, version int, agentNames []string) (*evaluations.Run, error)
 	ListRuns() []*evaluations.Run
 	GetRun(id string) (*evaluations.Run, bool)
+	ListResults(evaluationName string) ([]evaluations.RunResult, error)
 }
 
 // benchmarkStore is the subset of registry.Registry the server needs for
@@ -261,9 +268,24 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/evaluations", saveEvaluationHandler(deps.Evaluations))
 	mux.HandleFunc("GET /api/evaluations/{name}", getEvaluationHandler(deps.Evaluations))
 	mux.HandleFunc("DELETE /api/evaluations/{name}", deleteEvaluationHandler(deps.Evaluations))
+	mux.HandleFunc("PUT /api/evaluations/{name}/config", updateEvaluationConfigHandler(deps.Evaluations))
+	mux.HandleFunc("POST /api/evaluations/{name}/test-cases", addEvaluationTestCasesHandler(deps.Evaluations))
+	mux.HandleFunc("PUT /api/evaluations/{name}/test-cases/{index}", updateEvaluationTestCaseHandler(deps.Evaluations))
+	mux.HandleFunc("DELETE /api/evaluations/{name}/test-cases/{index}", deleteEvaluationTestCaseHandler(deps.Evaluations))
+	mux.HandleFunc("POST /api/evaluations/{name}/test-cases/generate", generateEvaluationTestCasesHandler(deps.Evaluations, deps.TestCaseGen))
+	mux.HandleFunc("POST /api/evaluations/{name}/versions", publishEvaluationVersionHandler(deps.Evaluations))
+	// A sibling of /api/evaluations/{name}, not nested (/api/evaluations/{name}/versions), for the same
+	// ServeMux-ambiguity reason as /api/evaluation-results/{name} below.
+	mux.HandleFunc("GET /api/evaluation-versions/{name}", listEvaluationVersionsHandler(deps.Evaluations))
 	mux.HandleFunc("POST /api/evaluations/{name}/runs", startEvaluationRunHandler(deps.EvalRuns))
 	mux.HandleFunc("GET /api/evaluations/runs", listEvaluationRunsHandler(deps.EvalRuns))
 	mux.HandleFunc("GET /api/evaluations/runs/{id}", getEvaluationRunHandler(deps.EvalRuns))
+	// A sibling of /api/evaluations/{name} rather than nested under it
+	// (/api/evaluations/{name}/results) because that shape is genuinely
+	// ambiguous with /api/evaluations/runs/{id} to Go's ServeMux — both are
+	// 2-segment GET patterns with the wildcard in a different position;
+	// e.g. "/api/evaluations/runs/results" would match either.
+	mux.HandleFunc("GET /api/evaluation-results/{name}", listEvaluationResultsHandler(deps.EvalRuns))
 	mux.HandleFunc("GET /api/benchmarks", listBenchmarksHandler(deps.Benchmarks))
 	mux.HandleFunc("POST /api/benchmarks", saveBenchmarkHandler(deps.Benchmarks))
 	mux.HandleFunc("GET /api/benchmarks/{name}", getBenchmarkHandler(deps.Benchmarks))

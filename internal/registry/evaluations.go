@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const evaluationMetadataFile = "definition.json"
+const (
+	evaluationMetadataFile = "definition.json"
+	evaluationVersionsFile = "versions.json"
+)
 
 // Assertion is a deterministic check against a reply's text. Type is one of
 // "contains", "not_contains", "regex", "json_schema", "similarity".
@@ -24,26 +27,67 @@ type Assertion struct {
 	Threshold float64 `json:"threshold,omitempty"`
 }
 
-// TestCase is one prompt + the assertions its reply must satisfy. Tags are
-// optional, freeform labels (only used by Benchmarks today, for filtering
-// the test case list — same role as Example.Tags for datasets).
-type TestCase struct {
-	ID         string      `json:"id"`
-	Prompt     string      `json:"prompt"`
+// VerifyStep is a shell command run in a test case's launched Environment
+// instance after the agent's turn finishes, checked against its own
+// combined stdout/stderr output with the same assertion types used against
+// a reply. Evaluations-only: a Benchmark tests a model directly with no
+// Environment/instance to verify against. The command's exit code is
+// deliberately not itself pass/fail — a command like `grep` legitimately
+// exits non-zero for "not found," so whether that counts as success is
+// entirely up to the assertions checked against its output text, the same
+// deterministic-assertion philosophy used everywhere else in this project.
+type VerifyStep struct {
+	Command    string      `json:"command"`
 	Assertions []Assertion `json:"assertions"`
-	Tags       []string    `json:"tags,omitempty"`
+}
+
+// TestCase is one prompt + the assertions its reply must satisfy, plus two
+// fields only Evaluations use (a Benchmark's test cases always leave them
+// empty, since there's no Environment to set up or verify): Setup is a list
+// of shell commands run in sequence in the test case's launched instance
+// before the agent's turn, to prepare a realistic starting scenario (seed
+// files, init a repo, etc.); VerifyCommands are run after the agent's turn
+// to check the environment's resulting state. Tags are optional, freeform
+// labels for filtering the test case list.
+type TestCase struct {
+	ID             string       `json:"id"`
+	Prompt         string       `json:"prompt"`
+	Setup          []string     `json:"setup,omitempty"`
+	Assertions     []Assertion  `json:"assertions"`
+	VerifyCommands []VerifyStep `json:"verifyCommands,omitempty"`
+	Tags           []string     `json:"tags,omitempty"`
 }
 
 // Evaluation is a registry-tracked test suite run against a set of agents.
-// Environment is optional: if set, running the evaluation launches a real
-// instance of it for the run's duration (see internal/evaluations) — but
-// agents can't act on it yet, since Phase 3 agents have no way to invoke an
-// Environment's tools.
+// Environment is optional and, unlike TestCases, is not versioned — it's a
+// live setting, like an Agent's own Environment binding, not part of the
+// "what does this test suite check" content a published version snapshots.
+// For a test case's Setup/VerifyCommands to mean anything, the agent(s)
+// this evaluation runs against should themselves be bound to this same
+// Environment (see internal/evaluations): Setup and Verify commands run in
+// the exact instance the agent's own Tool nodes act in during its turn, not
+// a second, separate container.
+//
+// TestCases here is the *draft*: freely editable (Add/Update/DeleteTestCase)
+// and never run directly — mirrors registry.Benchmark exactly. Version is
+// the number of the most recently published EvaluationVersion (0 if none
+// has ever been published); only PublishVersion changes it.
 type Evaluation struct {
 	Name        string     `json:"name"`
 	Environment string     `json:"environment,omitempty"`
+	Version     int        `json:"version"`
 	TestCases   []TestCase `json:"testCases"`
 	CreatedAt   time.Time  `json:"createdAt"`
+}
+
+// EvaluationVersion is an immutable snapshot of an evaluation's test cases,
+// created by PublishVersion. Once published, a version's TestCases never
+// change — editing the evaluation's draft afterward has no effect on
+// versions already published.
+type EvaluationVersion struct {
+	Version     int        `json:"version"`
+	TestCases   []TestCase `json:"testCases"`
+	PublishedAt time.Time  `json:"publishedAt"`
 }
 
 func (r *Registry) evaluationDir(name string) string {
@@ -55,7 +99,24 @@ func (r *Registry) evaluationsDir() string {
 }
 
 // SaveEvaluation writes eval's definition, creating or overwriting it.
+// Version and CreatedAt are always computed here, not taken from eval: a
+// first save starts at Version 0 (nothing published yet) with CreatedAt set
+// to now; a later save preserves both regardless of what eval's caller set
+// — draft edits (Add/Update/DeleteTestCase) never change Version. Only
+// PublishVersion changes Version.
 func (r *Registry) SaveEvaluation(eval Evaluation) error {
+	if existing, err := r.GetEvaluation(eval.Name); err == nil {
+		eval.CreatedAt = existing.CreatedAt
+		eval.Version = existing.Version
+	} else {
+		eval.CreatedAt = time.Now().UTC()
+		eval.Version = 0
+	}
+
+	return r.writeEvaluationDefinition(eval)
+}
+
+func (r *Registry) writeEvaluationDefinition(eval Evaluation) error {
 	dir := r.evaluationDir(eval.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create evaluation directory: %w", err)
@@ -88,8 +149,24 @@ func (r *Registry) GetEvaluation(name string) (Evaluation, error) {
 	return eval, nil
 }
 
-// DeleteEvaluation removes an evaluation's directory (its definition). It's
-// an error to delete an evaluation that doesn't exist.
+// UpdateEnvironment sets an existing evaluation's Environment binding
+// without touching its draft TestCases, Version, or CreatedAt — a plain
+// live-setting update, not a versioned change.
+func (r *Registry) UpdateEnvironment(name, environment string) (Evaluation, error) {
+	eval, err := r.GetEvaluation(name)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	eval.Environment = environment
+	if err := r.SaveEvaluation(eval); err != nil {
+		return Evaluation{}, err
+	}
+	return eval, nil
+}
+
+// DeleteEvaluation removes an evaluation's directory (its definition, and
+// any published versions). It's an error to delete an evaluation that
+// doesn't exist.
 func (r *Registry) DeleteEvaluation(name string) error {
 	dir := r.evaluationDir(name)
 	if _, err := os.Stat(dir); err != nil {
@@ -99,6 +176,156 @@ func (r *Registry) DeleteEvaluation(name string) error {
 		return fmt.Errorf("delete evaluation %q: %w", name, err)
 	}
 	return nil
+}
+
+// PublishEvaluationVersion snapshots the evaluation's current draft
+// TestCases into a new, immutable EvaluationVersion (number = the previous
+// latest + 1) and advances the evaluation's Version to it. It's an error to
+// publish an evaluation with no draft test cases — there'd be nothing for a
+// run to exercise. Named distinctly from registry.Benchmark's identically-
+// shaped PublishVersion (same for ListEvaluationVersions/GetEvaluationVersion
+// below) only because both types share the *Registry receiver in this one
+// package — a plain "PublishVersion(name string)" can't be declared twice.
+func (r *Registry) PublishEvaluationVersion(evaluationName string) (EvaluationVersion, error) {
+	eval, err := r.GetEvaluation(evaluationName)
+	if err != nil {
+		return EvaluationVersion{}, err
+	}
+	if len(eval.TestCases) == 0 {
+		return EvaluationVersion{}, fmt.Errorf("evaluation %q has no test cases to publish", evaluationName)
+	}
+
+	versions, err := r.ListEvaluationVersions(evaluationName)
+	if err != nil {
+		return EvaluationVersion{}, err
+	}
+
+	newVersion := EvaluationVersion{
+		Version:     eval.Version + 1,
+		TestCases:   append([]TestCase(nil), eval.TestCases...),
+		PublishedAt: time.Now().UTC(),
+	}
+
+	if err := r.writeEvaluationVersions(evaluationName, append(versions, newVersion)); err != nil {
+		return EvaluationVersion{}, err
+	}
+
+	eval.Version = newVersion.Version
+	if err := r.writeEvaluationDefinition(eval); err != nil {
+		return EvaluationVersion{}, err
+	}
+
+	return newVersion, nil
+}
+
+// ListEvaluationVersions returns every published version of the named
+// evaluation, oldest first. An evaluation with nothing published yet
+// returns an empty slice, not an error.
+func (r *Registry) ListEvaluationVersions(evaluationName string) ([]EvaluationVersion, error) {
+	data, err := os.ReadFile(filepath.Join(r.evaluationDir(evaluationName), evaluationVersionsFile))
+	if os.IsNotExist(err) {
+		return []EvaluationVersion{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read evaluation versions: %w", err)
+	}
+
+	var versions []EvaluationVersion
+	if err := json.Unmarshal(data, &versions); err != nil {
+		return nil, fmt.Errorf("parse evaluation versions: %w", err)
+	}
+
+	return versions, nil
+}
+
+// GetEvaluationVersion returns one published version of the named
+// evaluation.
+func (r *Registry) GetEvaluationVersion(evaluationName string, version int) (EvaluationVersion, error) {
+	versions, err := r.ListEvaluationVersions(evaluationName)
+	if err != nil {
+		return EvaluationVersion{}, err
+	}
+
+	for _, v := range versions {
+		if v.Version == version {
+			return v, nil
+		}
+	}
+
+	return EvaluationVersion{}, fmt.Errorf("evaluation %q has no version %d", evaluationName, version)
+}
+
+func (r *Registry) writeEvaluationVersions(evaluationName string, versions []EvaluationVersion) error {
+	dir := r.evaluationDir(evaluationName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create evaluation directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(versions, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal evaluation versions: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, evaluationVersionsFile), data, 0o644); err != nil {
+		return fmt.Errorf("write evaluation versions: %w", err)
+	}
+
+	return nil
+}
+
+// AddEvaluationTestCases appends one or more manually-entered (or
+// generated) test cases to the named evaluation's draft, ignoring any ID
+// the caller set on tcs (a fresh one is always assigned) — mirrors
+// registry.Benchmark's AddTestCases (named distinctly for the same
+// same-package-receiver-collision reason as PublishEvaluationVersion
+// above). This never touches any published version.
+func (r *Registry) AddEvaluationTestCases(evaluationName string, tcs []TestCase) error {
+	eval, err := r.GetEvaluation(evaluationName)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UnixNano()
+	for i, tc := range tcs {
+		tc.ID = fmt.Sprintf("tc-%d-%d", now, i)
+		eval.TestCases = append(eval.TestCases, tc)
+	}
+
+	return r.SaveEvaluation(eval)
+}
+
+// UpdateEvaluationTestCase overwrites the draft test case at index
+// (0-based, in the order GetEvaluation returns them), keeping its existing
+// ID. It's an error if index is out of range. This never touches any
+// published version.
+func (r *Registry) UpdateEvaluationTestCase(evaluationName string, index int, tc TestCase) error {
+	eval, err := r.GetEvaluation(evaluationName)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(eval.TestCases) {
+		return fmt.Errorf("test case index %d out of range (evaluation has %d test cases)", index, len(eval.TestCases))
+	}
+
+	tc.ID = eval.TestCases[index].ID
+	eval.TestCases[index] = tc
+	return r.SaveEvaluation(eval)
+}
+
+// DeleteEvaluationTestCase removes the draft test case at index (0-based,
+// in the order GetEvaluation returns them). It's an error if index is out
+// of range. This never touches any published version.
+func (r *Registry) DeleteEvaluationTestCase(evaluationName string, index int) error {
+	eval, err := r.GetEvaluation(evaluationName)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(eval.TestCases) {
+		return fmt.Errorf("test case index %d out of range (evaluation has %d test cases)", index, len(eval.TestCases))
+	}
+
+	eval.TestCases = append(eval.TestCases[:index], eval.TestCases[index+1:]...)
+	return r.SaveEvaluation(eval)
 }
 
 // ListEvaluations returns every registry-tracked evaluation, sorted by name.
