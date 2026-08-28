@@ -260,9 +260,24 @@ choice:
     of an Add button. Routes live under `/api/huggingface/models` (not `/api/models/...`) to sidestep
     the `/api/models/{name}` wildcard. `modelStore` gained `SaveModel`.
   - Frontend: `HuggingFaceSearchModal.tsx` (debounced search, empty query = most-downloaded; rows show
-    downloads/likes/filtered tags + a Hub link + Add/Added). `Models.tsx` gained a `Sparkles`
+    downloads/likes/filtered tags + a Hub link + Add/Added). `Models.tsx` gained a `Download`
     toolbar button and a "Source" column ("Hugging Face" / "Trained" / raw source). `api.ts`:
     `HuggingFaceModel`, `searchHuggingFaceModels`, `addHuggingFaceModel`.
+  - **2026-08-28 follow-up — training a name-picked base model.** Using an added HF model as a
+    *training* base 401'd: the Training page's picker sends the registry model's **name**
+    (`Llama-3.2-1B-Instruct-4bit`, the repo basename), and nothing in the training path resolved it —
+    `mlx_lm.lora --model Llama-3.2-1B-Instruct-4bit` has no org prefix so the Hub returns "Repository
+    Not Found". Fixed in `training.Manager.StartRun`: after config validation it now calls
+    `m.models.GetModel(cfg.BaseModel)` and, on a hit with a non-empty `Path`, replaces `cfg.BaseModel`
+    with that `Path` (the fused-model dir for a trained model, or the `mlx-community/…` repo id for an
+    HF-added one). A name that isn't a registry model — a raw repo id / local path typed directly —
+    passes through unchanged. The `modelSaver` interface became `modelStore` (+ `GetModel`);
+    `*registry.Registry` already satisfies it so `cmd/serve.go` is untouched. Guards:
+    `TestStartRunResolvesRegistryModelBaseModel`, `TestStartRunLeavesUnknownBaseModelUnchanged`.
+    Verified live: training against the name `Llama-3.2-1B-Instruct-4bit` now succeeds end to end.
+    The identical name-vs-identifier gap in the dataset-variation / test-case-generation model pickers
+    (they send `.name`; `mlx_lm.server` then hangs) is still open — a shared `registry.ResolveModelRef`
+    used by training/benchmarks/datasetgen/testcasegen would be the durable fix.
   - **Not built** (possible follow-ups): explicit pre-download / cache-warming with a progress bar
     (would need the async-job + eventbus pattern; the user chose to lean on mlx-lm's first-use
     download instead); per-file size in the search list; broadening search beyond mlx-community.

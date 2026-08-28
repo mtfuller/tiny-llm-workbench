@@ -25,8 +25,9 @@ func (f *fakeDatasets) ListExamples(name string) ([]registry.Example, error) {
 }
 
 type fakeModelSaver struct {
-	saved []registry.Model
-	err   error
+	saved  []registry.Model
+	err    error
+	models map[string]registry.Model // registry models GetModel can resolve
 }
 
 func (f *fakeModelSaver) SaveModel(m registry.Model) error {
@@ -35,6 +36,13 @@ func (f *fakeModelSaver) SaveModel(m registry.Model) error {
 	}
 	f.saved = append(f.saved, m)
 	return nil
+}
+
+func (f *fakeModelSaver) GetModel(name string) (registry.Model, error) {
+	if m, ok := f.models[name]; ok {
+		return m, nil
+	}
+	return registry.Model{}, errors.New("not found")
 }
 
 func (f *fakeModelSaver) ModelDir(name string) string {
@@ -131,6 +139,63 @@ func TestStartRunSucceeds(t *testing.T) {
 	}
 	if len(trainer.fused) != 1 || trainer.fused[0] != "mlx-community/test-model|/tmp/adapter|"+wantPath {
 		t.Errorf("trainer.fused = %v, want one Fuse call from the adapter dir into the registry model dir", trainer.fused)
+	}
+}
+
+// A base model given as a registry model's name (what the Training page's
+// picker sends) is resolved to that model's Path before mlx-lm sees it — so
+// an added Hugging Face model ("Llama-3.2-1B-Instruct-4bit", Path
+// "mlx-community/Llama-3.2-1B-Instruct-4bit") trains instead of failing with
+// a 401 on the org-less name.
+func TestStartRunResolvesRegistryModelBaseModel(t *testing.T) {
+	trainer := &fakeTrainer{result: Result{OutputDir: "/tmp/adapter"}}
+	datasets := &fakeDatasets{examples: map[string][]registry.Example{"greetings": {{Input: "hi", Output: "hello!"}}}}
+	models := &fakeModelSaver{models: map[string]registry.Model{
+		"Llama-3.2-1B-Instruct-4bit": {
+			Name: "Llama-3.2-1B-Instruct-4bit",
+			Path: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+		},
+	}}
+	m := NewManager(context.Background(), t.TempDir(), eventbus.New(), datasets, models, trainer)
+
+	cfg := validConfig()
+	cfg.BaseModel = "Llama-3.2-1B-Instruct-4bit"
+	run, err := m.StartRun(cfg)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	// The stored run config reflects the resolved value.
+	if run.Config.BaseModel != "mlx-community/Llama-3.2-1B-Instruct-4bit" {
+		t.Errorf("run.Config.BaseModel = %q, want the resolved repo id", run.Config.BaseModel)
+	}
+
+	finished := waitForStatus(t, m, run.ID, StatusSucceeded, time.Second)
+	if len(trainer.fused) != 1 || !strings.HasPrefix(trainer.fused[0], "mlx-community/Llama-3.2-1B-Instruct-4bit|") {
+		t.Errorf("trainer.fused = %v, want Fuse called with the resolved repo id", trainer.fused)
+	}
+	if len(models.saved) != 1 || models.saved[0].BaseModel != "mlx-community/Llama-3.2-1B-Instruct-4bit" {
+		t.Errorf("models.saved[0].BaseModel = %q, want the resolved repo id recorded", models.saved[0].BaseModel)
+	}
+	_ = finished
+}
+
+// A base model that isn't a known registry model — a raw HF repo id or a
+// local path typed directly — passes through untouched.
+func TestStartRunLeavesUnknownBaseModelUnchanged(t *testing.T) {
+	trainer := &fakeTrainer{result: Result{OutputDir: "/tmp/adapter"}}
+	datasets := &fakeDatasets{examples: map[string][]registry.Example{"greetings": {{Input: "hi", Output: "hello!"}}}}
+	models := &fakeModelSaver{} // no registry models to resolve against
+	m := NewManager(context.Background(), t.TempDir(), eventbus.New(), datasets, models, trainer)
+
+	cfg := validConfig()
+	cfg.BaseModel = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+	run, err := m.StartRun(cfg)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	if run.Config.BaseModel != "mlx-community/Qwen2.5-0.5B-Instruct-4bit" {
+		t.Errorf("run.Config.BaseModel = %q, want it unchanged", run.Config.BaseModel)
 	}
 }
 

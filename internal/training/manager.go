@@ -29,13 +29,17 @@ type datasetReader interface {
 	ListExamples(name string) ([]registry.Example, error)
 }
 
-// modelSaver is the subset of registry.Registry Manager needs to register a
-// successfully trained adapter as a usable model.
-type modelSaver interface {
+// modelStore is the subset of registry.Registry Manager needs to resolve a
+// base model given by registry name and to register a successfully trained
+// adapter as a usable model.
+type modelStore interface {
 	SaveModel(m registry.Model) error
 	// ModelDir returns where a model named name's files should live, so a
 	// successful run's adapter can be fused there before SaveModel is called.
 	ModelDir(name string) string
+	// GetModel resolves a registry model by name — used to turn a base model
+	// picked by name into the local path / repo id mlx-lm's --model expects.
+	GetModel(name string) (registry.Model, error)
 }
 
 // Manager owns the lifecycle of training runs: starting them, tracking
@@ -46,7 +50,7 @@ type Manager struct {
 	runsDir  string
 	bus      *eventbus.Bus
 	datasets datasetReader
-	models   modelSaver
+	models   modelStore
 	trainer  Trainer
 
 	mu      sync.Mutex
@@ -58,7 +62,7 @@ type Manager struct {
 // starts (e.g. the server's shutdown context) — it must outlive any single
 // HTTP request, since training continues in the background after
 // StartRun's caller gets its response.
-func NewManager(ctx context.Context, runsDir string, bus *eventbus.Bus, datasets datasetReader, models modelSaver, trainer Trainer) *Manager {
+func NewManager(ctx context.Context, runsDir string, bus *eventbus.Bus, datasets datasetReader, models modelStore, trainer Trainer) *Manager {
 	return &Manager{
 		ctx:      ctx,
 		runsDir:  runsDir,
@@ -134,6 +138,16 @@ func (m *Manager) StartRun(cfg Config) (*Run, error) {
 	}
 	if cfg.Iterations <= 0 {
 		return nil, errors.New("iterations must be positive")
+	}
+
+	// The Training page's picker sends a base model by registry name; mlx-lm's
+	// --model wants a local path or a full HF repo id. Resolve a known
+	// registry model to its Path (a fused-model dir for a trained model, or
+	// the "mlx-community/…" repo id for one added from Hugging Face). Anything
+	// that isn't a registry model — a raw repo id or path typed directly —
+	// passes through unchanged.
+	if md, err := m.models.GetModel(cfg.BaseModel); err == nil && md.Path != "" {
+		cfg.BaseModel = md.Path
 	}
 
 	examples, err := m.datasets.ListExamples(cfg.Dataset)
