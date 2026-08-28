@@ -1214,6 +1214,82 @@ textarea {
     0 8px 24px color-mix(in srgb, var(--text) 6%, transparent);
 }
 
+/* Live graph-validation panel between the header and the canvas. */
+.agent-issues {
+  margin-bottom: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.agent-issues-blocking {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+.agent-issues-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+}
+
+.agent-issues-summary span {
+  flex: 1;
+}
+
+.agent-issue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0.5rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 8.5rem;
+  overflow-y: auto;
+}
+
+.agent-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.agent-issue svg {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.agent-issue-error {
+  color: color-mix(in srgb, var(--danger) 88%, var(--text));
+}
+
+.agent-issue-warning {
+  color: color-mix(in srgb, var(--warn) 80%, var(--text));
+}
+
+.agent-issue-clickable {
+  cursor: pointer;
+}
+
+.agent-issue-clickable:hover {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
 .agent-palette {
   width: 190px;
   flex-shrink: 0;
@@ -1238,9 +1314,26 @@ textarea {
 }
 
 /* The Debug tab needs more room than the plain node list (a message log,
-   an input, step controls) — widen the sidebar only while it's active. */
+   an input, step controls) — hold the sidebar to at least this while it's
+   active, even if the user dragged it narrower. */
 .agent-palette-wide {
-  width: 280px;
+  min-width: 280px;
+}
+
+/* Drag handle between a workspace sidebar and the canvas. */
+.workspace-resizer {
+  flex-shrink: 0;
+  width: 6px;
+  margin: 0 -3px;
+  z-index: 4;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.workspace-resizer:hover,
+.workspace-resizer-active {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .agent-debug-panel {
@@ -1426,12 +1519,29 @@ textarea {
   --node-color: #2f6fd6;
 }
 
-.inspector-node-header-decision {
+.inspector-node-header-condition {
   --node-color: var(--warn);
+}
+
+.inspector-node-header-switch {
+  --node-color: #4b3fae;
+}
+
+.inspector-node-header-loop_start,
+.inspector-node-header-loop_end {
+  --node-color: #2f8f8f;
+}
+
+.inspector-node-header-state {
+  --node-color: #5f6b7a;
 }
 
 .inspector-node-header-tool {
   --node-color: #2f8f6d;
+}
+
+.inspector-node-header-agent {
+  --node-color: #b5468a;
 }
 
 .inspector-node-header-knowledge {
@@ -1515,9 +1625,102 @@ textarea {
 }
 
 .template-field-row input,
-.template-field-row textarea {
+.template-field-row textarea,
+.template-field-row .line-editor {
   flex: 1;
   min-width: 0;
+}
+
+/* SchemaBuilder — compact JSON-schema property tree */
+.schema-builder {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem;
+  background: var(--surface);
+}
+
+.schema-builder-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.schema-builder input,
+.schema-builder select {
+  padding: 0.28rem 0.4rem;
+  font-size: 0.82rem;
+}
+
+.schema-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.78rem;
+  color: color-mix(in srgb, var(--text) 68%, transparent);
+  cursor: pointer;
+}
+
+.schema-add:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.schema-field-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.schema-field-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.schema-field-name {
+  flex: 1;
+  min-width: 3rem;
+}
+
+.schema-field-row select {
+  flex-shrink: 0;
+  max-width: 7.5rem;
+}
+
+.schema-field-req {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  flex-shrink: 0;
+}
+
+.schema-field-req input {
+  width: auto;
+}
+
+.schema-field-row .icon-button {
+  flex-shrink: 0;
+  padding: 0.25rem;
+}
+
+.schema-field-children {
+  margin: 0.3rem 0 0.1rem 0.45rem;
+  padding-left: 0.55rem;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 .template-field-row .icon-button {
@@ -1643,31 +1846,58 @@ textarea {
   border-left-color: #2f6fd6;
 }
 
-.flow-node-decision {
+.flow-node-condition {
   border-left-color: var(--warn);
+}
+
+.flow-node-loop {
+  border-left-color: #2f8f8f;
+}
+
+/* Loop end: the same family colour but a dashed stripe, echoing its dashed
+   back-edge. */
+.flow-node-loop-end {
+  border-left-style: dashed;
+}
+
+.flow-node-state {
+  border-left-color: #5f6b7a;
 }
 
 .flow-node-tool {
   border-left-color: #2f8f6d;
 }
 
+.flow-node-agent {
+  border-left-color: #b5468a;
+}
+
 .flow-node-knowledge {
   border-left-color: #7c5cbf;
 }
 
+.flow-node-switch {
+  border-left-color: #4b3fae;
+  min-width: 180px;
+}
+
+/* Two-handle nodes (condition, loop start) emit along the bottom edge; the
+   labels sit just below, centred under each handle. */
 .flow-node-handle-label {
   position: absolute;
-  right: -1.6rem;
+  bottom: -1.05rem;
   font-size: 0.65rem;
   color: color-mix(in srgb, var(--text) 55%, transparent);
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
-.flow-node-handle-label-yes {
-  top: calc(35% - 0.6rem);
+.flow-node-handle-label-pass {
+  left: 32%;
 }
 
-.flow-node-handle-label-no {
-  top: calc(75% - 0.6rem);
+.flow-node-handle-label-fail {
+  left: 68%;
 }
 
 /* Chat */
@@ -1919,6 +2149,46 @@ textarea {
   flex-wrap: wrap;
   gap: 0.75rem 1.5rem;
   margin-bottom: 1rem;
+}
+
+/* Multi-select tool / knowledge-base picker (agent node inspector) */
+.tool-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.tool-pick-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.tool-pick-row:hover {
+  border-color: color-mix(in srgb, var(--text) 25%, var(--border));
+}
+
+.tool-pick-row input {
+  width: auto;
+  margin-top: 0.15rem;
+  flex-shrink: 0;
+}
+
+.tool-pick-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.tool-pick-row-name {
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .checkbox-label {

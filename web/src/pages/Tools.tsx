@@ -1,13 +1,14 @@
 import { Pencil, Plus, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { createTool, deleteTool, listTools, updateTool, type Tool } from '../api'
-import { useConfirm } from '../ConfirmDialog'
+import { Badge } from '../Badge'
+import IconButton from '../IconButton'
+import ListPanel from '../ListPanel'
 import Modal from '../Modal'
-import Pagination from '../Pagination'
-import { TableSkeleton } from '../Skeleton'
+import ModalActions from '../ModalActions'
 import { emptyTool, toDraftTool, toPayloadTool, ToolParameterFields, type DraftTool } from '../ToolEditor'
 import { useToast } from '../Toast'
-import { usePagination } from '../usePagination'
+import { useResourceList } from '../useResourceList'
 
 type ModalState = { mode: 'add' } | { mode: 'edit'; tool: Tool } | null
 
@@ -17,34 +18,19 @@ type ModalState = { mode: 'add' } | { mode: 'edit'; tool: Tool } | null
 // project_phase2_architecture.md / CLAUDE.md's Docker orchestration
 // decision for the reasoning).
 function Tools() {
-  const confirm = useConfirm()
   const showToast = useToast()
-
-  const [tools, setTools] = useState<Tool[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
-  const [deleting, setDeleting] = useState<string | null>(null)
+  const list = useResourceList<Tool>({
+    load: listTools,
+    getName: (t) => t.name,
+    searchText: (t) => t.description ?? '',
+    remove: (t) => deleteTool(t.name),
+    confirmMessage: (t) => `Delete tool "${t.name}"? Any environment that has it attached will lose access to it.`,
+    deletedToast: (t) => `Deleted tool "${t.name}"`,
+  })
 
   const [modal, setModal] = useState<ModalState>(null)
   const [modalSaving, setModalSaving] = useState(false)
   const [modalError, setModalError] = useState<string | null>(null)
-
-  const reload = () => {
-    listTools()
-      .then(setTools)
-      .catch((err: Error) => setError(err.message))
-  }
-
-  useEffect(reload, [])
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return tools ?? []
-    return (tools ?? []).filter((t) => t.name.toLowerCase().includes(q) || (t.description ?? '').toLowerCase().includes(q))
-  }, [tools, search])
-
-  const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
-  useEffect(resetPage, [search, resetPage])
 
   const handleSaveModal = async (draft: DraftTool) => {
     if (!modal) return
@@ -61,27 +47,11 @@ function Tools() {
         showToast('Saved tool')
       }
       setModal(null)
-      reload()
+      list.reload()
     } catch (err) {
       setModalError((err as Error).message)
     } finally {
       setModalSaving(false)
-    }
-  }
-
-  const handleDelete = async (tool: Tool) => {
-    if (!(await confirm(`Delete tool "${tool.name}"? Any environment that has it attached will lose access to it.`))) return
-
-    setDeleting(tool.name)
-    setError(null)
-    try {
-      await deleteTool(tool.name)
-      showToast(`Deleted tool "${tool.name}"`)
-      reload()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setDeleting(null)
     }
   }
 
@@ -95,112 +65,62 @@ function Tools() {
         editing it here updates it everywhere it's attached.
       </p>
 
-      <div className="panel panel-flush">
-        <div className="list-toolbar panel-toolbar">
-          <input
-            type="search"
-            placeholder="Search tools…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="list-search"
-          />
-          <div className="list-toolbar-actions">
-            <button
-              type="button"
-              className="icon-button"
-              title="New tool"
-              aria-label="New tool"
-              onClick={() => setModal({ mode: 'add' })}
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-        </div>
-
-        {error && (
-          <div className="panel-body">
-            <p className="error">{error}</p>
-          </div>
-        )}
-
-        {!error && tools === null && (
-          <div className="panel-body">
-            <TableSkeleton columns={5} />
-          </div>
-        )}
-
-        {tools !== null && tools.length === 0 && (
-          <div className="panel-body">
-            <p className="hint">No tools yet. Create one above.</p>
-          </div>
-        )}
-
-        {tools !== null && tools.length > 0 && filtered.length === 0 && (
-          <div className="panel-body">
-            <p className="hint">No tools match your search.</p>
-          </div>
-        )}
-
-        {filtered.length > 0 && (
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Description</th>
-                  <th>Command</th>
-                  <th>Parameters</th>
-                  <th></th>
+      <ListPanel
+        search={list.search}
+        onSearch={list.setSearch}
+        searchPlaceholder="Search tools…"
+        actions={<IconButton icon={<Plus size={16} />} label="New tool" onClick={() => setModal({ mode: 'add' })} />}
+        error={list.error}
+        loading={list.items === null}
+        isEmpty={list.items !== null && list.items.length === 0}
+        hasMatches={list.filtered.length > 0}
+        emptyMessage="No tools yet. Create one above."
+        noMatchMessage="No tools match your search."
+        skeletonColumns={5}
+        page={list.page}
+        pageCount={list.pageCount}
+        setPage={list.setPage}
+        shownCount={list.filtered.length}
+        totalCount={list.items?.length ?? 0}
+        itemLabel="tools"
+      >
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Description</th>
+                <th>Command</th>
+                <th>Parameters</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.pageItems.map((tool) => (
+                <tr key={tool.name}>
+                  <td>
+                    {tool.name} {tool.prebuilt && <Badge>prebuilt</Badge>}
+                  </td>
+                  <td>{tool.description || '—'}</td>
+                  <td>
+                    <code>{tool.command}</code>
+                  </td>
+                  <td>{tool.parameters.length}</td>
+                  <td className="row-actions">
+                    <IconButton icon={<Pencil size={15} />} label="Edit tool" onClick={() => setModal({ mode: 'edit', tool })} />
+                    <IconButton
+                      icon={<Trash2 size={15} />}
+                      label="Delete tool"
+                      disabled={list.deleting === tool.name}
+                      onClick={() => list.handleDelete(tool)}
+                    />
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {pageItems.map((tool) => (
-                  <tr key={tool.name}>
-                    <td>
-                      {tool.name} {tool.prebuilt && <span className="badge">prebuilt</span>}
-                    </td>
-                    <td>{tool.description || '—'}</td>
-                    <td>
-                      <code>{tool.command}</code>
-                    </td>
-                    <td>{tool.parameters.length}</td>
-                    <td className="row-actions">
-                      <button
-                        type="button"
-                        className="icon-button"
-                        title="Edit tool"
-                        aria-label="Edit tool"
-                        onClick={() => setModal({ mode: 'edit', tool })}
-                      >
-                        <Pencil size={15} />
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        title="Delete tool"
-                        aria-label="Delete tool"
-                        disabled={deleting === tool.name}
-                        onClick={() => handleDelete(tool)}
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        <Pagination
-          page={page}
-          pageCount={pageCount}
-          onChange={setPage}
-          shownCount={filtered.length}
-          totalCount={tools?.length ?? 0}
-          itemLabel="tools"
-        />
-      </div>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </ListPanel>
 
       {modal && (
         <ToolModal
@@ -271,14 +191,7 @@ function ToolModal({ initial, editingName, saving, error, onSave, onClose }: Too
         </div>
 
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={saving || !draft.name.trim() || !draft.command.trim()}>
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <ModalActions onCancel={onClose} busy={saving} disabled={!draft.name.trim() || !draft.command.trim()} />
       </form>
     </Modal>
   )

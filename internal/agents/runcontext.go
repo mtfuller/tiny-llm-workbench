@@ -31,10 +31,20 @@ type nodeResult struct {
 // clearly rather than silently substituting nothing.
 type runContext struct {
 	results map[string]nodeResult
+	// loopCounts tracks how many times the walk has entered each loop node
+	// (keyed by node ID, which is always present) this turn — the source of
+	// {{LoopName.iteration}} and of the loop's own max-iterations cut-off.
+	// Kept separate from results so a loop node overwriting its results entry
+	// each pass doesn't lose the count, and so clone() can restore the
+	// pre-increment value for a debugger Retry.
+	loopCounts map[string]int
 }
 
 func newRunContext() *runContext {
-	return &runContext{results: make(map[string]nodeResult)}
+	return &runContext{
+		results:    make(map[string]nodeResult),
+		loopCounts: make(map[string]int),
+	}
 }
 
 // set records name's result for later templates to reference. A no-op for
@@ -49,13 +59,18 @@ func (rc *runContext) set(name, raw string, parsed any) {
 // clone returns an independent copy of rc — used by the step-by-step
 // debugger (see debug.go) to snapshot the accumulated context right before
 // a node runs, so Retry can restore exactly that state and re-run the node
-// fresh, discarding whatever that attempt contributed.
+// fresh, discarding whatever that attempt contributed (including a loop
+// node's iteration increment).
 func (rc *runContext) clone() *runContext {
 	results := make(map[string]nodeResult, len(rc.results))
 	for k, v := range rc.results {
 		results[k] = v
 	}
-	return &runContext{results: results}
+	loopCounts := make(map[string]int, len(rc.loopCounts))
+	for k, v := range rc.loopCounts {
+		loopCounts[k] = v
+	}
+	return &runContext{results: results, loopCounts: loopCounts}
 }
 
 // templateExprPattern matches a single {{...}} placeholder, capturing its

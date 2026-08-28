@@ -4,12 +4,16 @@ import { Link, useParams } from 'react-router-dom'
 import { addKnowledgeRecords, deleteKnowledgeRecord, getKnowledgeBase, updateKnowledgeRecord, type KnowledgeBase, type KnowledgeRecord } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import FilterMenu from '../FilterMenu'
+import IconButton from '../IconButton'
 import Modal from '../Modal'
+import ModalActions from '../ModalActions'
 import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
+import TagCell from '../TagCell'
 import TagInput from '../TagInput'
 import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
+import { useTagFilter } from '../useTagFilter'
 
 const emptyRecord = { title: '', content: '', tags: [] as string[] }
 
@@ -23,7 +27,6 @@ function KnowledgeDetail() {
   const [error, setError] = useState<string | null>(null)
 
   const [search, setSearch] = useState('')
-  const [activeTags, setActiveTags] = useState<Set<string>>(new Set())
 
   const [modal, setModal] = useState<ModalState>(null)
   const [modalSaving, setModalSaving] = useState(false)
@@ -40,42 +43,24 @@ function KnowledgeDetail() {
 
   const records = base?.records ?? []
 
-  const allTags = useMemo(() => {
-    const tags = new Set<string>()
-    for (const rec of records) {
-      for (const t of rec.tags ?? []) tags.add(t)
-    }
-    return Array.from(tags).sort()
-  }, [records])
+  const { allTags, activeTags, toggleTag, clearTags, matchesTags } = useTagFilter(records, (r) => r.tags)
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return records
       .map((record, index) => ({ record, index }))
       .filter(({ record }) => {
-        if (activeTags.size > 0) {
-          const tags = record.tags ?? []
-          if (![...activeTags].some((t) => tags.includes(t))) return false
-        }
+        if (!matchesTags(record)) return false
         if (q) {
           const haystack = `${record.title} ${record.content}`.toLowerCase()
           if (!haystack.includes(q)) return false
         }
         return true
       })
-  }, [records, search, activeTags])
+  }, [records, search, matchesTags])
 
   const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
   useEffect(resetPage, [search, activeTags, resetPage])
-
-  const toggleTagFilter = (tag: string) => {
-    setActiveTags((prev) => {
-      const next = new Set(prev)
-      if (next.has(tag)) next.delete(tag)
-      else next.add(tag)
-      return next
-    })
-  }
 
   const handleSaveModal = async (record: { title: string; content: string; tags?: string[] }) => {
     if (!modal) return
@@ -150,20 +135,12 @@ function KnowledgeDetail() {
           />
           {allTags.length > 0 && (
             <FilterMenu
-              groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTagFilter }]}
-              onClearAll={() => setActiveTags(new Set())}
+              groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTag }]}
+              onClearAll={clearTags}
             />
           )}
           <div className="list-toolbar-actions">
-            <button
-              type="button"
-              className="icon-button"
-              title="Add record"
-              aria-label="Add record"
-              onClick={() => setModal({ mode: 'add' })}
-            >
-              <Plus size={16} />
-            </button>
+            <IconButton icon={<Plus size={16} />} label="Add record" onClick={() => setModal({ mode: 'add' })} />
           </div>
         </div>
 
@@ -195,36 +172,16 @@ function KnowledgeDetail() {
                   <td className="cell-truncate">{record.title}</td>
                   <td className="cell-truncate">{record.content}</td>
                   <td>
-                    {record.tags && record.tags.length > 0 ? (
-                      <div className="tag-list">
-                        {record.tags.map((tag) => (
-                          <span className="badge" key={tag}>
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      '—'
-                    )}
+                    <TagCell tags={record.tags} />
                   </td>
                   <td className="row-actions">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="Edit record"
-                      onClick={() => setModal({ mode: 'edit', index })}
-                    >
-                      <Pencil size={15} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="Delete record"
+                    <IconButton icon={<Pencil size={15} />} label="Edit record" onClick={() => setModal({ mode: 'edit', index })} />
+                    <IconButton
+                      icon={<Trash2 size={15} />}
+                      label="Delete record"
                       disabled={deletingIndex === index}
                       onClick={() => handleDeleteRecord(index)}
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                    />
                   </td>
                 </tr>
               ))}
@@ -294,14 +251,7 @@ function RecordModal({ title, initial, allTags, saving, error, onSave, onClose }
           <TagInput tags={tags} onChange={setTags} suggestions={allTags} />
         </label>
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={saving || !recTitle.trim() || !content.trim()}>
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <ModalActions onCancel={onClose} busy={saving} disabled={!recTitle.trim() || !content.trim()} />
       </form>
     </Modal>
   )

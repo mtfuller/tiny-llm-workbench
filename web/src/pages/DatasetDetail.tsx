@@ -16,14 +16,18 @@ import {
 } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import FilterMenu from '../FilterMenu'
+import IconButton from '../IconButton'
 import LineNumberedTextarea from '../LineNumberedTextarea'
 import Modal from '../Modal'
+import ModalActions from '../ModalActions'
+import ModelCombobox from '../ModelCombobox'
 import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
-import { suggestedModels } from '../suggestedModels'
+import TagCell from '../TagCell'
 import TagInput from '../TagInput'
 import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
+import { useTagFilter } from '../useTagFilter'
 
 const emptyExample: Example = { input: '', output: '', description: '', tags: [] }
 
@@ -38,7 +42,6 @@ function DatasetDetail() {
   const [error, setError] = useState<string | null>(null)
 
   const [search, setSearch] = useState('')
-  const [activeTags, setActiveTags] = useState<Set<string>>(new Set())
 
   const [modal, setModal] = useState<ModalState>(null)
   const [modalSaving, setModalSaving] = useState(false)
@@ -65,50 +68,29 @@ function DatasetDetail() {
       .catch(() => setModels([]))
   }, [])
 
-  const modelOptions = useMemo(() => {
-    const trained = models.map((m) => m.name)
-    return Array.from(new Set([...trained, ...suggestedModels]))
-  }, [models])
+  const modelNames = useMemo(() => models.map((m) => m.name), [models])
 
   const examples = dataset?.examples ?? []
 
-  const allTags = useMemo(() => {
-    const tags = new Set<string>()
-    for (const ex of examples) {
-      for (const t of ex.tags ?? []) tags.add(t)
-    }
-    return Array.from(tags).sort()
-  }, [examples])
+  const { allTags, activeTags, toggleTag, clearTags, matchesTags } = useTagFilter(examples, (ex) => ex.tags)
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return examples
       .map((example, index) => ({ example, index }))
       .filter(({ example }) => {
-        if (activeTags.size > 0) {
-          const tags = example.tags ?? []
-          if (![...activeTags].some((t) => tags.includes(t))) return false
-        }
+        if (!matchesTags(example)) return false
         if (q) {
           const haystack = `${example.input} ${example.output} ${example.description ?? ''}`.toLowerCase()
           if (!haystack.includes(q)) return false
         }
         return true
       })
-  }, [examples, search, activeTags])
+  }, [examples, search, matchesTags])
 
   const { page: currentPage, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
 
   useEffect(resetPage, [search, activeTags, resetPage])
-
-  const toggleTagFilter = (tag: string) => {
-    setActiveTags((prev) => {
-      const next = new Set(prev)
-      if (next.has(tag)) next.delete(tag)
-      else next.add(tag)
-      return next
-    })
-  }
 
   const handleSaveModal = async (example: Example) => {
     if (!modal) return
@@ -204,29 +186,13 @@ function DatasetDetail() {
           />
           {allTags.length > 0 && (
             <FilterMenu
-              groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTagFilter }]}
-              onClearAll={() => setActiveTags(new Set())}
+              groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTag }]}
+              onClearAll={clearTags}
             />
           )}
           <div className="list-toolbar-actions">
-            <button
-              type="button"
-              className="icon-button"
-              title="Add example"
-              aria-label="Add example"
-              onClick={() => setModal({ mode: 'add' })}
-            >
-              <Plus size={16} />
-            </button>
-            <button
-              type="button"
-              className="icon-button"
-              title="Generate variations…"
-              aria-label="Generate variations"
-              onClick={() => setGenerateOpen(true)}
-            >
-              <Sparkles size={16} />
-            </button>
+            <IconButton icon={<Plus size={16} />} label="Add example" onClick={() => setModal({ mode: 'add' })} />
+            <IconButton icon={<Sparkles size={16} />} label="Generate variations…" onClick={() => setGenerateOpen(true)} />
             <label
               className="icon-button"
               title={
@@ -298,36 +264,16 @@ function DatasetDetail() {
                   <td className="cell-truncate">{example.output}</td>
                   <td className="cell-truncate">{example.description || '—'}</td>
                   <td>
-                    {example.tags && example.tags.length > 0 ? (
-                      <div className="tag-list">
-                        {example.tags.map((tag) => (
-                          <span className="badge" key={tag}>
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      '—'
-                    )}
+                    <TagCell tags={example.tags} />
                   </td>
                   <td className="row-actions">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="Edit example"
-                      onClick={() => setModal({ mode: 'edit', index })}
-                    >
-                      <Pencil size={15} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="Delete example"
+                    <IconButton icon={<Pencil size={15} />} label="Edit example" onClick={() => setModal({ mode: 'edit', index })} />
+                    <IconButton
+                      icon={<Trash2 size={15} />}
+                      label="Delete example"
                       disabled={deletingIndex === index}
                       onClick={() => handleDeleteExample(index)}
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                    />
                   </td>
                 </tr>
               ))}
@@ -359,7 +305,7 @@ function DatasetDetail() {
 
       {generateOpen && (
         <GenerateVariationsModal
-          modelOptions={modelOptions}
+          models={modelNames}
           generating={generating}
           error={generateError}
           onGenerate={handleGenerate}
@@ -424,28 +370,21 @@ function ExampleModal({ title, initial, allTags, saving, error, onSave, onClose 
           <TagInput tags={tags} onChange={setTags} suggestions={allTags} />
         </label>
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={saving || !input.trim() || !output.trim()}>
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <ModalActions onCancel={onClose} busy={saving} disabled={!input.trim() || !output.trim()} />
       </form>
     </Modal>
   )
 }
 
 interface GenerateVariationsModalProps {
-  modelOptions: string[]
+  models: string[]
   generating: boolean
   error: string | null
   onGenerate: (req: { model: string; seed: Example; count: number }) => void
   onClose: () => void
 }
 
-function GenerateVariationsModal({ modelOptions, generating, error, onGenerate, onClose }: GenerateVariationsModalProps) {
+function GenerateVariationsModal({ models, generating, error, onGenerate, onClose }: GenerateVariationsModalProps) {
   const [model, setModel] = useState('')
   const [seedInput, setSeedInput] = useState('')
   const [seedOutput, setSeedOutput] = useState('')
@@ -463,18 +402,7 @@ function GenerateVariationsModal({ modelOptions, generating, error, onGenerate, 
       <form className="stacked-form" onSubmit={handleSubmit}>
         <label>
           Model
-          <input
-            type="text"
-            list="generate-model-options"
-            placeholder="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
-          <datalist id="generate-model-options">
-            {modelOptions.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
+          <ModelCombobox value={model} onChange={setModel} models={models} />
         </label>
         <label>
           Example input
@@ -489,14 +417,7 @@ function GenerateVariationsModal({ modelOptions, generating, error, onGenerate, 
           <input type="number" min={1} max={20} value={count} onChange={(e) => setCount(Number(e.target.value))} />
         </label>
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={generating || !model}>
-            {generating ? 'Generating…' : 'Generate'}
-          </button>
-        </div>
+        <ModalActions onCancel={onClose} submitLabel="Generate" busyLabel="Generating…" busy={generating} disabled={!model} />
       </form>
     </Modal>
   )

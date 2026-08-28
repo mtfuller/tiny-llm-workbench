@@ -1,50 +1,33 @@
 import { Plus, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { deleteEvaluation, listEnvironments, listEvaluations, saveEvaluation, type Environment, type Evaluation } from '../api'
-import { useConfirm } from '../ConfirmDialog'
+import IconButton from '../IconButton'
+import ListPanel from '../ListPanel'
 import Modal from '../Modal'
-import Pagination from '../Pagination'
-import { TableSkeleton } from '../Skeleton'
-import { useToast } from '../Toast'
-import { usePagination } from '../usePagination'
+import ModalActions from '../ModalActions'
+import { useResourceList } from '../useResourceList'
 
 function Evaluations() {
-  const confirm = useConfirm()
-  const showToast = useToast()
   const navigate = useNavigate()
-  const [evaluations, setEvaluations] = useState<Evaluation[] | null>(null)
-  const [environments, setEnvironments] = useState<Environment[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
-  const [deleting, setDeleting] = useState<string | null>(null)
+  const list = useResourceList<Evaluation>({
+    load: listEvaluations,
+    getName: (e) => e.name,
+    remove: (e) => deleteEvaluation(e.name),
+    confirmMessage: (e) => `Delete evaluation "${e.name}"? This cannot be undone.`,
+    deletedToast: (e) => `Deleted evaluation "${e.name}"`,
+  })
 
+  const [environments, setEnvironments] = useState<Environment[]>([])
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
-  const reload = () => {
-    listEvaluations()
-      .then(setEvaluations)
-      .catch((err: Error) => setError(err.message))
-  }
-
   useEffect(() => {
-    reload()
     listEnvironments()
       .then(setEnvironments)
       .catch(() => setEnvironments([]))
   }, [])
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return evaluations ?? []
-    return (evaluations ?? []).filter((e) => e.name.toLowerCase().includes(q))
-  }, [evaluations, search])
-
-  const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
-
-  useEffect(resetPage, [search, resetPage])
 
   const handleCreate = async (name: string, environment: string) => {
     setCreating(true)
@@ -53,29 +36,12 @@ function Evaluations() {
       await saveEvaluation({ name, environment: environment || undefined })
       setCreateOpen(false)
       // A brand-new evaluation has no test cases yet — send the user
-      // straight to its detail page to add some, rather than leaving them
-      // on the list looking at an empty row.
+      // straight to its detail page to add some.
       navigate(`/evaluations/${encodeURIComponent(name)}`)
     } catch (err) {
       setCreateError((err as Error).message)
     } finally {
       setCreating(false)
-    }
-  }
-
-  const handleDelete = async (name: string) => {
-    if (!(await confirm(`Delete evaluation "${name}"? This cannot be undone.`))) return
-
-    setDeleting(name)
-    setError(null)
-    try {
-      await deleteEvaluation(name)
-      showToast(`Deleted evaluation "${name}"`)
-      reload()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setDeleting(null)
     }
   }
 
@@ -90,99 +56,57 @@ function Evaluations() {
         well they actually complete real software-dev, knowledge-work, or office-work tasks.
       </p>
 
-      <div className="panel panel-flush">
-        <div className="list-toolbar panel-toolbar">
-          <input
-            type="search"
-            placeholder="Search evaluations…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="list-search"
-          />
-          <div className="list-toolbar-actions">
-            <button
-              type="button"
-              className="icon-button"
-              title="New evaluation"
-              aria-label="New evaluation"
-              onClick={() => setCreateOpen(true)}
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-        </div>
-
-        {error && (
-          <div className="panel-body">
-            <p className="error">{error}</p>
-          </div>
-        )}
-
-        {!error && evaluations === null && (
-          <div className="panel-body">
-            <TableSkeleton columns={5} />
-          </div>
-        )}
-
-        {evaluations !== null && evaluations.length === 0 && (
-          <div className="panel-body">
-            <p className="hint">No evaluations yet. Create one above.</p>
-          </div>
-        )}
-
-        {evaluations !== null && evaluations.length > 0 && filtered.length === 0 && (
-          <div className="panel-body">
-            <p className="hint">No evaluations match your search.</p>
-          </div>
-        )}
-
-        {filtered.length > 0 && (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Environment</th>
-                <th>Version</th>
-                <th>Test cases</th>
-                <th></th>
+      <ListPanel
+        search={list.search}
+        onSearch={list.setSearch}
+        searchPlaceholder="Search evaluations…"
+        actions={<IconButton icon={<Plus size={16} />} label="New evaluation" onClick={() => setCreateOpen(true)} />}
+        error={list.error}
+        loading={list.items === null}
+        isEmpty={list.items !== null && list.items.length === 0}
+        hasMatches={list.filtered.length > 0}
+        emptyMessage="No evaluations yet. Create one above."
+        noMatchMessage="No evaluations match your search."
+        skeletonColumns={5}
+        page={list.page}
+        pageCount={list.pageCount}
+        setPage={list.setPage}
+        shownCount={list.filtered.length}
+        totalCount={list.items?.length ?? 0}
+        itemLabel="evaluations"
+      >
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Environment</th>
+              <th>Version</th>
+              <th>Test cases</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.pageItems.map((evaluation) => (
+              <tr key={evaluation.name}>
+                <td>
+                  <Link to={`/evaluations/${encodeURIComponent(evaluation.name)}`}>{evaluation.name}</Link>
+                </td>
+                <td>{evaluation.environment || '—'}</td>
+                <td>v{evaluation.version}</td>
+                <td>{evaluation.testCases.length}</td>
+                <td className="row-actions">
+                  <IconButton
+                    icon={<Trash2 size={15} />}
+                    label="Delete evaluation"
+                    disabled={list.deleting === evaluation.name}
+                    onClick={() => list.handleDelete(evaluation)}
+                  />
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {pageItems.map((eval_) => (
-                <tr key={eval_.name}>
-                  <td>
-                    <Link to={`/evaluations/${encodeURIComponent(eval_.name)}`}>{eval_.name}</Link>
-                  </td>
-                  <td>{eval_.environment || '—'}</td>
-                  <td>v{eval_.version}</td>
-                  <td>{eval_.testCases.length}</td>
-                  <td className="row-actions">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      title="Delete evaluation"
-                      aria-label="Delete evaluation"
-                      disabled={deleting === eval_.name}
-                      onClick={() => handleDelete(eval_.name)}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-
-        <Pagination
-          page={page}
-          pageCount={pageCount}
-          onChange={setPage}
-          shownCount={filtered.length}
-          totalCount={evaluations?.length ?? 0}
-          itemLabel="evaluations"
-        />
-      </div>
+            ))}
+          </tbody>
+        </table>
+      </ListPanel>
 
       {createOpen && (
         <CreateEvaluationModal
@@ -239,14 +163,7 @@ function CreateEvaluationModal({ environments, creating, error, onCreate, onClos
         <p className="hint">You'll add test cases on the evaluation's own page next.</p>
 
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={creating || !name.trim()}>
-            {creating ? 'Creating…' : 'Create'}
-          </button>
-        </div>
+        <ModalActions onCancel={onClose} submitLabel="Create" busyLabel="Creating…" busy={creating} disabled={!name.trim()} />
       </form>
     </Modal>
   )

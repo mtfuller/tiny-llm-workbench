@@ -31,11 +31,23 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
 - **Knowledge** — Define named knowledge bases of title/content records an agent can query. Matching is
   a deterministic keyword search (every query word must appear in the record), not embeddings or a
   vector store — consistent with the rest of TLW's deterministic, non-LLM-graded decision points.
-- **Agents** — Design agents visually on a canvas: connect input, prompt, tool, knowledge, and decision
-  nodes into a workflow — any node with nothing connected downstream of it is simply where a turn ends, so
-  there's no separate "output" node to remember to wire up. Each agent can target a specific Environment
-  (for its tool nodes). A step-by-step debugger lets you pause a turn, Step through one node at a time to
-  see exactly what it produced, and Retry a node to get a fresh result before deciding to move on.
+- **Agents** — Design agent *architectures* visually on a top-to-bottom canvas, not just linear
+  pipelines: connect input, prompt, tool, knowledge, condition, switch, loop, state, and agent nodes —
+  and wire edges into cycles — to build plan-execute-judge, Ralph loops, reflexion, and the like from
+  small orthogonal pieces. A
+  `condition` node routes `pass`/`fail` on a deterministic check (contains / regex / JSON schema /
+  similarity) and a `switch` node routes N ways on a case match; a **loop start / loop end** pair
+  brackets a loop — route a branch to the loop end to keep
+  looping, anywhere else to break out — with `{{Loop.iteration}}` available inside and a max-iterations
+  cap; a `state` node accumulates a scratchpad across iterations; an `agent` node runs a bounded LLM
+  tool-calling loop over a chosen subset of the environment's tools plus any knowledge bases it's given,
+  and can constrain its final answer to a JSON schema. A prompt or agent node with a schema can route a
+  validation miss to a `fail` handle instead of ending the turn; any node whose output is JSON exposes
+  `{{Node.property}}` downstream. Any node with nothing connected
+  downstream of it is simply where a turn ends, so there's no separate "output" node to wire up. Each
+  agent can target a specific Environment (for its tool and agent nodes). A step-by-step debugger lets
+  you pause a turn, Step through one node at a time to see exactly what it produced, and Retry a node to
+  get a fresh result before deciding to move on.
 - **Evaluations** — Define versioned test suites against your agents: a prompt, optional setup commands
   to prepare a realistic scenario (seed files, init a repo) in the agent's own Environment before its
   turn, assertions on the reply, and optional verify commands checking the environment's resulting state
@@ -95,10 +107,12 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         prompt/prompt template, a tool's parameters, a decision's match text) can reference an earlier
         node's output — not just its immediate predecessor — as `{{NodeName}}`, with an "insert variable"
         picker in the inspector so you don't have to type it by hand. A prompt node can optionally declare
-        a JSON Schema its reply must satisfy (best-effort: the model is instructed via the prompt, then
-        the reply is parsed and validated — there's no true constrained decoding available from the local
-        MLX server, so a non-conforming reply fails the turn rather than being silently accepted), and once
-        it does, downstream nodes can pull out a specific property with `{{NodeName.property}}`. Decision
+        an output schema its reply must satisfy — built in a compact property tree (name + type + required,
+        with nesting for objects and arrays) rather than typed as raw JSON, with a raw-JSON escape hatch
+        for anything the tree can't express. Validation is best-effort (the reply is parsed and checked —
+        there's no true constrained decoding from the local MLX server, so a non-conforming reply fails
+        the turn), and once a schema is set, downstream nodes can pull out a specific property with
+        `{{NodeName.property}}`. Decision
         branches on a simple keyword match against a node's output (optionally a specific property, via the
         same templating), not an LLM call. Fully verified live end-to-end, twice: a real Docker container
         was launched, a tool node's chosen tool (a real DuckDuckGo web search) executed inside it with the
@@ -120,6 +134,39 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         real local MLX model: stepped through a turn, retried a prompt node to get a genuinely different
         reply that correctly replaced the finished turn's message, and confirmed the canvas highlight and
         stop/restart lifecycle all work correctly.
+  - [x] Composable agent architectures — the canvas walks a **cyclic** graph now, not just a linear one,
+        so plan-execute-judge, Ralph loops, and reflexion are built from small orthogonal nodes. The
+        keyword-only `decision` node became a general `condition` node (routes `pass`/`fail` on a
+        deterministic `contains`/`not_contains`/`regex`/`json_schema`/`similarity` check, sharing the
+        Evaluations/Benchmarks checker); a **loop start / loop end** pair brackets a loop — the implicit
+        back-edge is drawn dashed, route a branch to the loop end to continue or anywhere else to break,
+        `{{Loop.iteration}}` is available inside, and the loop start's `done` handle fires at the
+        max-iterations cap (loops nest and multiple loop ends can fan into one start); a `state` node
+        accumulates a `set`/`append` scratchpad across iterations, referenceable as `{{StateName}}`; an
+        `agent` node runs a bounded textual-ReAct tool-calling loop over a per-node-selected subset of the
+        bound Environment's tools, with a graceful fallback (an unparseable reply is returned as the
+        answer, never an error) since tiny models are unreliable at structured output. Every edge shows a
+        direction arrowhead, and the editor validates the graph on every edit — a panel lists problems
+        (missing model, unpaired loop end, a dangling `{{reference}}`, …) and disables Run and Debug
+        until the blocking ones are fixed. Debug and run both still work — `runNode` is the one shared
+        primitive,
+        `runContext.clone()` restores a loop's iteration count for Retry. Verified live end-to-end against
+        a real local MLX model and a real Docker container: a plan-execute-judge cycle (loop start → work
+        → judge → condition; fail → loop end → back to start, pass → break out) looping then breaking; a
+        Ralph-style loop→prompt→state cycle iterating to its cap with `{{Loop.iteration}}` resolving and
+        the state node accumulating across passes; an `agent` node executing a real `web_search` inside a
+        launched container and handling a hallucinated tool name without erroring; and a live debug
+        session stepping around the back-edge.
+  - [x] Node-type consistency & parity pass (12 items) — `{{Loop.iteration}}` in the insert-variable
+        picker; `state` op default unified to `append`; conversation history threaded into the `agent`
+        node so a chat agent isn't amnesiac; the `agent` node can search **knowledge bases** too (a
+        built-in `knowledge_search` action, tolerant of how tiny models actually call it) and its tool
+        picker got the polished styling; `prompt` and `agent` nodes can constrain output to a **JSON
+        schema** and route a validation miss to a **`fail` handle** (in Run and the debugger) instead of
+        ending the turn; the `knowledge` node has a top-K cap; a new **`switch` node** routes N ways on a
+        case match; and `tool`/`knowledge` output that is JSON is now addressable as `{{Node.property}}`
+        downstream. Verified live against real models and Docker: schema-fail routing, agent schema
+        properties resolving downstream, a billing/shipping/default switch router, and the knowledge cap.
 - [x] **Phase 4 — Evaluations**
   - [x] Add an Evaluations page to the navbar
   - [x] Define tests (prompt, assertions) against a set of agents in one environment — assertions are

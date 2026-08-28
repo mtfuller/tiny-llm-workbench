@@ -52,10 +52,19 @@ export function upstreamVariableOptions(nodes: GraphNodeLike[], edges: GraphEdge
     const name = node.data.name?.trim()
     if (!name) continue
     options.push({ insert: name, label: name })
-    if (node.type === 'prompt' && node.data.outputSchema) {
-      for (const key of extractTopLevelProperties(node.data.outputSchema)) {
+    // A prompt or agent node with an output schema exposes each top-level
+    // property as {{Name.property}} (the engine validates + parses its reply).
+    const schema =
+      node.type === 'prompt' ? node.data.outputSchema : node.type === 'agent' ? node.data.agentOutputSchema : undefined
+    if (schema) {
+      for (const key of extractTopLevelProperties(schema)) {
         options.push({ insert: `${name}.${key}`, label: `${name} → ${key}` })
       }
+    }
+    // A loop_start exposes its 1-based pass count as {{Name.iteration}} (the
+    // engine special-cases it — see runcontext.go).
+    if (node.type === 'loop_start') {
+      options.push({ insert: `${name}.iteration`, label: `${name} → iteration` })
     }
   }
   return options

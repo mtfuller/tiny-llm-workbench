@@ -173,6 +173,23 @@ func ExtractJSONValue(s string) (string, bool) {
 	return "", false
 }
 
+// ParseJSONValue extracts the first balanced JSON value from s and decodes it
+// with the same reader ValidateJSONSchema uses (numbers as json.Number), so a
+// value stored this way behaves identically to a schema-validated one for
+// downstream {{name.property}} lookups. ok is false when s contains no JSON
+// or the extracted text doesn't parse.
+func ParseJSONValue(s string) (any, bool) {
+	candidate, ok := ExtractJSONValue(s)
+	if !ok {
+		return nil, false
+	}
+	v, err := jsonschema.UnmarshalJSON(strings.NewReader(candidate))
+	if err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
 // checkSimilarity passes if output is at least threshold similar to
 // reference, by normalized Levenshtein distance (case-insensitive, same
 // reasoning as "contains"). threshold must be in (0, 1].

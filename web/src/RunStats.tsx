@@ -1,11 +1,5 @@
 import type { TrainingRun } from './api'
-
-function formatDuration(startedAt: string, finishedAt?: string): string {
-  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
-  const seconds = Math.max(0, Math.round((end - new Date(startedAt).getTime()) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-}
+import { formatDuration } from './lib/format'
 
 // RunStats renders a row of at-a-glance stat tiles for a training run —
 // shared by the Training list page's "active run" banner and the run detail

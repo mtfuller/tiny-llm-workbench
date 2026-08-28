@@ -140,6 +140,36 @@ func TestStepDebugRunWalksToCompletionAndRecordsMessages(t *testing.T) {
 	}
 }
 
+// Stepping a prompt node whose OutputSchema rejects the reply follows its
+// "fail" handle in the debugger, exactly as Run does — no hard error.
+func TestStepDebugRunFollowsSchemaFailHandle(t *testing.T) {
+	schema := `{"type":"object","required":["city"]}`
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Classifier", Model: "m", OutputSchema: schema}},
+			{ID: "p2", Type: "prompt", Data: registry.NodeData{Name: "Recover", Model: "m", PromptTemplate: "recovered"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "p1"},
+			{ID: "e2", Source: "p1", SourceHandle: "fail", Target: "p2"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"not json", "recovered reply"}}
+	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	started, _ := m.StartDebugRun("greeter", graph, "")
+	m.SendDebugMessage(started.ID, "hi")
+
+	m.StepDebugRun(started.ID) // input
+	s2, err := m.StepDebugRun(started.ID)
+	if err != nil {
+		t.Fatalf("StepDebugRun() (schema-failing prompt) error = %v, want the fail handle followed", err)
+	}
+	if s2.PendingNodeID != "p2" {
+		t.Errorf("s2.PendingNodeID = %q, want %q (routed down the fail handle)", s2.PendingNodeID, "p2")
+	}
+}
+
 func TestStepDebugRunNothingPendingErrors(t *testing.T) {
 	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
 	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
@@ -281,5 +311,123 @@ func TestDebugRunToolNodeUsesSessionInstance(t *testing.T) {
 	}
 	if final.LastStep.Output != "tool output" || !final.Finished {
 		t.Errorf("final = %+v, want finished with %q", final, "tool output")
+	}
+}
+
+func TestRetryDebugRunLoopNodeDoesNotDoubleIncrement(t *testing.T) {
+	// input -> L(loop_start, name L) --body--> P(prompt, template
+	// "{{L.iteration}}"). Stepping L once sets iteration=1; retrying L must
+	// re-run it from the pre-increment snapshot, yielding iteration=1 again,
+	// not 2.
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: 5}},
+			{ID: "p", Type: "prompt", Data: registry.NodeData{Model: "m", PromptTemplate: "iter {{L.iteration}}"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "p"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"p reply"}}
+	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	started, _ := m.StartDebugRun("looper", graph, "")
+	m.SendDebugMessage(started.ID, "go")
+	m.StepDebugRun(started.ID) // input -> pending L
+	m.StepDebugRun(started.ID) // L: iteration 1 -> pending P
+
+	if _, err := m.RetryDebugRun(started.ID); err != nil { // re-run L
+		t.Fatalf("RetryDebugRun() error = %v", err)
+	}
+	if _, err := m.StepDebugRun(started.ID); err != nil { // P
+		t.Fatalf("StepDebugRun() (P) error = %v", err)
+	}
+	if len(llm.calls) != 1 || !strings.Contains(llm.calls[0], "iter 1") {
+		t.Errorf("llm.calls[0] = %q, want it to reference iteration 1 (retry must not double-count)", llm.calls[0])
+	}
+}
+
+func TestRetryDebugRunAgentNodeReRunsInternalLoop(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "a1", Type: "agent", Data: registry.NodeData{Model: "m", AgentInstructions: "answer"}},
+		},
+		Edges: []registry.Edge{{ID: "e1", Source: "in", Target: "a1"}},
+	}
+	llm := &fakeLLM{responses: []string{"FINAL: first", "FINAL: second"}}
+	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	started, _ := m.StartDebugRun("assistant", graph, "")
+	m.SendDebugMessage(started.ID, "go")
+	m.StepDebugRun(started.ID) // input
+
+	first, err := m.StepDebugRun(started.ID) // agent
+	if err != nil {
+		t.Fatalf("StepDebugRun() (agent) error = %v", err)
+	}
+	if first.LastStep.Output != "first" || !first.Finished {
+		t.Fatalf("first = %+v, want finished with %q", first, "first")
+	}
+
+	retried, err := m.RetryDebugRun(started.ID)
+	if err != nil {
+		t.Fatalf("RetryDebugRun() error = %v", err)
+	}
+	if retried.LastStep.Output != "second" {
+		t.Errorf("retried.LastStep.Output = %q, want %q (agent node's internal loop re-ran)", retried.LastStep.Output, "second")
+	}
+	if last := retried.Messages[len(retried.Messages)-1]; last.Content != "second" {
+		t.Errorf("final assistant message = %q, want %q", last.Content, "second")
+	}
+}
+
+func TestStepDebugRunFollowsLoopEndBackToStart(t *testing.T) {
+	// input -> L(loop_start, max 3) --body--> W(prompt) -> LE(loop_end -> L);
+	// L --done--> F(prompt). Stepping should visit W three times (the walk
+	// jumping LE -> L each time) before L routes "done" to F.
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: 3}},
+			{ID: "w", Type: "prompt", Data: registry.NodeData{Name: "W", Model: "m", SystemPrompt: "w"}},
+			{ID: "le", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L"}},
+			{ID: "f", Type: "prompt", Data: registry.NodeData{Name: "F", Model: "m", SystemPrompt: "f"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "w"},
+			{ID: "e3", Source: "w", Target: "le"},
+			{ID: "e4", Source: "l", SourceHandle: "done", Target: "f"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"w1", "w2", "w3", "f reply"}}
+	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	started, _ := m.StartDebugRun("looper", graph, "")
+	m.SendDebugMessage(started.ID, "go")
+
+	var visited []string
+	for i := 0; i < 20; i++ {
+		s, err := m.StepDebugRun(started.ID)
+		if err != nil {
+			t.Fatalf("StepDebugRun() error = %v", err)
+		}
+		visited = append(visited, s.LastStep.NodeType)
+		if s.Finished {
+			break
+		}
+	}
+
+	prompts := 0
+	for _, v := range visited {
+		if v == "prompt" {
+			prompts++
+		}
+	}
+	if prompts != 4 {
+		t.Errorf("prompt steps = %d (sequence %v), want 4 (W three times + F once)", prompts, visited)
+	}
+	if visited[len(visited)-1] != "prompt" {
+		t.Errorf("last step = %q, want the F prompt node", visited[len(visited)-1])
 	}
 }

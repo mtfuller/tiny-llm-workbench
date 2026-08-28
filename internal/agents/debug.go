@@ -137,10 +137,13 @@ func (dr *debugRun) applyStepResult(node *registry.Node, input, output, handle s
 // used only for display and to look up the agent when nothing else is
 // needed; it plays no role in choosing which graph runs.
 func (m *Manager) StartDebugRun(agentName string, graph registry.Graph, environment string) (*DebugState, error) {
-	inputNode, nodesByID, err := findInputNode(graph)
+	inputNode, nodesByID, edges, err := prepareGraph(graph)
 	if err != nil {
 		return nil, err
 	}
+	// Walk against the augmented edge list (synthetic loop_end -> loop_start
+	// back-edges included) so applyStepResult follows the same paths Run does.
+	graph.Edges = edges
 
 	tools, err := m.resolveTools(environment)
 	if err != nil {
@@ -228,9 +231,13 @@ func (m *Manager) StepDebugRun(id string) (*DebugState, error) {
 	input := dr.pendingInput
 	snapshot := dr.rc.clone() // state right before node runs — what a later Retry restores
 
-	output, handle, err := m.engine.runNode(m.ctx, node, input, dr.instanceID, dr.tools, dr.messages, dr.rc)
+	output, handle, err := m.engine.runNode(m.ctx, node, input, dr.instanceID, dr.tools, dr.messages, dr.rc, func(s StepEvent) { m.publishStep(id, s) })
 	if err != nil {
-		return nil, fmt.Errorf("run node %q: %w", node.ID, err)
+		soft, fatal := resolveStepErr(dr.graph.Edges, node.ID, err)
+		if fatal != nil {
+			return nil, fmt.Errorf("run node %q: %w", node.ID, fatal)
+		}
+		handle = soft // schema mismatch with a wired "fail" edge — route down it
 	}
 
 	dr.rcBeforeLast = snapshot
@@ -265,9 +272,13 @@ func (m *Manager) RetryDebugRun(id string) (*DebugState, error) {
 	input := dr.lastInput
 	dr.rc = dr.rcBeforeLast.clone()
 
-	output, handle, err := m.engine.runNode(m.ctx, node, input, dr.instanceID, dr.tools, dr.messages, dr.rc)
+	output, handle, err := m.engine.runNode(m.ctx, node, input, dr.instanceID, dr.tools, dr.messages, dr.rc, func(s StepEvent) { m.publishStep(id, s) })
 	if err != nil {
-		return nil, fmt.Errorf("run node %q: %w", node.ID, err)
+		soft, fatal := resolveStepErr(dr.graph.Edges, node.ID, err)
+		if fatal != nil {
+			return nil, fmt.Errorf("run node %q: %w", node.ID, fatal)
+		}
+		handle = soft // schema mismatch with a wired "fail" edge — route down it
 	}
 
 	dr.applyStepResult(&node, input, output, handle)

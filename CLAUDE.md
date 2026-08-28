@@ -75,6 +75,52 @@ choice:
   starts it (`tlw serve`); there is no cross-process bridge to design. `internal/server` wires the
   bus's `/api/events` endpoint and the SPA handler (with an index.html fallback for client-side
   routing) together.
+
+  **2026-08-27 addendum — shared frontend UI primitives (DRY pass 1).** The top-level list pages had
+  been copy-pasted (~160 lines each of load/error/search/filter/paginate/confirm-delete + identical
+  toolbar/4-state/table/pagination JSX), and the two versioned detail pages
+  (`BenchmarkDetail`/`EvaluationDetail`) had duplicated `formatDuration`/`formatMs`/`computeMetrics`/
+  `sortResults`/`ResultMetrics`, the version badge, the tab strip, and a per-column sort-header helper.
+  Extracted:
+  - `web/src/lib/format.ts` — `formatDuration`, `formatMs`, `formatDate`, `formatDateTime`
+  - `web/src/lib/resultMetrics.ts` — `ResultMetrics`, `computeMetrics` (the `verifyResults ?? []` form
+    serves both benchmarks and evaluations), `compareByMetricKey` + `MetricSortKey` (each detail page
+    keeps only its two domain sort columns and delegates the rest)
+  - leaf components: `ModalActions` (the Cancel + submit modal footer, ~28 sites), `Badge`/`VersionBadge`,
+    `TabBar`, `SortableHeader`, `ModelCombobox` (free-text + `<datalist>` seeded with trained ∪
+    `suggestedModels`; `useId` gives each a unique list id — fixes AgentEditor reusing one id twice),
+    `IconButton` (forces `title`/`aria-label` from one `label` prop)
+  - `useResourceList` hook + `ListPanel` component: the list-page skeleton (load-into-nullable / error /
+    search / client filter / pagination / confirm-delete-toast-reload + toolbar / 4-state block / table
+    / pagination chrome). Options go through a ref so callers can pass fresh closures without churning
+    memoised derivations.
+  - `useTagFilter(items, getTags)` — `allTags` / `activeTags` / `toggleTag` / `clearTags` / `matchesTags`,
+    the tag-filter logic that was copy-pasted into DatasetDetail/KnowledgeDetail/BenchmarkDetail/
+    EvaluationDetail.
+  - `TagCell` — the `tags?.length ? <div className="tag-list">…badges</div> : '—'` table cell.
+
+  **Adopted (pass 2 done):**
+  - `lib/format` + `lib/resultMetrics` in `RunStats`, `Training`, `BenchmarkDetail`, `EvaluationDetail`
+  - `ModalActions` in every create/edit/generate/run modal across all list pages + the two detail pages
+    + Training
+  - `ModelCombobox` in `DatasetDetail`, `Training`, `BenchmarkDetail`, `AgentEditor` (×2)
+  - `TabBar` in `BenchmarkDetail`, `EvaluationDetail`, `EnvironmentDetail`
+  - `SortableHeader` + `VersionBadge` in `BenchmarkDetail`, `EvaluationDetail`
+  - `useResourceList` + `ListPanel` on `Agents`, `Models`, `Knowledge`, `Tools`, `Benchmarks`,
+    `Evaluations`, `Datasets`, and `Environments` (definitions section; its running-instances table
+    stays hand-rolled)
+  - `useTagFilter` + `TagCell` in `DatasetDetail`, `KnowledgeDetail`, `BenchmarkDetail`, `EvaluationDetail`
+  - `IconButton` in every converted list page + the row/toolbar buttons of `DatasetDetail`,
+    `KnowledgeDetail`, `BenchmarkDetail`, `EvaluationDetail`
+
+  Every top-level list page is now ~50–90 lines (was ~160–220). **Still to do:** `IconButton` on the
+  remaining `.icon-button` `<button>`s in `AgentEditor`, `EnvironmentDetail`, `Training`, `TrainingRunDetail`,
+  `ModelDetail`, `Home`; a `PageHeader` component (low value); `useJobProgress` wrapping the SSE +
+  `setInterval(getRun/getExec, ~3s)` poll fallback (`BenchmarkDetail`, `EvaluationDetail`, `Training`,
+  `TrainingRunDetail`, `EnvironmentDetail` — deferred because the 5 copies differ enough that a hook
+  needs ~5 callbacks; also the `feedback_sse_needs_poll_fallback` bug class); and `ResultsTable` /
+  `VersionInfoCard` for the two detail pages. Verified live across the converted list pages + the
+  Knowledge/Benchmark detail pages (tag filter, sortable results, create modals).
 - **MLX integration**: whether training shells out to a Python/MLX subprocess, or goes through cgo/FFI
   bindings, and how progress/stats get reported back to the CLI (Phase 1). Later expanded to cover model
   *inference* too, once Ollama (the original inference backend) turned out to be a dead end for anything
@@ -621,6 +667,275 @@ choice:
   the input passed into it) appeared as its step's output, retried that same node and got a genuinely
   different sampled reply that correctly replaced the finished turn's assistant message in place, and
   confirmed Stop → Start correctly tears down and relaunches a fresh session.
+
+  **2026-08-27 addendum — from linear workflow to composable agent architectures (cyclic graph):** the
+  user wanted the canvas to build *agent architectures* (plan-execute-judge, Ralph loop, reflexion, …),
+  not just a linear pipeline — "orthogonal nodes that will allow me to design these types of
+  architecture." Four forks were surfaced via `AskUserQuestion` (all their chosen options recorded here):
+  - **Cyclic graph + control-flow nodes.** `internal/agents.Engine.Run` still walks a single path one
+    edge per step and still ends at the first dead-end handle — but edges may now form cycles, and
+    `maxSteps` was raised (50 → 250) and reworded from "likely a cycle" to an *unbounded*-loop backstop.
+    New `loop` node: holds `LoopMaxIterations`, increments a per-Name counter in `runContext.loopCounts`
+    each visit, routes to its `loop` handle while `count <= max` and its `done` handle after, and exposes
+    `{{LoopName.iteration}}` downstream (a `parsed` value `{iteration, input}`, so the existing
+    `lookupJSONPath` handles it with zero special-casing). The loop *body* edges back to the loop node;
+    `done` is the after-loop / give-up path.
+  - **`decision` → `condition` (generalized), clean cutover.** The keyword-only `decision` node and its
+    `Keyword` field are gone. `condition` inlines the three `registry.Assertion` fields
+    (`ConditionType`/`ConditionValue`/`ConditionThreshold`) and routes `pass`/`fail` via
+    `internal/assertions.Check` — so it gets `contains`/`not_contains`/`regex`/`json_schema`/`similarity`
+    for free and shares exactly the checker Evaluations/Benchmarks use. `MatchTemplate` stays (falls
+    back to the inbound value). No migration path for old `decision` nodes — none exist outside local
+    dev data (same precedent as the Output-node removal).
+  - **`state` node + loop counter for cross-iteration state.** New orthogonal `state` node: `StateOp`
+    `set`/`append`, templated `StateValue` (falls back to inbound). Its accumulator lives under the
+    node's own Name — `{{StateNodeName}}` reads the current value, no separate variable namespace —
+    and `append` newline-joins onto the existing value, so it accumulates across loop passes. This is
+    the deterministic-architecture story (plan-execute-judge, Ralph) end to end: `loop` + `condition` +
+    `prompt` + `state`, no model-driven control flow.
+  - **`agent` node — a deliberate, scoped exception to the project's no-tool-calling-loop stance.** A
+    bounded textual-ReAct loop: each iteration prompts `AgentModel` with `AgentInstructions` (templated)
+    + a rendered list of `AgentTools` (a per-node-selected *subset* of the bound Environment's tools) +
+    the running ACTION/OBSERVATION transcript. `parseAction` tolerantly pulls a tool name + JSON args
+    (handles `ACTION:`/`ARGS:` on separate lines, the inline `tool({...})` form, and a bare object
+    anywhere after the ACTION marker — reusing `assertions.ExtractJSONValue` for the balanced-brace
+    scan); a parsed action runs the tool through the *same* `environments.RenderToolCommand` +
+    `RunToolSync` path tool nodes use. **Graceful fallback is load-bearing given tiny models:** a reply
+    with neither a usable `ACTION` nor a `FINAL:` is returned verbatim as the answer, never an error;
+    hitting `AgentMaxIterations` returns the model's last text best-effort. One `agent.step` event per
+    internal iteration, so the loop shows live in the Run view / debugger even though the whole node is
+    a single engine step (like a tool node running one command). `runNode` grew one param (`onStep`,
+    nil-safe) to carry those; `NewEngine`/`NewManager` signatures are unchanged.
+
+  Debug/run both keep working with no structural change: `runNode` is still the one primitive `Run`'s
+  loop and the debugger's Step/Retry both call. `runContext.clone()` now also copies `loopCounts`, so
+  Retry of a `loop` node restores the pre-increment count (a unit test guards the double-count);
+  Retry of an `agent` node re-runs its whole internal loop. No server routes changed — the graph is
+  opaque JSON to the handlers.
+
+  Frontend: `web/src/api.ts` `NodeType` is now
+  `input|prompt|tool|knowledge|condition|loop|state|agent`; `agentNodes.tsx` gained
+  `ConditionNode`/`LoopNode`/`StateNode`/`AgentNode` (condition & loop render two labelled handles —
+  `pass`/`fail`, `loop`/`done`); `AgentEditor.tsx` palette/inspector cover all four (condition reuses
+  the assertion-field shape from `TestCaseEditor.tsx`; the agent node has a checkbox list of the bound
+  environment's tools writing `agentTools`); `index.css` got the new `.flow-node-*` /
+  `.inspector-node-header-*` colors and renamed the handle-label modifiers `-yes`/`-no` → `-pass`/`-fail`.
+
+  Verified live end-to-end against a real local MLX model and a real Docker container, no mocks:
+  (1) a Ralph-style cyclic graph — `input → loop(max 2) → prompt → state(append "iter {{Loop.iteration}}:
+  {{Work}}") → back to loop; loop.done → final prompt` — ran a real turn and the SSE step log showed the
+  loop iterating exactly twice, `{{Loop.iteration}}` resolving 1 then 2, the state node accumulating
+  `"iter 1: …\niter 2: …"` across passes, and the loop routing to `done` on the 3rd entry;
+  (2) a `condition` node routing a real prompt node's reply via `contains "GOOD"` on both branches;
+  (3) an `agent` node bound to the `WebSearch` environment that launched a real container and executed a
+  real `web_search` tool call inside it (DuckDuckGo JSON came back as the OBSERVATION), correctly fed an
+  "no tool named …" observation back when the 0.5B model hallucinated a tool name, and hit its iteration
+  cap and returned best-effort text without erroring — the exact tiny-model failure mode the graceful
+  fallback is for;
+  (4) a live debug session on the cyclic graph — Step walked `input → loop → prompt → state` and
+  correctly followed the back-edge (`state` → pending `loop` again), and Retry re-ran the last node.
+
+  **2026-08-27 addendum #2 — loop model refined to a `loop_start`/`loop_end` pair; edges got
+  arrowheads.** The single `loop` node above (with a manual body→loop back-edge) was replaced, on the
+  user's request for "a more intuitive way to construct loops … loop starts and loop ends, that way a
+  sequence in a loop can branch off and end or continue the loop." Clean cutover (no saved graphs).
+  - `loop` → **`loop_start`** (handle rename `loop` → `body`; `done` unchanged) plus a new **`loop_end`**
+    node carrying `LoopStartName`. The back-edge is *not stored* — `prepareGraph` (the renamed
+    `findInputNode`, now also returning the edge list and shared by `Run` + `StartDebugRun`) synthesizes
+    one `loop_end → loop_start` edge per `loop_end` and validates every `loop_end` resolves (a lone loop
+    pair may leave `LoopStartName` blank). `loop_end`'s `runNode` case is a pure pass-through; the
+    synthetic edge carries the walk back.
+  - "Continue the loop" = wire a branch to a `loop_end`; "break" = wire it anywhere else; running out of
+    iterations = `loop_start`'s own `done` handle. **Multiple `loop_end`s may target one `loop_start`**
+    (fan-in from several branches), and loops **nest** — `loop_start` resets its own counter to 0 when it
+    emits `done`, so an inner "loop 2×" inside an outer "loop 2×" runs 4 inner passes, not 2. Counter is
+    still keyed by node ID in `runContext.loopCounts` (cloned for debugger Retry).
+  - Frontend: `NodeType` `loop` → `loop_start | loop_end`; dropping **Loop start** from the palette
+    spawns the matching **Loop end** already paired (and deleting a Loop start deletes its paired ends).
+    A `loop_end` renders only a target handle (plus a hidden, non-connectable source handle so React
+    Flow can anchor the back-edge) and the editor draws the implicit back-edge as a dashed animated
+    `--warn` edge in a display-only `edgesForCanvas` memo (stripped from the save payload, like the
+    debug-highlight overlay).
+  - Separately, **all edges now carry an arrowhead** (`MarkerType.ArrowClosed`) — `defaultEdgeOptions`
+    on `<ReactFlow>`, applied on load and in `onConnect`; presentation only, never persisted.
+  Verified live: a plan-execute-judge graph (`loop_start` "Attempt" max 3 → Work → Judge → `condition`
+  `contains APPROVED`; `fail` → `loop_end` "Continue" → back to Attempt; `pass` → Done) ran a real turn
+  that looped once, then broke out on `pass`; the canvas showed arrowheads on every edge and the dashed
+  back-edge from Continue to Attempt; `StepDebugRunFollowsLoopEndBackToStart` and `TestRunNestedLoops`
+  cover the walk in unit tests.
+
+  **2026-08-27 addendum #3 — canvas reoriented top-to-bottom.** Frontend only, no engine/graph change.
+  Every node's `target` handle moved to `Position.Top` and `source` to `Position.Bottom`
+  (`agentNodes.tsx`); the two-handle nodes (`condition` `pass`/`fail`, `loop_start` `body`/`done`) place
+  both handles along the bottom edge at `left: 32%/68%`, and `.flow-node-handle-label` moved from a
+  right-side to a below-the-node position (`bottom: -1.05rem; transform: translateX(-50%)`). `loop_end`'s
+  hidden anchor handle is on `Position.Left` so the dashed back-edge sweeps up the side. Default node
+  placement (`addNode`, the paired `loop_end` offset, and `Agents.tsx`'s seed Input) now stacks
+  downward instead of rightward. Existing saved graphs keep their stored x/y — only new nodes/agents lay
+  out vertically. NOTE: `web/dist` is embedded at Go compile time, so after `task web:build` the `tlw`
+  binary must be rebuilt (`go build`) before `tlw serve` reflects CSS/JS changes.
+
+  **2026-08-27 addendum #4 — live graph validation gates Run/Debug.** Frontend only. New pure module
+  `web/src/agentValidation.ts` — `validateGraph({nodes, edges, environment, availableTools,
+  knowledgeBases, environments})` returns `GraphIssue[]` (`severity: 'error' | 'warning'`, `message`,
+  optional `nodeId`), recomputed in a `useMemo` on every canvas edit. It mirrors what `internal/agents`
+  would reject at run time — missing prompt/agent model, `condition` with no type / no value / bad JSON
+  schema / out-of-range similarity threshold, `tool` node with no env / no tool / tool not on the env /
+  missing required param, `knowledge` node with no/deleted base, `loop_end` that resolves to no
+  `loop_start`, `>1` or `0` input nodes, duplicate node names, a `{{Ref}}` naming no node, an edge to a
+  deleted node, an environment binding that no longer exists — plus softer **warnings** (orphan nodes,
+  a `loop_start` with nothing on `body`, a `condition` with neither branch wired, an `agent` node with
+  no tools, an unset loop max). `AgentEditor` derives `errorCount` / `runBlocked = errorCount > 0`:
+  the header **Debug** and **Run** buttons and the debug panel's **Start debugging** button are
+  `disabled` while `runBlocked`, and `openChat`/`openDebug`/`handleStartRun`/`handleStartDebug` bail
+  out defensively. **Save is never blocked** (WIP graphs save fine — this replaced the old
+  `findDuplicateNodeName` gate on Save). Issues render in a collapsible panel between the header and the
+  canvas; clicking a row with a `nodeId` selects that node and opens the inspector. The engine's own
+  runtime checks are unchanged — this is a pre-flight layer, not a replacement.
+
+  **2026-08-27 addendum #5 — agent inspector textareas got line-number gutters.** Frontend only. The
+  shared `LineNumberedTextarea` (previously only the Datasets example editor) grew a forwarded ref to
+  its inner `<textarea>` (via `forwardRef`) so the "insert variable" picker can still read
+  `selectionStart`/`selectionEnd`, and every multi-line field in `AgentEditor.tsx`'s node inspector —
+  system prompt, prompt template, output schema, condition match-template and JSON schema, state value,
+  agent instructions, knowledge query — now uses it instead of a bare `<textarea>` (monospace,
+  non-wrapping, synced gutter — same as the dataset editor). `.template-field-row .line-editor { flex: 1 }`
+  added so it still sits beside the `VariableMenuButton`. The Agent-settings modal's free-text
+  Description field was deliberately left a plain textarea (prose, not node config).
+
+  **2026-08-27 addendum #6 — JSON-schema fields became a structured property tree.** Frontend only. New
+  `web/src/SchemaBuilder.tsx` — a compact recursive editor: per property a name input + a type `<select>`
+  (`string` / `number` / `integer` / `boolean` / `object` / `array`) + a "req" checkbox + delete; an
+  `object` property nests a child `FieldList`, an `array` property gets an item-type select (and nests
+  when the item type is `object`). It parses an existing schema string into the tree on mount and
+  serializes back on every edit to the same JSON-Schema-document string the engine's
+  `internal/assertions.ValidateJSONSchema` already expects (`{type:"object", properties, required}`),
+  emitting `""` when no property is named so "no schema" still means no validation. Anything the builder
+  can't represent (enum, oneOf, `$ref`, a top-level non-object, unknown keywords) flips it to a raw
+  `LineNumberedTextarea` mode with a "Use builder" button that re-enables once the raw text parses
+  cleanly; there's also an always-available "Edit raw JSON" toggle. Wired into both schema fields in
+  `AgentEditor.tsx` (Prompt node output schema, Condition node `json_schema`) with `key={selectedNode.id}`
+  so switching nodes re-parses. `agentValidation.ts`'s `JSON.parse` check on those fields still applies
+  (the raw-mode escape hatch can still produce invalid JSON). Verified live: an existing nested schema
+  (`city`/`confidence`/`meta.source`) parsed into the tree, adding a `score: integer` property and
+  saving round-tripped to a correct schema doc.
+
+  **2026-08-27 addendum #7 — the agent workspace sidebars are drag-resizable.** Frontend only. New
+  `web/src/useResizableSidebar.ts` — a hook driving one sidebar's px width: `resizerProps` spreads onto
+  a 6px `.workspace-resizer` handle (pointer-capture drag, `side: 'left' | 'right'` picks which way the
+  delta grows it, clamped to a min/max), `width` goes on the sidebar's inline `style`, double-click
+  resets to the default. Width persists to `localStorage` (`tlw.agentPaletteWidth` /
+  `tlw.agentInspectorWidth`) once a drag settles, and the whole page gets `cursor: col-resize` +
+  `user-select: none` while dragging. `AgentEditor.tsx` renders a handle after `.agent-palette` and
+  before `.agent-inspector` (only when that panel is open). The Debug tab's extra-room need is now a CSS
+  floor — `.agent-palette-wide { min-width: 280px }` (was `width`) — so a narrower dragged width is held
+  up while debugging but a wider one is respected. Verified live: dragged both sidebars, reloaded
+  (widths restored from localStorage), double-clicked to reset, and confirmed the Debug-tab min-width
+  floor still applies over a 190px inline width.
+
+  **2026-08-27 addendum #8 — node-type consistency pass + `agent` node reaches parity with `tool`.**
+  After the cyclic-architecture work landed, the user asked to evaluate every node type for gaps and
+  inconsistencies; the result was a 12-item list tackled in phases. Phases 1–2 (this addendum):
+  - **Phase 1 — cheap consistency (items 1–5):**
+    - `{{LoopName.iteration}}` is now offered by the "insert variable" picker
+      (`upstreamVariableOptions` in `TemplateField.tsx` emits a `${name}.iteration` option for every
+      upstream `loop_start`).
+    - `state` node's default op is unified to **`append`** everywhere it was inconsistently `set`:
+      the engine's `case "state"` now treats *anything but an explicit `"set"`* as append (was
+      `== "append"`), the canvas subtitle (`agentNodes.tsx` `StateNode`) reads `data.stateOp || 'append'`,
+      and `addNode`'s seed / the inspector `<select>` default already said append. Regression guards:
+      `TestRunStateOpDefaultsToAppend`, `TestRunStateOpSetReplaces`.
+    - `agentValidation.ts` gained a `loop_start`-`done`-handle-unwired **warning** ("when it hits the
+      max, the turn just ends").
+    - **Conversation history is threaded into the `agent` node.** `runAgentNode` / `buildAgentPrompt`
+      grew a `history []ChatMessage` param and render a "Conversation so far:" block (role-upper +
+      content) ahead of the tool list — a chat agent whose graph is `input → agent` is no longer
+      amnesiac between turns. `TestRunAgentNodeIncludesConversationHistory` guards it.
+    - Field-hint copy pass in the inspector (state "Resets at the start of each chat turn."; knowledge
+      "every matching record is joined … all query words must appear, not embeddings"; agent
+      instructions spell out the ACTION/ARGS/FINAL loop).
+  - **Phase 2 — `agent` node parity with `tool` (items 6–7):**
+    - **The `agent` node can now use KnowledgeBases**, not just Environment tools. New
+      `registry.NodeData.AgentKnowledgeBases []string` (+ `api.ts` `agentKnowledgeBases?: string[]`,
+      `addNode` seeds `[]`). `runAgentNode` resolves them via the existing `knowledgeReader`
+      (`e.knowledge.GetKnowledgeBase`, unresolvable names skipped) and `buildAgentPrompt` advertises a
+      built-in **`knowledge_search`** pseudo-tool. The ReAct loop special-cases it *before* normal tool
+      dispatch and runs `knowledge.Query` + `FormatResults` over the bound bases — **needs no
+      Environment / container** (KBs never did). `NewEngine`/`NewManager` signatures unchanged (the
+      `knowledgeReader` was already wired for the `knowledge` node type).
+    - **Loose-call tolerance for `knowledge_search`, because tiny models won't emit it exactly**
+      (verified live against `Qwen2.5-0.5B` — it called `ACTION: faq` with `ARGS: {"param": …}` /
+      `{"q": …}`): `matchKnowledgeSearch(action, kbs)` accepts `knowledge_search`, a bare
+      `knowledge`/`kb`/`search`, **or the literal name of a bound base** (then only that base is
+      searched); the query arg is taken from `query` or synonyms (`q`/`search`/`question`/`input`),
+      else the first non-empty arg value, else the node's own `input` (same
+      "empty-query-falls-back-to-previous-output" convention the `knowledge` node uses). The prompt's
+      `ARGS:` example is now a concrete `{"<real param>": "value"}` built from the first available
+      tool/KB rather than the literal `{"param": "value"}` a 0.5B model was copying verbatim.
+      Guards: `TestRunAgentNodeKnowledgeSearchToleratesLooseCalls`,
+      `TestRunAgentNodeKnowledgeSearchFallsBackToInput`,
+      `TestRunAgentNodeKnowledgeSearchNeedsNoEnvironment`.
+    - **Inspector UX:** the `agent` node's raw `.agent-checklist` checkboxes were replaced with a
+      polished `MultiPickList` (bordered `.tool-pick-row` rows, name + one-line description) used for
+      *both* its tool picker and its new knowledge-base picker — reads as the same component family as
+      the `tool` node's parameter list. Both the `tool` and `agent` inspector sections now open with a
+      one-line explainer distinguishing **"one deterministic call"** (`tool` node) from
+      **"a model-driven loop"** (`agent` node). `agentValidation.ts` validates `agentKnowledgeBases`
+      entries resolve, and the "no tools selected — will only reply, never act" warning now also
+      passes when knowledge bases are selected. Canvas subtitle shows `· N tools, M KBs`.
+    - **Verified live end-to-end** (real registry round-trip + real `mlx_lm.server` + a real `faq`
+      KnowledgeBase): `input → agent(KB: faq)` with no Environment ran a real turn; the SSE
+      `agent.step` log confirmed the KB resolved, the base-name alias routed to `knowledge_search`,
+      the synonym arg key was accepted, `knowledge.Query` ran per iteration, its result was fed back
+      as the OBSERVATION, and the bounded loop terminated — the plumbing works; the 0.5B model's own
+      weak instruction-following (putting the wrong text in the query) is the documented, accepted
+      tiny-model limitation, not a plumbing gap.
+
+  - **Phase 3 — structured output & resilience (items 8–10):**
+    - **`agent` node gained `AgentOutputSchema`** (a JSON Schema its FINAL answer must validate against),
+      mirroring the prompt node's `OutputSchema`. On success the parsed value is stored so
+      `{{AgentName.property}}` resolves downstream (`TemplateField.upstreamVariableOptions` now
+      enumerates an agent node's schema properties too, and `internal/agents.Engine`'s `case "agent"`
+      calls `assertions.ValidateJSONSchema` on the final answer).
+    - **Schema-mismatch soft mode via a `fail` handle (item 9, applied to prompt *and* agent).** A
+      prompt/agent node whose reply fails its schema no longer always hard-fails the turn: `runNode`
+      returns a new `*schemaMismatchError` (sentinel, `errors.As`-matchable) alongside handle `"fail"`
+      and the offending text as the node's output. A shared `resolveStepErr(edges, nodeID, err)` — used
+      identically by `Run`'s loop *and* the debugger's `StepDebugRun`/`RetryDebugRun` — turns that into
+      a soft route (`handle = "fail"`, no error) **only when a `fail` edge is wired**; with none, it's
+      still the pre-existing hard failure. So a schema'd prompt inside a retry loop degrades gracefully.
+      Frontend: `agentNodes.tsx` renders an `out`/`fail` handle *pair* on a prompt/agent node once a
+      schema is set (a single unnamed handle otherwise); `buildGraphPayload` canonicalises the `out`
+      handle back to the engine's unnamed default branch, and a `useEffect` keeps existing edges'
+      `sourceHandle` in sync as the schema is toggled (scoped to prompt/agent nodes so a switch node's
+      own case handles are untouched). Guards: `TestRunPromptNodeOutputSchemaFailureRoutesToFailHandle`,
+      `...WithoutFailHandleStillFails`, `TestRunAgentNodeOutputSchema{ExposesPropertyDownstream,
+      FailureFailsTurn}`, `TestStepDebugRunFollowsSchemaFailHandle`.
+    - **`knowledge` node `KnowledgeMaxResults` (item 10)** — an int cap (0 = all, unchanged) applied to
+      `knowledge.Query`'s result slice before `FormatResults`. Inspector gets a "Max results" number
+      field. Guard `TestRunKnowledgeNodeMaxResultsCaps`; verified live (3 matching records, cap 2 → 2
+      returned).
+  - **Phase 4 — bigger structural (items 11–12):**
+    - **New `switch` node type (item 11) — the N-way sibling of `condition`.** `registry.SwitchCase{Value}`
+      + `NodeData.SwitchCases []SwitchCase`; reuses `MatchTemplate` (falls back to the inbound value).
+      Engine `case "switch"`: first case whose `Value` is a case-insensitive substring of the rendered
+      match text wins and the walk follows the handle *named by that value*; no match takes the
+      `"default"` handle. Route-only (passes the inbound payload through, like `condition`). Frontend:
+      `SwitchNode` renders one bottom handle per non-empty case value + a `default` handle spread evenly
+      along the edge; new palette entry (indigo `#4b3fae`, lucide `Route`); inspector has an add/remove
+      case-value list + the templated match field; `agentValidation.ts` errors on no cases / empty /
+      duplicate values and warns on an unwired case or `default` handle. Guards:
+      `TestRunSwitch{TakesFirstMatchingCase,FallsThroughToDefault,MatchTemplate}`; verified live (a
+      billing/shipping/default router picked the right branch for 3 messages).
+    - **Parse-if-JSON `{{Name.property}}` for `tool` and `knowledge` output (item 12).** New
+      `assertions.ParseJSONValue(s)` (extract the first balanced JSON value + decode it with the same
+      `jsonschema.UnmarshalJSON` reader `ValidateJSONSchema` uses, so `json.Number` etc. behave
+      identically downstream). The engine's `tool` and `knowledge` cases now `rc.set(name, raw,
+      parseIfJSON(raw))` — a tool/knowledge output that *is* (or contains) JSON becomes referenceable as
+      `{{Name.property}}` with no schema declared; plain-text output keeps `parsed == nil` and only
+      `{{Name}}` resolves, unchanged. Deliberately *not* applied to prompt output (a schemaless prompt's
+      `.property` access is an intentional error — `TestRunPromptTemplateDotPathWithoutSchemaErrors`).
+      Guards: `TestRunToolNodeJSONOutputExposesPropertyDownstream`, `...PlainTextOutputHasNoProperties`.
 - **Evaluation runner**: how assertions are expressed and checked against agent output, and how
   environment starting state is set up per-test (Phase 4).
   **Decided:** assertions are deterministic rules — `contains` / `not_contains` / `regex` — checked

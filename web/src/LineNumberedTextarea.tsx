@@ -1,4 +1,4 @@
-import { useRef, type ChangeEvent, type UIEvent } from 'react'
+import { forwardRef, useRef, type ChangeEvent, type UIEvent } from 'react'
 
 interface LineNumberedTextareaProps {
   value: string
@@ -10,10 +10,17 @@ interface LineNumberedTextareaProps {
 
 // LineNumberedTextarea is a small plaintext-editor-style input — a
 // monospace textarea with a synced line-number gutter — for content where
-// exact line breaks and spacing matter (e.g. dataset example input/output).
-// Lines don't wrap, so each visual row matches one gutter number; long
-// lines scroll horizontally instead.
-function LineNumberedTextarea({ value, onChange, rows = 6, placeholder, autoFocus }: LineNumberedTextareaProps) {
+// exact line breaks and spacing matter (dataset example input/output, agent
+// node prompts / templates / JSON schemas). Lines don't wrap, so each visual
+// row matches one gutter number; long lines scroll horizontally instead.
+//
+// A forwarded ref lands on the inner <textarea> so callers can read
+// selectionStart/selectionEnd (e.g. the "insert variable" picker in the
+// agent editor).
+const LineNumberedTextarea = forwardRef<HTMLTextAreaElement, LineNumberedTextareaProps>(function LineNumberedTextarea(
+  { value, onChange, rows = 6, placeholder, autoFocus },
+  ref,
+) {
   const gutterRef = useRef<HTMLDivElement>(null)
   const lineCount = value === '' ? 1 : value.split('\n').length
 
@@ -29,6 +36,7 @@ function LineNumberedTextarea({ value, onChange, rows = 6, placeholder, autoFocu
         ))}
       </div>
       <textarea
+        ref={ref}
         className="line-editor-textarea"
         value={value}
         onChange={(e: ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value)}
@@ -41,6 +49,6 @@ function LineNumberedTextarea({ value, onChange, rows = 6, placeholder, autoFocu
       />
     </div>
   )
-}
+})
 
 export default LineNumberedTextarea

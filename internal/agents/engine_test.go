@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -108,66 +109,166 @@ func TestRunIncludesHistory(t *testing.T) {
 	}
 }
 
-// decisionGraph is input -> decision (yes: prompt "matched", no: prompt
-// "unmatched"), with each branch's prompt node left as a dead end.
-func decisionGraph(keyword string) registry.Graph {
+// conditionGraph is input -> condition (pass: prompt "matched", fail: prompt
+// "unmatched"), with each branch's prompt node left as a dead end. The
+// condition is a case-insensitive "contains value" check.
+func conditionGraph(value string) registry.Graph {
 	return registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input"},
-			{ID: "d1", Type: "decision", Data: registry.NodeData{Keyword: keyword}},
+			{ID: "c1", Type: "condition", Data: registry.NodeData{ConditionType: "contains", ConditionValue: value}},
 			{ID: "yes", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "matched branch"}},
 			{ID: "no", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "unmatched branch"}},
 		},
 		Edges: []registry.Edge{
-			{ID: "e1", Source: "in", Target: "d1"},
-			{ID: "e2", Source: "d1", SourceHandle: "yes", Target: "yes"},
-			{ID: "e3", Source: "d1", SourceHandle: "no", Target: "no"},
+			{ID: "e1", Source: "in", Target: "c1"},
+			{ID: "e2", Source: "c1", SourceHandle: "pass", Target: "yes"},
+			{ID: "e3", Source: "c1", SourceHandle: "fail", Target: "no"},
 		},
 	}
 }
 
-func TestRunDecisionTakesYesBranch(t *testing.T) {
-	llm := &fakeLLM{responses: []string{"took yes branch"}}
-	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+// switchGraph: input -> switch(match cases) with a prompt per handle plus a
+// default prompt, each a dead end.
+func switchGraph(cases []registry.SwitchCase, matchTemplate string) registry.Graph {
+	nodes := []registry.Node{
+		{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+		{ID: "sw", Type: "switch", Data: registry.NodeData{Name: "Router", SwitchCases: cases, MatchTemplate: matchTemplate}},
+		{ID: "def", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "default branch"}},
+	}
+	edges := []registry.Edge{
+		{ID: "e-in", Source: "in", Target: "sw"},
+		{ID: "e-def", Source: "sw", SourceHandle: "default", Target: "def"},
+	}
+	for i, c := range cases {
+		id := fmt.Sprintf("p%d", i)
+		nodes = append(nodes, registry.Node{ID: id, Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "branch " + c.Value}})
+		edges = append(edges, registry.Edge{ID: "e" + id, Source: "sw", SourceHandle: c.Value, Target: id})
+	}
+	return registry.Graph{Nodes: nodes, Edges: edges}
+}
 
-	reply, err := engine.Run(context.Background(), decisionGraph("weather"), nil, "what's the weather?", "", nil, nil)
-	if err != nil {
+func TestRunSwitchTakesFirstMatchingCase(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"routed"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+	graph := switchGraph([]registry.SwitchCase{{Value: "billing"}, {Value: "shipping"}}, "")
+
+	if _, err := engine.Run(context.Background(), graph, nil, "I have a SHIPPING question", "", nil, nil); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if reply != "took yes branch" {
-		t.Errorf("Run() = %q, want %q", reply, "took yes branch")
-	}
-	if !strings.Contains(llm.calls[0], "matched branch") {
-		t.Errorf("llm.calls[0] = %q, want the yes-branch prompt node's system prompt", llm.calls[0])
+	if !strings.Contains(llm.calls[0], "branch shipping") {
+		t.Errorf("llm.calls[0] = %q, want the shipping-case branch (case-insensitive substring)", llm.calls[0])
 	}
 }
 
-func TestRunDecisionTakesNoBranch(t *testing.T) {
-	llm := &fakeLLM{responses: []string{"took no branch"}}
+func TestRunSwitchFallsThroughToDefault(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"routed"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+	graph := switchGraph([]registry.SwitchCase{{Value: "billing"}, {Value: "shipping"}}, "")
+
+	if _, err := engine.Run(context.Background(), graph, nil, "something unrelated", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(llm.calls[0], "default branch") {
+		t.Errorf("llm.calls[0] = %q, want the default branch", llm.calls[0])
+	}
+}
+
+func TestRunSwitchMatchTemplate(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"routed"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+	// Match against the Input node's output via a template rather than the
+	// (here identical) inbound value, to exercise rendering.
+	graph := switchGraph([]registry.SwitchCase{{Value: "urgent"}}, "priority: {{Input}}")
+
+	if _, err := engine.Run(context.Background(), graph, nil, "urgent", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(llm.calls[0], "branch urgent") {
+		t.Errorf("llm.calls[0] = %q, want the urgent branch matched via the template", llm.calls[0])
+	}
+}
+
+func TestRunConditionTakesPassBranch(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"took pass branch"}}
 	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
 
-	reply, err := engine.Run(context.Background(), decisionGraph("weather"), nil, "tell me a joke", "", nil, nil)
+	reply, err := engine.Run(context.Background(), conditionGraph("weather"), nil, "what's the weather?", "", nil, nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if reply != "took no branch" {
-		t.Errorf("Run() = %q, want %q", reply, "took no branch")
+	if reply != "took pass branch" {
+		t.Errorf("Run() = %q, want %q", reply, "took pass branch")
+	}
+	if !strings.Contains(llm.calls[0], "matched branch") {
+		t.Errorf("llm.calls[0] = %q, want the pass-branch prompt node's system prompt", llm.calls[0])
+	}
+}
+
+func TestRunConditionTakesFailBranch(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"took fail branch"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), conditionGraph("weather"), nil, "tell me a joke", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "took fail branch" {
+		t.Errorf("Run() = %q, want %q", reply, "took fail branch")
 	}
 	if !strings.Contains(llm.calls[0], "unmatched branch") {
-		t.Errorf("llm.calls[0] = %q, want the no-branch prompt node's system prompt", llm.calls[0])
+		t.Errorf("llm.calls[0] = %q, want the fail-branch prompt node's system prompt", llm.calls[0])
 	}
 }
 
-func TestRunDecisionKeywordCaseInsensitive(t *testing.T) {
-	llm := &fakeLLM{responses: []string{"took yes branch"}}
+func TestRunConditionValueCaseInsensitive(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"took pass branch"}}
 	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
 
-	_, err := engine.Run(context.Background(), decisionGraph("Weather"), nil, "WEATHER report please", "", nil, nil)
+	_, err := engine.Run(context.Background(), conditionGraph("Weather"), nil, "WEATHER report please", "", nil, nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if !strings.Contains(llm.calls[0], "matched branch") {
-		t.Error("keyword match should be case-insensitive")
+		t.Error("contains check should be case-insensitive")
+	}
+}
+
+func TestRunConditionRegexMode(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"matched"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "c1", Type: "condition", Data: registry.NodeData{ConditionType: "regex", ConditionValue: `\bGOOD\b`}},
+			{ID: "yes", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "matched branch"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "c1"},
+			{ID: "e2", Source: "c1", SourceHandle: "pass", Target: "yes"},
+		},
+	}
+	if _, err := engine.Run(context.Background(), graph, nil, "the plan looks GOOD to me", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(llm.calls[0], "matched branch") {
+		t.Error("regex condition should have routed to the pass branch")
+	}
+}
+
+func TestRunConditionInvalidTypeErrors(t *testing.T) {
+	engine := NewEngine(&fakeLLM{}, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "c1", Type: "condition", Data: registry.NodeData{}}, // no ConditionType configured
+		},
+		Edges: []registry.Edge{{ID: "e1", Source: "in", Target: "c1"}},
+	}
+	if _, err := engine.Run(context.Background(), graph, nil, "hi", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want an error for a condition node with no check type set")
 	}
 }
 
@@ -207,22 +308,23 @@ func TestRunDeadEndNodeIsAValidTerminal(t *testing.T) {
 	}
 }
 
-func TestRunCycleHitsMaxSteps(t *testing.T) {
-	// decision with no keyword always takes "no", which loops back to itself.
+func TestRunUnboundedCycleHitsMaxSteps(t *testing.T) {
+	// A condition that can never pass ("contains zzz" against "hi"), with its
+	// fail handle wired back to itself and no loop node capping it.
 	graph := registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input"},
-			{ID: "d1", Type: "decision"},
+			{ID: "c1", Type: "condition", Data: registry.NodeData{ConditionType: "contains", ConditionValue: "zzz"}},
 		},
 		Edges: []registry.Edge{
-			{ID: "e1", Source: "in", Target: "d1"},
-			{ID: "e2", Source: "d1", SourceHandle: "no", Target: "d1"},
+			{ID: "e1", Source: "in", Target: "c1"},
+			{ID: "e2", Source: "c1", SourceHandle: "fail", Target: "c1"},
 		},
 	}
 	engine := NewEngine(&fakeLLM{}, &fakeTools{}, &fakeKnowledgeReader{})
 
 	if _, err := engine.Run(context.Background(), graph, nil, "hi", "", nil, nil); err == nil {
-		t.Error("Run() error = nil, want an error when the graph cycles past the step limit")
+		t.Error("Run() error = nil, want an error when an unbounded cycle passes the step limit")
 	}
 }
 
@@ -284,6 +386,56 @@ func TestRunToolNode(t *testing.T) {
 	}
 	if len(tools.instanceIDs) != 1 || tools.instanceIDs[0] != "container-1" {
 		t.Errorf("tools.instanceIDs = %v, want [container-1]", tools.instanceIDs)
+	}
+}
+
+// A tool node whose output is (or contains) JSON exposes its properties
+// downstream as {{Name.property}}, without needing a schema.
+func TestRunToolNodeJSONOutputExposesPropertyDownstream(t *testing.T) {
+	tools := &fakeTools{output: `here is the result: {"status": "ok", "count": 3}`}
+	toolDefs := []registry.Tool{{Name: "api", Command: "call"}}
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "t1", Type: "tool", Data: registry.NodeData{Name: "Api", ToolName: "api"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Model: "m", PromptTemplate: "status was {{Api.status}} with {{Api.count}}"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "t1"},
+			{ID: "e2", Source: "t1", Target: "p1"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"done"}}
+	engine := NewEngine(llm, tools, &fakeKnowledgeReader{})
+
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "container-1", toolDefs, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(llm.calls) != 1 || !strings.Contains(llm.calls[0], "status was ok with 3") {
+		t.Errorf("llm.calls[0] = %q, want the tool's JSON properties resolved", llm.calls[0])
+	}
+}
+
+// A plain-text tool output keeps parsed == nil — {{Name.property}} still
+// errors, only {{Name}} works.
+func TestRunToolNodePlainTextOutputHasNoProperties(t *testing.T) {
+	tools := &fakeTools{output: "just some text"}
+	toolDefs := []registry.Tool{{Name: "api", Command: "call"}}
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "t1", Type: "tool", Data: registry.NodeData{Name: "Api", ToolName: "api"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Model: "m", PromptTemplate: "{{Api.status}}"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "t1"},
+			{ID: "e2", Source: "t1", Target: "p1"},
+		},
+	}
+	engine := NewEngine(&fakeLLM{responses: []string{"x"}}, tools, &fakeKnowledgeReader{})
+
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "container-1", toolDefs, nil); err == nil {
+		t.Error("Run() error = nil, want an error resolving a property on a plain-text tool output")
 	}
 }
 
@@ -498,21 +650,21 @@ func TestRunPromptTemplateEmptyFallsBackToPreviousOutput(t *testing.T) {
 	}
 }
 
-func TestRunDecisionMatchTemplateChecksNamedNodeProperty(t *testing.T) {
+func TestRunConditionMatchTemplateChecksNamedNodeProperty(t *testing.T) {
 	schema := `{"type":"object","required":["sentiment"],"properties":{"sentiment":{"type":"string"}}}`
 	graph := registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
 			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Analyzer", Model: "m", OutputSchema: schema}},
-			{ID: "d1", Type: "decision", Data: registry.NodeData{Keyword: "positive", MatchTemplate: "{{Analyzer.sentiment}}"}},
+			{ID: "c1", Type: "condition", Data: registry.NodeData{ConditionType: "contains", ConditionValue: "positive", MatchTemplate: "{{Analyzer.sentiment}}"}},
 			{ID: "yes", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "happy branch"}},
 			{ID: "no", Type: "prompt", Data: registry.NodeData{Model: "m", SystemPrompt: "sad branch"}},
 		},
 		Edges: []registry.Edge{
 			{ID: "e1", Source: "in", Target: "p1"},
-			{ID: "e2", Source: "p1", Target: "d1"},
-			{ID: "e3", Source: "d1", SourceHandle: "yes", Target: "yes"},
-			{ID: "e4", Source: "d1", SourceHandle: "no", Target: "no"},
+			{ID: "e2", Source: "p1", Target: "c1"},
+			{ID: "e3", Source: "c1", SourceHandle: "pass", Target: "yes"},
+			{ID: "e4", Source: "c1", SourceHandle: "fail", Target: "no"},
 		},
 	}
 	llm := &fakeLLM{responses: []string{`{"sentiment": "positive", "confidence": 0.9}`, "took happy branch"}}
@@ -526,7 +678,7 @@ func TestRunDecisionMatchTemplateChecksNamedNodeProperty(t *testing.T) {
 		t.Errorf("Run() = %q, want %q", reply, "took happy branch")
 	}
 	if !strings.Contains(llm.calls[1], "happy branch") {
-		t.Errorf("llm.calls[1] = %q, want the yes-branch (positive sentiment) system prompt", llm.calls[1])
+		t.Errorf("llm.calls[1] = %q, want the pass-branch (positive sentiment) system prompt", llm.calls[1])
 	}
 }
 
@@ -634,6 +786,113 @@ func TestRunKnowledgeNodeUnknownBase(t *testing.T) {
 	}
 }
 
+func TestRunKnowledgeNodeMaxResultsCaps(t *testing.T) {
+	kb := registry.KnowledgeBase{
+		Name: "faq",
+		Records: []registry.KnowledgeRecord{
+			{ID: "1", Title: "Alpha", Content: "shared keyword here"},
+			{ID: "2", Title: "Beta", Content: "shared keyword here"},
+			{ID: "3", Title: "Gamma", Content: "shared keyword here"},
+		},
+	}
+	engine := NewEngine(&fakeLLM{}, &fakeTools{}, &fakeKnowledgeReader{bases: map[string]registry.KnowledgeBase{"faq": kb}})
+
+	graph := knowledgeGraph(registry.NodeData{KnowledgeBaseName: "faq", KnowledgeQuery: "shared keyword", KnowledgeMaxResults: 2})
+	reply, err := engine.Run(context.Background(), graph, nil, "q", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if strings.Contains(reply, "Gamma") {
+		t.Errorf("Run() = %q, want only the first 2 matches (no Gamma)", reply)
+	}
+	if !strings.Contains(reply, "Alpha") || !strings.Contains(reply, "Beta") {
+		t.Errorf("Run() = %q, want the first 2 matches (Alpha, Beta)", reply)
+	}
+}
+
+// A prompt node whose OutputSchema rejects the reply routes to its "fail"
+// handle when one is wired, instead of failing the turn — so a schema'd
+// prompt inside a retry loop degrades gracefully.
+func TestRunPromptNodeOutputSchemaFailureRoutesToFailHandle(t *testing.T) {
+	schema := `{"type":"object","required":["city"]}`
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Classifier", Model: "m", OutputSchema: schema}},
+			{ID: "p2", Type: "prompt", Data: registry.NodeData{Name: "Recover", Model: "m", PromptTemplate: "recover from: {{Classifier}}"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "p1"},
+			{ID: "e2", Source: "p1", SourceHandle: "fail", Target: "p2"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"not json at all", "recovered reply"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want the fail handle to be followed", err)
+	}
+	if reply != "recovered reply" {
+		t.Errorf("Run() = %q, want the fail branch's output", reply)
+	}
+	if len(llm.calls) != 2 || !strings.Contains(llm.calls[1], "recover from: not json at all") {
+		t.Errorf("llm.calls[1] = %q, want the raw invalid reply passed to the fail branch", llm.calls[1])
+	}
+}
+
+// With no "fail" edge wired, a schema mismatch still fails the turn (the
+// pre-existing hard-fail behavior).
+func TestRunPromptNodeOutputSchemaFailureWithoutFailHandleStillFails(t *testing.T) {
+	schema := `{"type":"object","required":["city"]}`
+	llm := &fakeLLM{responses: []string{"not json"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := schemaChainGraph(schema, "")
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want a hard failure when the schema fails and no fail handle is wired")
+	}
+}
+
+// An agent node's FINAL answer can be constrained by AgentOutputSchema; on
+// success the parsed value is referenceable downstream as {{Name.property}}.
+func TestRunAgentNodeOutputSchemaExposesPropertyDownstream(t *testing.T) {
+	schema := `{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}`
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "a1", Type: "agent", Data: registry.NodeData{Name: "Solver", AgentModel: "m", AgentOutputSchema: schema}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Name: "Echo", Model: "m", PromptTemplate: "the answer is {{Solver.answer}}"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "a1"},
+			{ID: "e2", Source: "a1", Target: "p1"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{`FINAL: {"answer": "42"}`, "done"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	if _, err := engine.Run(context.Background(), graph, nil, "solve it", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(llm.calls) != 2 || !strings.Contains(llm.calls[1], "the answer is 42") {
+		t.Errorf("llm.calls[1] = %q, want {{Solver.answer}} resolved to 42", llm.calls[1])
+	}
+}
+
+// An agent node whose FINAL answer doesn't satisfy AgentOutputSchema and has
+// no "fail" edge fails the turn.
+func TestRunAgentNodeOutputSchemaFailureFailsTurn(t *testing.T) {
+	schema := `{"type":"object","required":["answer"]}`
+	llm := &fakeLLM{responses: []string{"FINAL: just some prose, not json"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := agentGraph(registry.NodeData{Name: "Solver", AgentModel: "m", AgentOutputSchema: schema})
+	if _, err := engine.Run(context.Background(), graph, nil, "solve it", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want the turn to fail on an unsatisfied agent output schema")
+	}
+}
+
 func TestRunKnowledgeNodeDownstreamReference(t *testing.T) {
 	kb := registry.KnowledgeBase{
 		Name:    "faq",
@@ -662,5 +921,596 @@ func TestRunKnowledgeNodeDownstreamReference(t *testing.T) {
 	}
 	if !strings.Contains(llm.calls[0], "Refunds take 3-5 business days.") {
 		t.Errorf("llm.calls[0] = %q, want it to include the knowledge node's matched record via {{KB}}", llm.calls[0])
+	}
+}
+
+// --- loop / state / cyclic architecture --------------------------------------
+
+// loopBodyGraph is: input -> L(loop_start, max) --body--> W(prompt) ->
+// LE(loop_end paired to L); L --done--> F(prompt), F a dead end. The LE->L
+// back-edge is implicit (synthesized in prepareGraph). W's PromptTemplate can
+// reference {{L.iteration}}.
+func loopBodyGraph(max int, workTemplate string) registry.Graph {
+	return registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: max}},
+			{ID: "w", Type: "prompt", Data: registry.NodeData{Name: "W", Model: "m", PromptTemplate: workTemplate}},
+			{ID: "le", Type: "loop_end", Data: registry.NodeData{Name: "LE", LoopStartName: "L"}},
+			{ID: "f", Type: "prompt", Data: registry.NodeData{Name: "F", Model: "m", SystemPrompt: "after loop"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "w"},
+			{ID: "e3", Source: "w", Target: "le"},
+			{ID: "e4", Source: "l", SourceHandle: "done", Target: "f"},
+		},
+	}
+}
+
+func TestRunLoopIteratesToMaxThenTakesDone(t *testing.T) {
+	// max 2: W runs twice, then the loop routes to F.
+	llm := &fakeLLM{responses: []string{"work 1", "work 2", "after-loop reply"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), loopBodyGraph(2, ""), nil, "go", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "after-loop reply" {
+		t.Errorf("Run() = %q, want the F node's reply after the loop finishes", reply)
+	}
+	if len(llm.calls) != 3 {
+		t.Fatalf("llm.calls = %d, want 3 (W twice + F once)", len(llm.calls))
+	}
+	if !strings.Contains(llm.calls[2], "after loop") {
+		t.Errorf("llm.calls[2] = %q, want the F node's system prompt", llm.calls[2])
+	}
+}
+
+func TestRunLoopExposesIterationInTemplate(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"w1", "w2", "w3", "done"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	_, err := engine.Run(context.Background(), loopBodyGraph(3, "iteration {{L.iteration}}"), nil, "go", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for i, want := range []string{"iteration 1", "iteration 2", "iteration 3"} {
+		if !strings.Contains(llm.calls[i], "USER: "+want) {
+			t.Errorf("llm.calls[%d] = %q, want it to contain %q", i, llm.calls[i], want)
+		}
+	}
+}
+
+func TestRunStateAppendAccumulatesAcrossLoop(t *testing.T) {
+	// input -> L(loop_start, max 2) --body--> S(state, append "x") ->
+	// LE(loop_end); L --done--> P(prompt template "{{S}}").
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: 2}},
+			{ID: "s", Type: "state", Data: registry.NodeData{Name: "S", StateOp: "append", StateValue: "x"}},
+			{ID: "le", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L"}},
+			{ID: "p", Type: "prompt", Data: registry.NodeData{Model: "m", PromptTemplate: "collected: {{S}}"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "s"},
+			{ID: "e3", Source: "s", Target: "le"},
+			{ID: "e4", Source: "l", SourceHandle: "done", Target: "p"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"ok"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(llm.calls[0], "collected: x\nx") {
+		t.Errorf("llm.calls[0] = %q, want the state node to have appended twice (x\\nx)", llm.calls[0])
+	}
+}
+
+// stateLoopGraph is input -> L(loop_start, max 2) --body--> S(state) ->
+// LE(loop_end); L --done--> P(prompt template "{{S}}"). S is configured by
+// stateData.
+func stateLoopGraph(stateData registry.NodeData) registry.Graph {
+	return registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: 2}},
+			{ID: "s", Type: "state", Data: stateData},
+			{ID: "le", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L"}},
+			{ID: "p", Type: "prompt", Data: registry.NodeData{Model: "m", PromptTemplate: "collected: {{S}}"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "s"},
+			{ID: "e3", Source: "s", Target: "le"},
+			{ID: "e4", Source: "l", SourceHandle: "done", Target: "p"},
+		},
+	}
+}
+
+func TestRunStateOpDefaultsToAppend(t *testing.T) {
+	// No StateOp set at all — should behave like "append" (matches the
+	// inspector default and the canvas subtitle).
+	llm := &fakeLLM{responses: []string{"ok"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := stateLoopGraph(registry.NodeData{Name: "S", StateValue: "x"})
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(llm.calls[0], "collected: x\nx") {
+		t.Errorf("llm.calls[0] = %q, want an unset StateOp to accumulate like append", llm.calls[0])
+	}
+}
+
+func TestRunStateOpSetReplaces(t *testing.T) {
+	// Explicit "set" — the value replaces rather than accumulating.
+	llm := &fakeLLM{responses: []string{"ok"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := stateLoopGraph(registry.NodeData{Name: "S", StateOp: "set", StateValue: "x"})
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if strings.Contains(llm.calls[0], "x\nx") || !strings.Contains(llm.calls[0], "collected: x") {
+		t.Errorf("llm.calls[0] = %q, want \"set\" to replace (a single x), not accumulate", llm.calls[0])
+	}
+}
+
+func TestRunAgentNodeIncludesConversationHistory(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"FINAL: sure"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := agentGraph(registry.NodeData{AgentModel: "m", AgentInstructions: "help the user"})
+	history := []ChatMessage{{Role: "user", Content: "my name is Ada"}, {Role: "assistant", Content: "hi Ada"}}
+	if _, err := engine.Run(context.Background(), graph, history, "what's my name?", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(llm.calls[0], "USER: my name is Ada") || !strings.Contains(llm.calls[0], "ASSISTANT: hi Ada") {
+		t.Errorf("agent prompt = %q, want it to include the prior conversation turns", llm.calls[0])
+	}
+}
+
+func TestRunPlanExecuteJudgeLoopTerminatesOnPass(t *testing.T) {
+	// input -> Plan -> Execute -> Judge -> cond(contains GOOD):
+	//   fail -> back to Execute; pass -> Done (dead end).
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "plan", Type: "prompt", Data: registry.NodeData{Name: "Plan", Model: "m", SystemPrompt: "plan it"}},
+			{ID: "exec", Type: "prompt", Data: registry.NodeData{Name: "Execute", Model: "m", SystemPrompt: "do it"}},
+			{ID: "judge", Type: "prompt", Data: registry.NodeData{Name: "Judge", Model: "m", SystemPrompt: "grade it"}},
+			{ID: "cond", Type: "condition", Data: registry.NodeData{ConditionType: "contains", ConditionValue: "GOOD"}},
+			{ID: "done", Type: "prompt", Data: registry.NodeData{Name: "Done", Model: "m", SystemPrompt: "wrap up"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "plan"},
+			{ID: "e2", Source: "plan", Target: "exec"},
+			{ID: "e3", Source: "exec", Target: "judge"},
+			{ID: "e4", Source: "judge", Target: "cond"},
+			{ID: "e5", Source: "cond", SourceHandle: "fail", Target: "exec"},
+			{ID: "e6", Source: "cond", SourceHandle: "pass", Target: "done"},
+		},
+	}
+	// Plan, Execute#1, Judge#1=REVISE, Execute#2, Judge#2=GOOD, Done.
+	llm := &fakeLLM{responses: []string{"a plan", "attempt 1", "REVISE please", "attempt 2", "looks GOOD", "final answer"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "solve X", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "final answer" {
+		t.Errorf("Run() = %q, want %q", reply, "final answer")
+	}
+	if len(llm.calls) != 6 {
+		t.Errorf("llm.calls = %d, want 6 (plan, execute x2, judge x2, done)", len(llm.calls))
+	}
+}
+
+// --- agent (LLM tool-calling loop) node -------------------------------------
+
+func agentGraph(data registry.NodeData) registry.Graph {
+	return registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "a1", Type: "agent", Data: data},
+		},
+		Edges: []registry.Edge{{ID: "e1", Source: "in", Target: "a1"}},
+	}
+}
+
+func TestRunAgentNodeCallsToolThenFinal(t *testing.T) {
+	tools := &fakeTools{output: "Paris is the capital of France"}
+	toolDefs := []registry.Tool{{
+		Name:       "web_search",
+		Command:    "search {{query}}",
+		Parameters: []registry.ToolParameter{{Name: "query", Type: registry.ToolParamString, Required: true}},
+	}}
+	llm := &fakeLLM{responses: []string{
+		"THOUGHT: I should search.\nACTION: web_search\nARGS: {\"query\": \"capital of France\"}",
+		"FINAL: Paris",
+	}}
+	engine := NewEngine(llm, tools, &fakeKnowledgeReader{})
+
+	var steps []StepEvent
+	graph := agentGraph(registry.NodeData{Name: "Agent", AgentModel: "m", AgentInstructions: "Find the capital.", AgentTools: []string{"web_search"}})
+	reply, err := engine.Run(context.Background(), graph, nil, "capital of France?", "container-1", toolDefs, func(s StepEvent) { steps = append(steps, s) })
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "Paris" {
+		t.Errorf("Run() = %q, want %q", reply, "Paris")
+	}
+	if len(tools.calls) != 1 || tools.calls[0] != "search 'capital of France'" {
+		t.Errorf("tools.calls = %v, want [search 'capital of France']", tools.calls)
+	}
+	sawAgentIteration := false
+	for _, s := range steps {
+		if s.NodeType == "agent" && strings.Contains(s.Output, "web_search") {
+			sawAgentIteration = true
+		}
+	}
+	if !sawAgentIteration {
+		t.Errorf("steps = %+v, want an agent iteration step mentioning web_search", steps)
+	}
+}
+
+func TestRunAgentNodeGracefulFallbackOnUnparseableReply(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"I think it is probably 42, but honestly I am not certain."}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := agentGraph(registry.NodeData{AgentModel: "m"})
+	reply, err := engine.Run(context.Background(), graph, nil, "the answer?", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "I think it is probably 42, but honestly I am not certain." {
+		t.Errorf("Run() = %q, want the raw reply passed through as the final answer", reply)
+	}
+}
+
+func TestRunAgentNodeHitsMaxIterations(t *testing.T) {
+	tools := &fakeTools{output: "some observation"}
+	toolDefs := []registry.Tool{{
+		Name:       "web_search",
+		Command:    "search {{query}}",
+		Parameters: []registry.ToolParameter{{Name: "query", Type: registry.ToolParamString, Required: true}},
+	}}
+	// Always asks for another tool call, never emits FINAL.
+	llm := &fakeLLM{responses: []string{
+		"ACTION: web_search\nARGS: {\"query\": \"a\"}",
+		"ACTION: web_search\nARGS: {\"query\": \"b\"}",
+	}}
+	engine := NewEngine(llm, tools, &fakeKnowledgeReader{})
+
+	graph := agentGraph(registry.NodeData{AgentModel: "m", AgentTools: []string{"web_search"}, AgentMaxIterations: 2})
+	reply, err := engine.Run(context.Background(), graph, nil, "go", "container-1", toolDefs, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(tools.calls) != 2 {
+		t.Errorf("tools.calls = %d, want 2 (capped at AgentMaxIterations)", len(tools.calls))
+	}
+	if !strings.Contains(reply, "web_search") {
+		t.Errorf("Run() = %q, want the model's last text returned best-effort after the cap", reply)
+	}
+}
+
+func TestRunAgentNodeToolsSelectedButNoEnvironment(t *testing.T) {
+	engine := NewEngine(&fakeLLM{responses: []string{"FINAL: hi"}}, &fakeTools{}, &fakeKnowledgeReader{})
+
+	graph := agentGraph(registry.NodeData{AgentModel: "m", AgentTools: []string{"web_search"}})
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want an error when an agent node has tools selected but no Environment instance")
+	}
+}
+
+func TestRunAgentNodeKnowledgeSearchNeedsNoEnvironment(t *testing.T) {
+	kb := registry.KnowledgeBase{
+		Name:    "faq",
+		Records: []registry.KnowledgeRecord{{ID: "1", Title: "Refunds", Content: "Refunds take 3-5 business days."}},
+	}
+	// The model searches the KB, then answers. No Environment / instance.
+	llm := &fakeLLM{responses: []string{
+		"ACTION: knowledge_search\nARGS: {\"query\": \"refunds\"}",
+		"FINAL: 3-5 business days",
+	}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{bases: map[string]registry.KnowledgeBase{"faq": kb}})
+
+	graph := agentGraph(registry.NodeData{AgentModel: "m", AgentKnowledgeBases: []string{"faq"}})
+	reply, err := engine.Run(context.Background(), graph, nil, "how long do refunds take?", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "3-5 business days" {
+		t.Errorf("Run() = %q, want the final answer", reply)
+	}
+	if len(llm.calls) != 2 {
+		t.Fatalf("llm.calls = %d, want 2 (search then answer)", len(llm.calls))
+	}
+	// The first prompt advertises knowledge_search; the second carries the
+	// matched record back as an OBSERVATION.
+	if !strings.Contains(llm.calls[0], "knowledge_search(query: string)") {
+		t.Errorf("llm.calls[0] = %q, want it to advertise the knowledge_search tool", llm.calls[0])
+	}
+	if !strings.Contains(llm.calls[1], "Refunds take 3-5 business days.") {
+		t.Errorf("llm.calls[1] = %q, want the knowledge_search result fed back", llm.calls[1])
+	}
+}
+
+// Tiny models rarely emit "knowledge_search" with an exact {"query": ...}
+// arg — they name the base directly and use a synonym key. Both are tolerated.
+func TestRunAgentNodeKnowledgeSearchToleratesLooseCalls(t *testing.T) {
+	kb := registry.KnowledgeBase{
+		Name:    "faq",
+		Records: []registry.KnowledgeRecord{{ID: "1", Title: "Refunds", Content: "Refunds take 3-5 business days."}},
+	}
+	llm := &fakeLLM{responses: []string{
+		"ACTION: faq\nARGS: {\"q\": \"refunds\"}", // base name as the action, synonym arg key
+		"FINAL: 3-5 business days",
+	}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{bases: map[string]registry.KnowledgeBase{"faq": kb}})
+
+	graph := agentGraph(registry.NodeData{AgentModel: "m", AgentKnowledgeBases: []string{"faq"}})
+	reply, err := engine.Run(context.Background(), graph, nil, "how long do refunds take?", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "3-5 business days" {
+		t.Errorf("Run() = %q, want the final answer", reply)
+	}
+	if len(llm.calls) != 2 {
+		t.Fatalf("llm.calls = %d, want 2 (search then answer)", len(llm.calls))
+	}
+	if !strings.Contains(llm.calls[1], "Refunds take 3-5 business days.") {
+		t.Errorf("llm.calls[1] = %q, want the knowledge_search result fed back", llm.calls[1])
+	}
+}
+
+// When the model gives no usable query arg at all, the node's own input is
+// used as the search text (same fallback the knowledge node uses).
+func TestRunAgentNodeKnowledgeSearchFallsBackToInput(t *testing.T) {
+	kb := registry.KnowledgeBase{
+		Name:    "faq",
+		Records: []registry.KnowledgeRecord{{ID: "1", Title: "Refunds", Content: "Refunds take 3-5 business days."}},
+	}
+	llm := &fakeLLM{responses: []string{
+		"ACTION: knowledge_search\nARGS: {}", // no query at all
+		"FINAL: 3-5 business days",
+	}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{bases: map[string]registry.KnowledgeBase{"faq": kb}})
+
+	graph := agentGraph(registry.NodeData{AgentModel: "m", AgentKnowledgeBases: []string{"faq"}})
+	if _, err := engine.Run(context.Background(), graph, nil, "refunds", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(llm.calls) < 2 || !strings.Contains(llm.calls[1], "Refunds take 3-5 business days.") {
+		t.Errorf("llm.calls[1] = %q, want the input-derived search to have matched the record", llm.calls[len(llm.calls)-1])
+	}
+}
+
+func TestParseActionForms(t *testing.T) {
+	cases := []struct {
+		in         string
+		wantAction string
+		wantArgs   string
+	}{
+		{"ACTION: web_search\nARGS: {\"q\": \"hi\"}", "web_search", `{"q": "hi"}`},
+		{"THOUGHT: hmm\nACTION: read_file({\"path\": \"/a\"})", "read_file", `{"path": "/a"}`},
+		{"ACTION: list_dir", "list_dir", ""},
+		{"FINAL: done", "", ""},
+		{"just some chatter", "", ""},
+	}
+	for _, c := range cases {
+		gotAction, gotArgs := parseAction(c.in)
+		if gotAction != c.wantAction || gotArgs != c.wantArgs {
+			t.Errorf("parseAction(%q) = (%q, %q), want (%q, %q)", c.in, gotAction, gotArgs, c.wantAction, c.wantArgs)
+		}
+	}
+}
+
+func TestParseFinalForms(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantText string
+		wantOK   bool
+	}{
+		{"FINAL: Paris", "Paris", true},
+		{"Final Answer: 42", "42", true},
+		{"no marker here", "", false},
+	}
+	for _, c := range cases {
+		gotText, gotOK := parseFinal(c.in)
+		if gotText != c.wantText || gotOK != c.wantOK {
+			t.Errorf("parseFinal(%q) = (%q, %v), want (%q, %v)", c.in, gotText, gotOK, c.wantText, c.wantOK)
+		}
+	}
+}
+
+// --- loop_start / loop_end pairing -----------------------------------------
+
+func TestRunLoopEndBreakBranchExitsLoop(t *testing.T) {
+	// input -> L(loop_start, max 5) --body--> Work(prompt) -> Check(condition:
+	// contains DONE):
+	//   fail -> LE(loop_end -> L)   [continue]
+	//   pass -> After(prompt)       [break out; dead end]
+	// Work says "keep going" then "all DONE"; the loop should run exactly twice.
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: 5}},
+			{ID: "w", Type: "prompt", Data: registry.NodeData{Name: "Work", Model: "m", SystemPrompt: "work"}},
+			{ID: "c", Type: "condition", Data: registry.NodeData{ConditionType: "contains", ConditionValue: "DONE"}},
+			{ID: "le", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L"}},
+			{ID: "after", Type: "prompt", Data: registry.NodeData{Name: "After", Model: "m", SystemPrompt: "wrap up"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "w"},
+			{ID: "e3", Source: "w", Target: "c"},
+			{ID: "e4", Source: "c", SourceHandle: "fail", Target: "le"},
+			{ID: "e5", Source: "c", SourceHandle: "pass", Target: "after"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"keep going", "all DONE now", "wrapped up"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "wrapped up" {
+		t.Errorf("Run() = %q, want the After node's reply", reply)
+	}
+	if len(llm.calls) != 3 {
+		t.Errorf("llm.calls = %d, want 3 (Work twice + After once)", len(llm.calls))
+	}
+}
+
+func TestRunLoopEndExhaustsToDoneHandle(t *testing.T) {
+	// Same shape, but Work never says DONE — the loop_start's own max (2)
+	// routes to "done" after two body passes.
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: 2}},
+			{ID: "w", Type: "prompt", Data: registry.NodeData{Name: "Work", Model: "m", SystemPrompt: "work"}},
+			{ID: "le", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L"}},
+			{ID: "giveup", Type: "prompt", Data: registry.NodeData{Name: "GaveUp", Model: "m", SystemPrompt: "ran out of tries"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "w"},
+			{ID: "e3", Source: "w", Target: "le"},
+			{ID: "e4", Source: "l", SourceHandle: "done", Target: "giveup"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"try 1", "try 2", "gave up"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "gave up" || len(llm.calls) != 3 {
+		t.Errorf("reply=%q calls=%d, want the done-handle path after exactly 2 body passes", reply, len(llm.calls))
+	}
+}
+
+func TestRunMultipleLoopEndsConvergeOnOneStart(t *testing.T) {
+	// Two condition branches each continue the loop via their own loop_end;
+	// both must jump back to the same loop_start. max 3 bounds it.
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: 3}},
+			{ID: "w", Type: "prompt", Data: registry.NodeData{Name: "W", Model: "m", SystemPrompt: "w"}},
+			{ID: "c", Type: "condition", Data: registry.NodeData{ConditionType: "contains", ConditionValue: "left"}},
+			{ID: "le1", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L"}},
+			{ID: "le2", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L"}},
+			{ID: "done", Type: "prompt", Data: registry.NodeData{Name: "D", Model: "m", SystemPrompt: "done"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "w"},
+			{ID: "e3", Source: "w", Target: "c"},
+			{ID: "e4", Source: "c", SourceHandle: "pass", Target: "le1"},
+			{ID: "e5", Source: "c", SourceHandle: "fail", Target: "le2"},
+			{ID: "e6", Source: "l", SourceHandle: "done", Target: "done"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"go left", "go right", "go left", "finished"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "finished" || len(llm.calls) != 4 {
+		t.Errorf("reply=%q calls=%d, want both loop_end branches to loop back (3 W passes + done)", reply, len(llm.calls))
+	}
+}
+
+func TestRunLoopEndWithoutMatchingStartErrors(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "le", Type: "loop_end", Data: registry.NodeData{LoopStartName: "NoSuchLoop"}},
+		},
+		Edges: []registry.Edge{{ID: "e1", Source: "in", Target: "le"}},
+	}
+	engine := NewEngine(&fakeLLM{}, &fakeTools{}, &fakeKnowledgeReader{})
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil); err == nil {
+		t.Error("Run() error = nil, want an error for a loop_end that names no existing loop_start")
+	}
+}
+
+func TestRunLoopEndBlankNameResolvesWhenSingleLoop(t *testing.T) {
+	// A lone loop pair: the loop_end can leave LoopStartName blank.
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l", Type: "loop_start", Data: registry.NodeData{Name: "L", LoopMaxIterations: 2}},
+			{ID: "w", Type: "prompt", Data: registry.NodeData{Name: "W", Model: "m", SystemPrompt: "w"}},
+			{ID: "le", Type: "loop_end", Data: registry.NodeData{}}, // blank LoopStartName
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l"},
+			{ID: "e2", Source: "l", SourceHandle: "body", Target: "w"},
+			{ID: "e3", Source: "w", Target: "le"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"a", "b"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+	// 2 body passes, then loop_start's "done" handle is unwired -> turn ends
+	// on the loop_start's passthrough.
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(llm.calls) != 2 {
+		t.Errorf("llm.calls = %d, want 2 body passes before the unwired done handle ends the turn", len(llm.calls))
+	}
+}
+
+func TestRunNestedLoops(t *testing.T) {
+	// Outer L1 (max 2) contains inner L2 (max 2). Inner body prompt runs
+	// outer*inner = 4 times; then L1 "done" -> Fin.
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "l1", Type: "loop_start", Data: registry.NodeData{Name: "L1", LoopMaxIterations: 2}},
+			{ID: "l2", Type: "loop_start", Data: registry.NodeData{Name: "L2", LoopMaxIterations: 2}},
+			{ID: "w", Type: "prompt", Data: registry.NodeData{Name: "W", Model: "m", SystemPrompt: "inner work"}},
+			{ID: "le2", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L2"}},
+			{ID: "le1", Type: "loop_end", Data: registry.NodeData{LoopStartName: "L1"}},
+			{ID: "fin", Type: "prompt", Data: registry.NodeData{Name: "Fin", Model: "m", SystemPrompt: "finished"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "l1"},
+			{ID: "e2", Source: "l1", SourceHandle: "body", Target: "l2"},
+			{ID: "e3", Source: "l2", SourceHandle: "body", Target: "w"},
+			{ID: "e4", Source: "w", Target: "le2"},
+			{ID: "e5", Source: "l2", SourceHandle: "done", Target: "le1"},
+			{ID: "e6", Source: "l1", SourceHandle: "done", Target: "fin"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"1", "2", "3", "4", "done"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "go", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "done" {
+		t.Errorf("Run() = %q, want the Fin node's reply", reply)
+	}
+	if len(llm.calls) != 5 {
+		t.Errorf("llm.calls = %d, want 5 (inner work 2x2 + Fin)", len(llm.calls))
 	}
 }

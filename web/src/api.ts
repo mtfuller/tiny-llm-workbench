@@ -185,8 +185,24 @@ export interface Exec {
 
 // There's no "output" node type — any node with no outgoing edge is simply
 // where a turn ends, and its own output becomes the reply (see
-// internal/agents.Engine).
-export type NodeType = 'input' | 'prompt' | 'decision' | 'tool' | 'knowledge'
+// internal/agents.Engine). Edges may form cycles: a loop or condition node
+// routing back to an earlier node is how plan-execute-judge, Ralph loops,
+// and similar architectures are built.
+export type NodeType =
+  | 'input'
+  | 'prompt'
+  | 'tool'
+  | 'knowledge'
+  | 'condition'
+  | 'switch'
+  | 'loop_start'
+  | 'loop_end'
+  | 'state'
+  | 'agent'
+
+export interface SwitchCase {
+  value: string
+}
 
 export interface AgentNodeData extends Record<string, unknown> {
   // name is a stable, user-editable, unique-within-the-graph display name —
@@ -213,10 +229,36 @@ export interface AgentNodeData extends Record<string, unknown> {
   // {{thisNode.property}} references.
   outputSchema?: string
 
-  keyword?: string
-  // matchTemplate is templated text to search keyword within; falls back to
-  // the previous node's raw output when empty.
+  // Condition nodes: a single deterministic check (the fields of a
+  // registry.Assertion) run via internal/assertions against matchTemplate's
+  // rendered text, routing to the "pass" or "fail" handle. matchTemplate
+  // falls back to the inbound value when empty. Generalizes the former
+  // keyword-only "decision" node.
+  conditionType?: 'contains' | 'not_contains' | 'regex' | 'json_schema' | 'similarity'
+  conditionValue?: string
+  conditionThreshold?: number
   matchTemplate?: string
+
+  // Switch nodes: the N-way sibling of condition. switchCases is an ordered
+  // list — the first whose value is a case-insensitive substring of the
+  // (templated) matchTemplate text wins, and the walk follows the outgoing
+  // handle named by that value; no match takes the "default" handle.
+  switchCases?: SwitchCase[]
+
+  // loop_start / loop_end are a matched pair. loop_start: loopMaxIterations
+  // caps how many times the walk may enter it before routing to "done"
+  // instead of "body"; {{thisNode.iteration}} is available downstream.
+  // loop_end: loopStartName names the loop_start it jumps back to (the
+  // back-edge is implicit). Any number of branches can converge on a
+  // loop_end to "continue"; a branch wired elsewhere "breaks" out.
+  loopMaxIterations?: number
+  loopStartName?: string
+
+  // State nodes: stateOp is "set" or "append"; stateValue is the templated
+  // value (falls back to the inbound value when empty). The accumulator
+  // lives under the node's own name, so {{thisNode}} reads its current value.
+  stateOp?: 'set' | 'append'
+  stateValue?: string
 
   // Tool nodes: toolName names a Tool declared on the agent's bound
   // Environment (see registry.Tool); each toolArgs value may itself contain
@@ -224,12 +266,30 @@ export interface AgentNodeData extends Record<string, unknown> {
   toolName?: string
   toolArgs?: Record<string, string>
 
+  // Agent nodes: a bounded LLM tool-calling loop. agentInstructions is the
+  // templated goal/system text; agentTools is a subset of the bound
+  // Environment's tool names the loop may call; agentKnowledgeBases names
+  // KnowledgeBases the loop may search via a built-in "knowledge_search"
+  // pseudo-tool (needs no Environment); agentMaxIterations caps the internal
+  // loop.
+  agentInstructions?: string
+  agentModel?: string
+  agentMaxIterations?: number
+  agentTools?: string[]
+  agentKnowledgeBases?: string[]
+  // If set, a JSON Schema the FINAL answer must validate against. On a
+  // mismatch the node routes to its "fail" handle if wired, else the turn
+  // fails; on success {{thisNode.property}} is available downstream.
+  agentOutputSchema?: string
+
   // Knowledge nodes: knowledgeBaseName names a KnowledgeBase (independent of
   // any Environment) to search; knowledgeQuery is templated query text,
   // falling back to the previous node's raw output when empty, same
-  // convention as promptTemplate/matchTemplate.
+  // convention as promptTemplate/matchTemplate. knowledgeMaxResults caps how
+  // many matching records flow downstream (0 / unset = all).
   knowledgeBaseName?: string
   knowledgeQuery?: string
+  knowledgeMaxResults?: number
 }
 
 export interface AgentNode {

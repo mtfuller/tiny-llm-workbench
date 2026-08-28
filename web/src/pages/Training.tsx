@@ -18,16 +18,11 @@ import Modal from '../Modal'
 import Pagination from '../Pagination'
 import RunStats from '../RunStats'
 import { TableSkeleton } from '../Skeleton'
-import { suggestedModels } from '../suggestedModels'
+import ModalActions from '../ModalActions'
+import ModelCombobox from '../ModelCombobox'
 import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
-
-function formatDuration(startedAt: string, finishedAt?: string): string {
-  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
-  const seconds = Math.max(0, Math.round((end - new Date(startedAt).getTime()) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-}
+import { formatDuration } from '../lib/format'
 
 function statusClass(status: TrainingRun['status']): string {
   if (status === 'succeeded') return 'status-open'
@@ -63,10 +58,7 @@ function Training() {
       .catch((err: Error) => setError(err.message))
   }, [])
 
-  const baseModelOptions = useMemo(() => {
-    const trained = models.map((m) => m.name)
-    return Array.from(new Set([...trained, ...suggestedModels]))
-  }, [models])
+  const modelNames = useMemo(() => models.map((m) => m.name), [models])
 
   useEffect(() => {
     const unsubscribeStatus = subscribe('training.status', (event) => {
@@ -303,7 +295,7 @@ function Training() {
       {createOpen && (
         <StartRunModal
           datasets={datasets}
-          baseModelOptions={baseModelOptions}
+          models={modelNames}
           starting={starting}
           error={createError}
           onStart={handleStart}
@@ -316,14 +308,14 @@ function Training() {
 
 interface StartRunModalProps {
   datasets: DatasetSummary[]
-  baseModelOptions: string[]
+  models: string[]
   starting: boolean
   error: string | null
   onStart: (config: { baseModel: string; dataset: string; outputName: string; iterations: number; learningRate: string }) => void
   onClose: () => void
 }
 
-function StartRunModal({ datasets, baseModelOptions, starting, error, onStart, onClose }: StartRunModalProps) {
+function StartRunModal({ datasets, models, starting, error, onStart, onClose }: StartRunModalProps) {
   const [baseModel, setBaseModel] = useState('')
   const [dataset, setDataset] = useState(datasets[0]?.name ?? '')
   const [outputName, setOutputName] = useState('')
@@ -346,19 +338,7 @@ function StartRunModal({ datasets, baseModelOptions, starting, error, onStart, o
       <form className="stacked-form" onSubmit={handleSubmit}>
         <label>
           Base model
-          <input
-            type="text"
-            list="base-model-options"
-            placeholder="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-            value={baseModel}
-            onChange={(e) => setBaseModel(e.target.value)}
-            autoFocus
-          />
-          <datalist id="base-model-options">
-            {baseModelOptions.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
+          <ModelCombobox value={baseModel} onChange={setBaseModel} models={models} autoFocus />
         </label>
         <label>
           Output model name
@@ -384,14 +364,13 @@ function StartRunModal({ datasets, baseModelOptions, starting, error, onStart, o
           <input type="text" placeholder="default" value={learningRate} onChange={(e) => setLearningRate(e.target.value)} />
         </label>
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={starting || !dataset || !baseModel.trim() || !outputName.trim()}>
-            {starting ? 'Starting…' : 'Start training'}
-          </button>
-        </div>
+        <ModalActions
+          onCancel={onClose}
+          submitLabel="Start training"
+          busyLabel="Starting…"
+          busy={starting}
+          disabled={!dataset || !baseModel.trim() || !outputName.trim()}
+        />
       </form>
     </Modal>
   )

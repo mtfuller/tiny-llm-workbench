@@ -23,6 +23,7 @@ import { useEventStream } from '../eventStream'
 import Modal from '../Modal'
 import Pagination from '../Pagination'
 import { TableSkeleton } from '../Skeleton'
+import TabBar from '../TabBar'
 import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
 
@@ -310,25 +311,15 @@ function EnvironmentDetail() {
         </section>
       )}
 
-      <div className="tab-bar">
-        <button
-          type="button"
-          className={`tab-button${tab === 'configuration' ? ' tab-button-active' : ''}`}
-          onClick={() => setTab('configuration')}
-        >
-          Configuration
-        </button>
-        <button type="button" className={`tab-button${tab === 'tools' ? ' tab-button-active' : ''}`} onClick={() => setTab('tools')}>
-          Tools
-        </button>
-        <button
-          type="button"
-          className={`tab-button${tab === 'playground' ? ' tab-button-active' : ''}`}
-          onClick={() => setTab('playground')}
-        >
-          Playground
-        </button>
-      </div>
+      <TabBar
+        tabs={[
+          { value: 'configuration', label: 'Configuration' },
+          { value: 'tools', label: 'Tools' },
+          { value: 'playground', label: 'Playground' },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
 
       {tab === 'configuration' && (
         <section className="panel">

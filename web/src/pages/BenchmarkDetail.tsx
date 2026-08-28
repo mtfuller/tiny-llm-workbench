@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Pencil, Plus, Sparkles, Tag, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Sparkles, Tag, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
@@ -25,10 +25,18 @@ import {
 import { useConfirm } from '../ConfirmDialog'
 import { useEventStream } from '../eventStream'
 import FilterMenu from '../FilterMenu'
+import IconButton from '../IconButton'
 import Modal from '../Modal'
+import ModalActions from '../ModalActions'
+import ModelCombobox from '../ModelCombobox'
 import Pagination from '../Pagination'
+import SortableHeader from '../SortableHeader'
+import TabBar from '../TabBar'
+import { VersionBadge } from '../Badge'
+import { formatDuration, formatMs } from '../lib/format'
+import { compareByMetricKey, computeMetrics, type MetricSortKey } from '../lib/resultMetrics'
 import { TableSkeleton } from '../Skeleton'
-import { suggestedModels } from '../suggestedModels'
+import TagCell from '../TagCell'
 import TagInput from '../TagInput'
 import {
   AssertionFields,
@@ -40,64 +48,14 @@ import {
 } from '../TestCaseEditor'
 import { useToast } from '../Toast'
 import { usePagination } from '../usePagination'
+import { useTagFilter } from '../useTagFilter'
 
 type Tab = 'testCases' | 'results'
-type SortKey = 'modelName' | 'benchmarkVersion' | 'passAt1' | 'assertionRate' | 'errorRate' | 'avgLatency' | 'startedAt'
+type SortKey = 'modelName' | 'benchmarkVersion' | MetricSortKey
 type SortDir = 'asc' | 'desc'
 type TestCaseModalState = { mode: 'add' } | { mode: 'edit'; index: number } | null
 
 const emptyTestCase: TestCase = { id: '', prompt: '', assertions: [], tags: [] }
-
-function formatDuration(startedAt: string, finishedAt?: string): string {
-  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
-  const seconds = Math.max(0, Math.round((end - new Date(startedAt).getTime()) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-}
-
-function formatMs(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
-
-// ResultMetrics are standard benchmark-style aggregates derived entirely
-// from a RunResult's own per-test-case results — no extra data needed from
-// the backend, so these compute the same way for historical results too.
-//
-// passAt1 is the well-known "pass@k" metric with k=1: since each test case
-// here runs exactly once per model, pass@1 is mathematically identical to
-// the plain pass rate (passed/total) — that's what pass@1 means at k=1, not
-// an approximation of it. assertionRate is a finer-grained score than
-// passAt1: a test case with several assertions counts partial credit here
-// even when it doesn't pass outright. avgLatencyMs divides the run's own
-// wall-clock duration by its test case count — exact, not approximate,
-// since test cases run strictly sequentially (see internal/benchmarks).
-interface ResultMetrics {
-  passAt1: number
-  assertionRate: number
-  errorRate: number
-  avgLatencyMs: number
-}
-
-function computeMetrics(r: BenchmarkRunResult): ResultMetrics {
-  const total = r.total || 1
-  let assertionTotal = 0
-  let assertionPassed = 0
-  let errorCount = 0
-  for (const tc of r.results) {
-    assertionTotal += tc.assertions.length
-    assertionPassed += tc.assertions.filter((a) => a.passed).length
-    if (tc.error) errorCount++
-  }
-  const durationMs = new Date(r.finishedAt).getTime() - new Date(r.startedAt).getTime()
-
-  return {
-    passAt1: r.total === 0 ? 0 : r.passed / r.total,
-    assertionRate: assertionTotal === 0 ? 0 : assertionPassed / assertionTotal,
-    errorRate: errorCount / total,
-    avgLatencyMs: durationMs / total,
-  }
-}
 
 function sortResults(results: BenchmarkRunResult[], key: SortKey, dir: SortDir): BenchmarkRunResult[] {
   const sorted = [...results].sort((a, b) => {
@@ -106,17 +64,8 @@ function sortResults(results: BenchmarkRunResult[], key: SortKey, dir: SortDir):
         return a.modelName.localeCompare(b.modelName)
       case 'benchmarkVersion':
         return a.benchmarkVersion - b.benchmarkVersion
-      case 'assertionRate':
-        return computeMetrics(a).assertionRate - computeMetrics(b).assertionRate
-      case 'errorRate':
-        return computeMetrics(a).errorRate - computeMetrics(b).errorRate
-      case 'avgLatency':
-        return computeMetrics(a).avgLatencyMs - computeMetrics(b).avgLatencyMs
-      case 'startedAt':
-        return new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
-      case 'passAt1':
       default:
-        return computeMetrics(a).passAt1 - computeMetrics(b).passAt1
+        return compareByMetricKey(a, b, key)
     }
   })
   return dir === 'asc' ? sorted : sorted.reverse()
@@ -140,7 +89,6 @@ function BenchmarkDetail() {
   const [error, setError] = useState<string | null>(null)
 
   const [testCaseSearch, setTestCaseSearch] = useState('')
-  const [activeTags, setActiveTags] = useState<Set<string>>(new Set())
   const [resultSearch, setResultSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('passAt1')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
@@ -219,29 +167,11 @@ function BenchmarkDetail() {
     return () => clearInterval(interval)
   }, [activeRun, name, reloadResults])
 
-  const modelOptions = useMemo(() => {
-    const trained = models.map((m) => m.name)
-    return Array.from(new Set([...trained, ...suggestedModels]))
-  }, [models])
+  const modelNames = useMemo(() => models.map((m) => m.name), [models])
 
   const testCases = benchmark?.testCases ?? []
 
-  const allTags = useMemo(() => {
-    const tags = new Set<string>()
-    for (const tc of testCases) {
-      for (const t of tc.tags ?? []) tags.add(t)
-    }
-    return Array.from(tags).sort()
-  }, [testCases])
-
-  const toggleTagFilter = (tag: string) => {
-    setActiveTags((prev) => {
-      const next = new Set(prev)
-      if (next.has(tag)) next.delete(tag)
-      else next.add(tag)
-      return next
-    })
-  }
+  const { allTags, activeTags, toggleTag, clearTags, matchesTags } = useTagFilter(testCases, (tc) => tc.tags)
 
   const latestVersion = versions.length > 0 ? versions[versions.length - 1] : null
   const draftDiffersFromLatest = !latestVersion || JSON.stringify(latestVersion.testCases) !== JSON.stringify(testCases)
@@ -338,24 +268,16 @@ function BenchmarkDetail() {
     }
   }
 
-  const sortIcon = (key: SortKey) => {
-    if (key !== sortKey) return <ArrowUpDown size={13} className="sort-icon sort-icon-inactive" />
-    return sortDir === 'asc' ? <ArrowUp size={13} className="sort-icon" /> : <ArrowDown size={13} className="sort-icon" />
-  }
-
   const filteredTestCases = useMemo(() => {
     const q = testCaseSearch.trim().toLowerCase()
     return testCases
       .map((tc, index) => ({ tc, index }))
       .filter(({ tc }) => {
-        if (activeTags.size > 0) {
-          const tags = tc.tags ?? []
-          if (![...activeTags].some((t) => tags.includes(t))) return false
-        }
+        if (!matchesTags(tc)) return false
         if (q && !tc.prompt.toLowerCase().includes(q)) return false
         return true
       })
-  }, [testCases, testCaseSearch, activeTags])
+  }, [testCases, testCaseSearch, matchesTags])
 
   const {
     page: testCasePage,
@@ -387,7 +309,7 @@ function BenchmarkDetail() {
       <div className="page-header">
         <h2>
           <Link to="/benchmarks">Benchmarks</Link> / {name}
-          {benchmark && <span className="badge version-badge">{benchmark.version === 0 ? 'unpublished' : `v${benchmark.version}`}</span>}
+          {benchmark && <VersionBadge version={benchmark.version} />}
         </h2>
       </div>
 
@@ -414,14 +336,14 @@ function BenchmarkDetail() {
         </section>
       )}
 
-      <div className="tab-bar">
-        <button type="button" className={`tab-button${tab === 'testCases' ? ' tab-button-active' : ''}`} onClick={() => setTab('testCases')}>
-          Test cases
-        </button>
-        <button type="button" className={`tab-button${tab === 'results' ? ' tab-button-active' : ''}`} onClick={() => setTab('results')}>
-          Run results
-        </button>
-      </div>
+      <TabBar
+        tabs={[
+          { value: 'testCases', label: 'Test cases' },
+          { value: 'results', label: 'Run results' },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
 
       {tab === 'testCases' && (
         <div className="panel panel-flush">
@@ -435,39 +357,19 @@ function BenchmarkDetail() {
             />
             {allTags.length > 0 && (
               <FilterMenu
-                groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTagFilter }]}
-                onClearAll={() => setActiveTags(new Set())}
+                groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTag }]}
+                onClearAll={clearTags}
               />
             )}
             <div className="list-toolbar-actions">
-              <button
-                type="button"
-                className="icon-button"
-                title="Add test case"
-                aria-label="Add test case"
-                onClick={() => setTestCaseModal({ mode: 'add' })}
-              >
-                <Plus size={16} />
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                title="Generate test cases…"
-                aria-label="Generate test cases"
-                onClick={() => setGenerateOpen(true)}
-              >
-                <Sparkles size={16} />
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                title={testCases.length === 0 ? 'Add a test case before publishing' : 'Publish version — freezes the current draft'}
-                aria-label="Publish version"
+              <IconButton icon={<Plus size={16} />} label="Add test case" onClick={() => setTestCaseModal({ mode: 'add' })} />
+              <IconButton icon={<Sparkles size={16} />} label="Generate test cases…" onClick={() => setGenerateOpen(true)} />
+              <IconButton
+                icon={<Tag size={16} />}
+                label={testCases.length === 0 ? 'Add a test case before publishing' : 'Publish version — freezes the current draft'}
                 disabled={publishing || testCases.length === 0}
                 onClick={handlePublish}
-              >
-                <Tag size={16} />
-              </button>
+              />
             </div>
           </div>
 
@@ -511,36 +413,20 @@ function BenchmarkDetail() {
                       ))}
                     </td>
                     <td>
-                      {tc.tags && tc.tags.length > 0 ? (
-                        <div className="tag-list">
-                          {tc.tags.map((tag) => (
-                            <span className="badge" key={tag}>
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        '—'
-                      )}
+                      <TagCell tags={tc.tags} />
                     </td>
                     <td className="row-actions">
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="Edit test case"
+                      <IconButton
+                        icon={<Pencil size={15} />}
+                        label="Edit test case"
                         onClick={() => setTestCaseModal({ mode: 'edit', index })}
-                      >
-                        <Pencil size={15} />
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="Delete test case"
+                      />
+                      <IconButton
+                        icon={<Trash2 size={15} />}
+                        label="Delete test case"
                         disabled={deletingTestCaseIndex === index}
                         onClick={() => handleDeleteTestCase(index)}
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                      />
                     </td>
                   </tr>
                 ))}
@@ -570,22 +456,18 @@ function BenchmarkDetail() {
               className="list-search"
             />
             <div className="list-toolbar-actions">
-              <button
-                type="button"
-                className="icon-button"
-                title={
+              <IconButton
+                icon={<Plus size={16} />}
+                label={
                   activeRun
                     ? 'A run is already in progress'
                     : !benchmark || benchmark.version === 0
                       ? 'Publish a version first (Test cases tab)'
                       : 'Run benchmark'
                 }
-                aria-label="Run benchmark"
                 disabled={!!activeRun || !benchmark || benchmark.version === 0}
                 onClick={() => setRunModalOpen(true)}
-              >
-                <Plus size={16} />
-              </button>
+              />
             </div>
           </div>
 
@@ -612,46 +494,40 @@ function BenchmarkDetail() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>
-                      <button type="button" className="sort-header" onClick={() => toggleSort('modelName')}>
-                        Model {sortIcon('modelName')}
-                      </button>
-                    </th>
-                    <th>
-                      <button type="button" className="sort-header" onClick={() => toggleSort('benchmarkVersion')}>
-                        Version {sortIcon('benchmarkVersion')}
-                      </button>
-                    </th>
-                    <th>
-                      <button type="button" className="sort-header" onClick={() => toggleSort('passAt1')} title="pass@1 — fraction of test cases passed, k=1 sample">
-                        Pass@1 {sortIcon('passAt1')}
-                      </button>
-                    </th>
-                    <th>
-                      <button
-                        type="button"
-                        className="sort-header"
-                        onClick={() => toggleSort('assertionRate')}
-                        title="Fraction of individual assertions passed, across all test cases"
-                      >
-                        Assertion rate {sortIcon('assertionRate')}
-                      </button>
-                    </th>
-                    <th>
-                      <button type="button" className="sort-header" onClick={() => toggleSort('errorRate')} title="Fraction of test cases that errored (no reply at all)">
-                        Errors {sortIcon('errorRate')}
-                      </button>
-                    </th>
-                    <th>
-                      <button type="button" className="sort-header" onClick={() => toggleSort('avgLatency')}>
-                        Avg latency {sortIcon('avgLatency')}
-                      </button>
-                    </th>
-                    <th>
-                      <button type="button" className="sort-header" onClick={() => toggleSort('startedAt')}>
-                        Started {sortIcon('startedAt')}
-                      </button>
-                    </th>
+                    <SortableHeader label="Model" columnKey="modelName" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                    <SortableHeader
+                      label="Version"
+                      columnKey="benchmarkVersion"
+                      activeKey={sortKey}
+                      dir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <SortableHeader
+                      label="Pass@1"
+                      columnKey="passAt1"
+                      activeKey={sortKey}
+                      dir={sortDir}
+                      onSort={toggleSort}
+                      title="pass@1 — fraction of test cases passed, k=1 sample"
+                    />
+                    <SortableHeader
+                      label="Assertion rate"
+                      columnKey="assertionRate"
+                      activeKey={sortKey}
+                      dir={sortDir}
+                      onSort={toggleSort}
+                      title="Fraction of individual assertions passed, across all test cases"
+                    />
+                    <SortableHeader
+                      label="Errors"
+                      columnKey="errorRate"
+                      activeKey={sortKey}
+                      dir={sortDir}
+                      onSort={toggleSort}
+                      title="Fraction of test cases that errored (no reply at all)"
+                    />
+                    <SortableHeader label="Avg latency" columnKey="avgLatency" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
+                    <SortableHeader label="Started" columnKey="startedAt" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
                   </tr>
                 </thead>
                 <tbody>
@@ -708,7 +584,7 @@ function BenchmarkDetail() {
 
       {generateOpen && (
         <GenerateTestCasesModal
-          modelOptions={modelOptions}
+          models={modelNames}
           allTags={allTags}
           generating={generating}
           error={generateError}
@@ -794,21 +670,14 @@ function TestCaseModal({ title, initial, allTags, saving, error, onSave, onClose
           <TagInput tags={tags} onChange={setTags} suggestions={allTags} />
         </label>
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={saving || !prompt.trim()}>
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <ModalActions onCancel={onClose} busy={saving} disabled={!prompt.trim()} />
       </form>
     </Modal>
   )
 }
 
 interface GenerateTestCasesModalProps {
-  modelOptions: string[]
+  models: string[]
   allTags: string[]
   generating: boolean
   error: string | null
@@ -816,7 +685,7 @@ interface GenerateTestCasesModalProps {
   onClose: () => void
 }
 
-function GenerateTestCasesModal({ modelOptions, allTags, generating, error, onGenerate, onClose }: GenerateTestCasesModalProps) {
+function GenerateTestCasesModal({ models, allTags, generating, error, onGenerate, onClose }: GenerateTestCasesModalProps) {
   const [model, setModel] = useState('')
   const [seedPrompt, setSeedPrompt] = useState('')
   const [assertions, setAssertions] = useState<DraftAssertion[]>([emptyAssertion()])
@@ -844,18 +713,7 @@ function GenerateTestCasesModal({ modelOptions, allTags, generating, error, onGe
       <form className="stacked-form" onSubmit={handleSubmit}>
         <label>
           Model
-          <input
-            type="text"
-            list="generate-test-case-model-options"
-            placeholder="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
-          <datalist id="generate-test-case-model-options">
-            {modelOptions.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
+          <ModelCombobox value={model} onChange={setModel} models={models} />
         </label>
         <label>
           Example prompt
@@ -871,14 +729,7 @@ function GenerateTestCasesModal({ modelOptions, allTags, generating, error, onGe
           <input type="number" min={1} max={20} value={count} onChange={(e) => setCount(Number(e.target.value))} />
         </label>
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={generating || !model}>
-            {generating ? 'Generating…' : 'Generate'}
-          </button>
-        </div>
+        <ModalActions onCancel={onClose} submitLabel="Generate" busyLabel="Generating…" busy={generating} disabled={!model} />
       </form>
     </Modal>
   )
@@ -933,14 +784,13 @@ function RunBenchmarkModal({ models, versions, defaultVersion, starting, error, 
           </div>
         )}
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={starting || selectedModels.length === 0 || version <= 0}>
-            {starting ? 'Starting…' : 'Run benchmark'}
-          </button>
-        </div>
+        <ModalActions
+          onCancel={onClose}
+          submitLabel="Run benchmark"
+          busyLabel="Starting…"
+          busy={starting}
+          disabled={selectedModels.length === 0 || version <= 0}
+        />
       </form>
     </Modal>
   )

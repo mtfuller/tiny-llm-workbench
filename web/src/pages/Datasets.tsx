@@ -1,42 +1,27 @@
 import { Plus, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { createDataset, deleteDataset, listDatasets, type DatasetSummary } from '../api'
-import { useConfirm } from '../ConfirmDialog'
+import IconButton from '../IconButton'
+import ListPanel from '../ListPanel'
 import Modal from '../Modal'
-import Pagination from '../Pagination'
-import { TableSkeleton } from '../Skeleton'
+import ModalActions from '../ModalActions'
 import { useToast } from '../Toast'
-import { usePagination } from '../usePagination'
+import { useResourceList } from '../useResourceList'
 
 function Datasets() {
-  const confirm = useConfirm()
   const showToast = useToast()
-  const [datasets, setDatasets] = useState<DatasetSummary[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
-  const [deleting, setDeleting] = useState<string | null>(null)
+  const list = useResourceList<DatasetSummary>({
+    load: listDatasets,
+    getName: (d) => d.name,
+    remove: (d) => deleteDataset(d.name),
+    confirmMessage: (d) => `Delete dataset "${d.name}"? This cannot be undone.`,
+    deletedToast: (d) => `Deleted dataset "${d.name}"`,
+  })
+
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
-
-  const reload = () => {
-    listDatasets()
-      .then(setDatasets)
-      .catch((err: Error) => setError(err.message))
-  }
-
-  useEffect(reload, [])
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return datasets ?? []
-    return (datasets ?? []).filter((d) => d.name.toLowerCase().includes(q))
-  }, [datasets, search])
-
-  const { page, setPage, resetPage, pageCount, pageItems } = usePagination(filtered)
-
-  useEffect(resetPage, [search, resetPage])
 
   const handleCreate = async (name: string, title: string, description: string) => {
     setCreating(true)
@@ -44,27 +29,12 @@ function Datasets() {
     try {
       await createDataset(name, title || undefined, description || undefined)
       setCreateOpen(false)
-      reload()
+      showToast(`Created dataset "${name}"`)
+      list.reload()
     } catch (err) {
       setCreateError((err as Error).message)
     } finally {
       setCreating(false)
-    }
-  }
-
-  const handleDelete = async (name: string) => {
-    if (!(await confirm(`Delete dataset "${name}"? This cannot be undone.`))) return
-
-    setDeleting(name)
-    setError(null)
-    try {
-      await deleteDataset(name)
-      showToast(`Deleted dataset "${name}"`)
-      reload()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setDeleting(null)
     }
   }
 
@@ -75,97 +45,56 @@ function Datasets() {
       </div>
       <p className="hint">Input/output training pairs used to fine-tune a model.</p>
 
-      <div className="panel panel-flush">
-        <div className="list-toolbar panel-toolbar">
-          <input
-            type="search"
-            placeholder="Search datasets…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="list-search"
-          />
-          <div className="list-toolbar-actions">
-            <button type="button" className="icon-button" title="New dataset" aria-label="New dataset" onClick={() => setCreateOpen(true)}>
-              <Plus size={16} />
-            </button>
-          </div>
-        </div>
-
-        {error && (
-          <div className="panel-body">
-            <p className="error">{error}</p>
-          </div>
-        )}
-
-        {!error && datasets === null && (
-          <div className="panel-body">
-            <TableSkeleton columns={3} />
-          </div>
-        )}
-
-        {datasets !== null && datasets.length === 0 && (
-          <div className="panel-body">
-            <p className="hint">No datasets yet. Create one above to get started.</p>
-          </div>
-        )}
-
-        {datasets !== null && datasets.length > 0 && filtered.length === 0 && (
-          <div className="panel-body">
-            <p className="hint">No datasets match your search.</p>
-          </div>
-        )}
-
-        {filtered.length > 0 && (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Pairs</th>
-                <th></th>
+      <ListPanel
+        search={list.search}
+        onSearch={list.setSearch}
+        searchPlaceholder="Search datasets…"
+        actions={<IconButton icon={<Plus size={16} />} label="New dataset" onClick={() => setCreateOpen(true)} />}
+        error={list.error}
+        loading={list.items === null}
+        isEmpty={list.items !== null && list.items.length === 0}
+        hasMatches={list.filtered.length > 0}
+        emptyMessage="No datasets yet. Create one above to get started."
+        noMatchMessage="No datasets match your search."
+        skeletonColumns={3}
+        page={list.page}
+        pageCount={list.pageCount}
+        setPage={list.setPage}
+        shownCount={list.filtered.length}
+        totalCount={list.items?.length ?? 0}
+        itemLabel="datasets"
+      >
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Pairs</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.pageItems.map((dataset) => (
+              <tr key={dataset.name}>
+                <td>
+                  <Link to={`/datasets/${encodeURIComponent(dataset.name)}`}>{dataset.name}</Link>
+                </td>
+                <td>{dataset.pairCount}</td>
+                <td className="row-actions">
+                  <IconButton
+                    icon={<Trash2 size={15} />}
+                    label="Delete dataset"
+                    disabled={list.deleting === dataset.name}
+                    onClick={() => list.handleDelete(dataset)}
+                  />
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {pageItems.map((dataset) => (
-                <tr key={dataset.name}>
-                  <td>
-                    <Link to={`/datasets/${encodeURIComponent(dataset.name)}`}>{dataset.name}</Link>
-                  </td>
-                  <td>{dataset.pairCount}</td>
-                  <td className="row-actions">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      title="Delete dataset"
-                      aria-label="Delete dataset"
-                      disabled={deleting === dataset.name}
-                      onClick={() => handleDelete(dataset.name)}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-
-        <Pagination
-          page={page}
-          pageCount={pageCount}
-          onChange={setPage}
-          shownCount={filtered.length}
-          totalCount={datasets?.length ?? 0}
-          itemLabel="datasets"
-        />
-      </div>
+            ))}
+          </tbody>
+        </table>
+      </ListPanel>
 
       {createOpen && (
-        <CreateDatasetModal
-          creating={creating}
-          error={createError}
-          onCreate={handleCreate}
-          onClose={() => setCreateOpen(false)}
-        />
+        <CreateDatasetModal creating={creating} error={createError} onCreate={handleCreate} onClose={() => setCreateOpen(false)} />
       )}
     </>
   )
@@ -205,14 +134,7 @@ function CreateDatasetModal({ creating, error, onCreate, onClose }: CreateDatase
           <textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
         {error && <p className="error">{error}</p>}
-        <div className="row-actions confirm-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" disabled={creating || !name.trim()}>
-            {creating ? 'Creating…' : 'Create'}
-          </button>
-        </div>
+        <ModalActions onCancel={onClose} submitLabel="Create" busyLabel="Creating…" busy={creating} disabled={!name.trim()} />
       </form>
     </Modal>
   )
