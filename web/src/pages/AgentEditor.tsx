@@ -24,6 +24,7 @@ import {
   ChevronRight,
   Database,
   IterationCw,
+  Loader2,
   LogIn,
   Megaphone,
   MessageSquare,
@@ -149,6 +150,13 @@ function newNodeId(type: string): string {
   return `${type}-${Date.now()}-${nodeCounter}`
 }
 
+// elapsedLabel renders "M:SS" for the time since startedAt. tick is an unused
+// arg that just forces a re-render each second while a debug step runs.
+function elapsedLabel(startedAt: number, _tick: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
 function AgentEditor() {
   return (
     <ReactFlowProvider>
@@ -198,6 +206,13 @@ function AgentEditorWorkspace() {
   const [debugBusy, setDebugBusy] = useState(false)
   const [debugStarting, setDebugStarting] = useState(false)
   const [debugError, setDebugError] = useState<string | null>(null)
+  // Live feed for the debug panel: agent.step / agent.message events for the
+  // active debug run, so a step that's waiting on the model isn't a silent
+  // freeze. Reset at the start of each turn.
+  const [debugFeed, setDebugFeed] = useState<AgentStepEvent[]>([])
+  // When the in-flight step started, for the ticking "running… 0:42" label.
+  const [stepStartedAt, setStepStartedAt] = useState<number | null>(null)
+  const [nowTick, setNowTick] = useState(0)
   // Tracks the latest debugState for the unmount-cleanup effect below,
   // which otherwise would only ever see the (always null) value captured
   // when the effect itself was first set up.
@@ -261,17 +276,26 @@ function AgentEditorWorkspace() {
       .catch(() => setKnowledgeBases([]))
   }, [name, setNodes, setEdges])
 
+  const debugRunId = debugState?.id ?? null
+
   useEffect(() => {
     return subscribe('agent.step', (event) => {
       const step = JSON.parse(event.data) as AgentStepEvent
-      setSteps((prev) => (step.runId === runId ? [...prev, step] : prev))
+      if (step.runId === runId) setSteps((prev) => [...prev, step])
+      if (step.runId === debugRunId) setDebugFeed((prev) => [...prev, step])
     })
-  }, [subscribe, runId])
+  }, [subscribe, runId, debugRunId])
 
   // "say" nodes stream user-facing messages here as the turn runs.
   useEffect(() => {
     return subscribe('agent.message', (event) => {
       const msg = JSON.parse(event.data) as AgentMessageEvent
+      if (msg.runId === debugRunId) {
+        setDebugFeed((prev) => [
+          ...prev,
+          { runId: msg.runId, nodeId: 'say', nodeType: 'say', output: `${msg.kind}: ${msg.content}` },
+        ])
+      }
       if (msg.runId !== runId) return
       if (msg.kind === 'final') streamedFinalRef.current = true
       setMessages((prev) => [
@@ -279,7 +303,15 @@ function AgentEditorWorkspace() {
         { role: 'assistant', content: msg.content, timestamp: new Date().toISOString(), kind: msg.kind },
       ])
     })
-  }, [subscribe, runId])
+  }, [subscribe, runId, debugRunId])
+
+  // Tick once a second while a debug step is in flight, so the elapsed-time
+  // label updates.
+  useEffect(() => {
+    if (stepStartedAt === null) return
+    const id = setInterval(() => setNowTick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [stepStartedAt])
 
   useEffect(() => {
     if (chatOpen) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -524,6 +556,8 @@ function AgentEditorWorkspace() {
     setDebugState(null)
     setDebugInput('')
     setDebugError(null)
+    setDebugFeed([])
+    setStepStartedAt(null)
   }
 
   const handleStartDebug = async () => {
@@ -550,6 +584,7 @@ function AgentEditorWorkspace() {
 
     setDebugBusy(true)
     setDebugError(null)
+    setDebugFeed([]) // a fresh turn
     try {
       const state = await sendAgentDebugMessage(debugState.id, debugInput.trim())
       setDebugState(state)
@@ -561,31 +596,24 @@ function AgentEditorWorkspace() {
     }
   }
 
-  const handleDebugStep = async () => {
+  const runDebugAction = async (action: () => Promise<DebugState>) => {
     if (!debugState) return
     setDebugBusy(true)
     setDebugError(null)
+    setStepStartedAt(Date.now())
+    setNowTick(0)
     try {
-      setDebugState(await stepAgentDebugRun(debugState.id))
+      setDebugState(await action())
     } catch (err) {
       setDebugError((err as Error).message)
     } finally {
       setDebugBusy(false)
+      setStepStartedAt(null)
     }
   }
 
-  const handleDebugRetry = async () => {
-    if (!debugState) return
-    setDebugBusy(true)
-    setDebugError(null)
-    try {
-      setDebugState(await retryAgentDebugRun(debugState.id))
-    } catch (err) {
-      setDebugError((err as Error).message)
-    } finally {
-      setDebugBusy(false)
-    }
-  }
+  const handleDebugStep = () => runDebugAction(() => stepAgentDebugRun(debugState!.id))
+  const handleDebugRetry = () => runDebugAction(() => retryAgentDebugRun(debugState!.id))
 
   // nodesForCanvas overlays the active debug session's pending/last-executed
   // node onto a copy of the real canvas nodes, purely for rendering — Save
@@ -641,8 +669,8 @@ function AgentEditorWorkspace() {
   }
 
   // Drag-resizable workspace sidebars (widths persist to localStorage).
-  const palette = useResizableSidebar('tlw.agentPaletteWidth', 190, { min: 150, max: 480, side: 'left' })
-  const inspector = useResizableSidebar('tlw.agentInspectorWidth', 300, { min: 220, max: 560, side: 'right' })
+  const palette = useResizableSidebar('tlw.agentPaletteWidth', 190, { min: 150, max: 760, side: 'left' })
+  const inspector = useResizableSidebar('tlw.agentInspectorWidth', 300, { min: 220, max: 640, side: 'right' })
 
   return (
     <div className="agent-editor">
@@ -843,6 +871,36 @@ function AgentEditorWorkspace() {
                         </button>
                       )}
                     </div>
+
+                    {debugBusy && stepStartedAt !== null && (
+                      <div className="agent-debug-running">
+                        <Loader2 size={14} className="chat-modal-spinner" />
+                        <span>
+                          Running <code>{debugState.pendingNodeType || debugState.lastStep?.nodeType || 'node'}</code> ·{' '}
+                          {elapsedLabel(stepStartedAt, nowTick)}
+                        </span>
+                      </div>
+                    )}
+                    {debugBusy && stepStartedAt !== null && Math.floor((Date.now() - stepStartedAt) / 1000) > 8 && (
+                      <p className="field-hint">
+                        The first model call loads (and if it's not cached, downloads) the model — this can take a
+                        while.
+                      </p>
+                    )}
+
+                    {debugFeed.length > 0 && (
+                      <>
+                        <div className="agent-palette-label">Activity</div>
+                        <ul className="event-log agent-debug-feed">
+                          {debugFeed.map((s, i) => (
+                            <li key={i} className={s.phase === 'start' ? 'agent-debug-feed-start' : undefined}>
+                              <span className="event-type">{s.nodeType}</span>
+                              <span className="event-data">{s.output}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
 
                     {debugState.lastStep && (
                       <>

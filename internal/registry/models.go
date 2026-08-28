@@ -52,6 +52,23 @@ func (r *Registry) GetModel(name string) (Model, error) {
 	return r.readModelMetadata(name)
 }
 
+// ResolveModelRef turns a model reference into the string mlx-lm's --model
+// flag expects. If ref names a registry model, its Path is returned — a local
+// fused-model directory for a trained model, or the full "mlx-community/…"
+// repo id for one added from Hugging Face. Otherwise ref is returned
+// unchanged, so a raw repo id or local path given directly still works.
+//
+// This exists because several surfaces (the Training page's picker, an agent
+// prompt/agent node's model field) let the user choose a model by its
+// registry name — which mlx-lm can't resolve on its own (an org-less name
+// like "Llama-3.2-1B-Instruct-4bit" makes the Hub return 401).
+func (r *Registry) ResolveModelRef(ref string) string {
+	if m, err := r.GetModel(ref); err == nil && m.Path != "" {
+		return m.Path
+	}
+	return ref
+}
+
 // ListModels returns all registry-tracked models, sorted by name.
 func (r *Registry) ListModels() ([]Model, error) {
 	entries, err := os.ReadDir(r.modelsDir())

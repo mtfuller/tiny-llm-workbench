@@ -148,6 +148,12 @@ func (dr *debugRun) applyStepResult(node *registry.Node, input, output, handle s
 // used only for display and to look up the agent when nothing else is
 // needed; it plays no role in choosing which graph runs.
 func (m *Manager) StartDebugRun(agentName string, graph registry.Graph, environment string) (*DebugState, error) {
+	// Resolve prompt/agent node model fields (a registry model name -> its
+	// path / repo id) before prepareGraph, so every node the debugger later
+	// steps carries the identifier mlx-lm's --model expects — same as a real
+	// run (see SendMessage).
+	graph = m.resolveGraphModels(graph)
+
 	inputNode, nodesByID, edges, err := prepareGraph(graph)
 	if err != nil {
 		return nil, err

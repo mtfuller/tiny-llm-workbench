@@ -81,13 +81,18 @@ type ChatMessage struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// StepEvent reports one node the engine visited while executing a turn —
-// Output is what that node itself produced (not the value that flowed into
-// it), for the Run view's live event log and the step-by-step debugger.
+// StepEvent reports something a node did while executing a turn, for the Run
+// view's live event log and the step-by-step debugger. Phase distinguishes a
+// node *starting* long-running work ("start" — Output is a short status like
+// "calling model X", emitted so the debugger isn't a black box while a
+// prompt/agent node waits on the model) from the normal case (Phase "",
+// Output is what the node itself produced). A "start" event is stream-only —
+// it never becomes the debugger's LastStep.
 type StepEvent struct {
 	NodeID   string `json:"nodeId"`
 	NodeType string `json:"nodeType"`
 	Output   string `json:"output"`
+	Phase    string `json:"phase,omitempty"` // "" (result) or "start"
 }
 
 // TurnMessage is a user-facing message a "say" node emits mid-turn: a
@@ -327,6 +332,7 @@ func (e *Engine) runNode(ctx context.Context, node registry.Node, input, instanc
 			userTurn = rendered
 		}
 
+		emitNodeStart(hooks, node.ID, node.Type, node.Data.Model)
 		reply, err := e.llm.Generate(ctx, node.Data.Model, buildPrompt(node.Data.SystemPrompt, history, userTurn))
 		if err != nil {
 			return "", "", fmt.Errorf("prompt node %q: %w", node.ID, err)
@@ -653,6 +659,8 @@ func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, in
 		maxIter = defaultAgentMaxIterations
 	}
 
+	emitNodeStart(hooks, node.ID, node.Type, node.Data.AgentModel)
+
 	var transcript strings.Builder
 	lastReply := ""
 	for i := 0; i < maxIter; i++ {
@@ -746,6 +754,18 @@ const knowledgeSearchTool = "knowledge_search"
 
 func emitAgentStep(hooks *RunHooks, nodeID string, iter int, action, obs string) {
 	hooks.emitStep(StepEvent{NodeID: nodeID, NodeType: "agent", Output: fmt.Sprintf("iteration %d: %s -> %s", iter, action, truncate(obs, 200))})
+}
+
+// emitNodeStart streams a "start" phase event just before a node begins
+// work that can block for a while (an LLM call — cold model-server start,
+// download, generation), so the step debugger can show "calling model X…"
+// instead of freezing silently.
+func emitNodeStart(hooks *RunHooks, nodeID, nodeType, model string) {
+	msg := "calling model"
+	if model != "" {
+		msg = "calling model " + model
+	}
+	hooks.emitStep(StepEvent{NodeID: nodeID, NodeType: nodeType, Output: msg, Phase: "start"})
 }
 
 // buildAgentPrompt assembles one iteration's completion prompt for an agent

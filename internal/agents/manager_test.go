@@ -14,6 +14,9 @@ import (
 type fakeAgentReader struct {
 	agents map[string]registry.Agent
 	err    error
+	// models maps a registry model name -> the path/repo id ResolveModelRef
+	// returns for it. A ref not present here passes through unchanged.
+	models map[string]string
 }
 
 func (f *fakeAgentReader) GetAgent(name string) (registry.Agent, error) {
@@ -25,6 +28,13 @@ func (f *fakeAgentReader) GetAgent(name string) (registry.Agent, error) {
 		return registry.Agent{}, errors.New("not found")
 	}
 	return agent, nil
+}
+
+func (f *fakeAgentReader) ResolveModelRef(ref string) string {
+	if resolved, ok := f.models[ref]; ok {
+		return resolved
+	}
+	return ref
 }
 
 type fakeEnvironmentRunner struct {
@@ -238,6 +248,33 @@ func TestStopRunDoesNotStopAnInstanceItDidNotLaunch(t *testing.T) {
 	}
 	if _, ok := m.GetRun(run.ID); ok {
 		t.Error("GetRun() found a run after StopRun(), want it removed from the in-memory run map regardless")
+	}
+}
+
+// A prompt node whose Model is a registry model name is resolved to that
+// model's path / repo id before the engine calls the runner — otherwise
+// mlx_lm.server gets an org-less name it can't fetch (the "looks hung" bug).
+func TestSendMessageResolvesPromptNodeModel(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Model: "Llama-3.2-1B-Instruct-4bit"}},
+		},
+		Edges: []registry.Edge{{ID: "e1", Source: "in", Target: "p1"}},
+	}
+	agents := &fakeAgentReader{
+		agents: map[string]registry.Agent{"a": {Name: "a", Graph: graph}},
+		models: map[string]string{"Llama-3.2-1B-Instruct-4bit": "mlx-community/Llama-3.2-1B-Instruct-4bit"},
+	}
+	llm := &fakeLLM{responses: []string{"hi"}}
+	m := NewManager(context.Background(), agents, llm, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, &fakeToolReader{}, &fakeKnowledgeReader{}, eventbus.New())
+
+	run, _ := m.StartRun("a")
+	if _, err := m.SendMessage(run.ID, "hi"); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if len(llm.models) != 1 || llm.models[0] != "mlx-community/Llama-3.2-1B-Instruct-4bit" {
+		t.Errorf("llm.models = %v, want the resolved repo id", llm.models)
 	}
 }
 

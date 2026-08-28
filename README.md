@@ -49,7 +49,10 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
   downstream of it is simply where a turn ends, so there's no separate "output" node to wire up. Each
   agent can target a specific Environment (for its tool and agent nodes). A step-by-step debugger lets
   you pause a turn, Step through one node at a time to see exactly what it produced, and Retry a node to
-  get a fresh result before deciding to move on.
+  get a fresh result before deciding to move on — with a live activity feed and a running-elapsed
+  indicator so a node waiting on the model isn't a silent freeze. Models picked by their registry name
+  (including one added from Hugging Face) are resolved wherever a model is chosen — agent nodes and the
+  Training base model — so they load instead of 404ing on the org-less name.
 - **Evaluations** — Define versioned test suites against your agents: a prompt, optional setup commands
   to prepare a realistic scenario (seed files, init a repo) in the agent's own Environment before its
   turn, assertions on the reply, and optional verify commands checking the environment's resulting state

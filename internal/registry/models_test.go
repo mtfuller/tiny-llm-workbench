@@ -59,6 +59,35 @@ func TestGetModelNotFound(t *testing.T) {
 	}
 }
 
+func TestResolveModelRef(t *testing.T) {
+	reg := New(t.TempDir())
+	if err := reg.SaveModel(Model{
+		Name:   "Llama-3.2-1B-Instruct-4bit",
+		Source: "huggingface",
+		Path:   "mlx-community/Llama-3.2-1B-Instruct-4bit",
+	}); err != nil {
+		t.Fatalf("SaveModel() error = %v", err)
+	}
+	if err := reg.SaveModel(Model{Name: "no-path-model", Source: "mlx"}); err != nil {
+		t.Fatalf("SaveModel() error = %v", err)
+	}
+
+	cases := map[string]string{
+		// A registry model name resolves to its Path.
+		"Llama-3.2-1B-Instruct-4bit": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+		// A registry model with no Path, and anything not in the registry,
+		// passes through unchanged.
+		"no-path-model": "no-path-model",
+		"mlx-community/Qwen2.5-0.5B-Instruct-4bit": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+		"/some/local/dir":                          "/some/local/dir",
+	}
+	for ref, want := range cases {
+		if got := reg.ResolveModelRef(ref); got != want {
+			t.Errorf("ResolveModelRef(%q) = %q, want %q", ref, got, want)
+		}
+	}
+}
+
 func TestListModelsEmptyRegistry(t *testing.T) {
 	reg := New(t.TempDir())
 

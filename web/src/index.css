@@ -1353,6 +1353,37 @@ textarea {
   font-size: 0.78rem;
 }
 
+.agent-debug-running {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--text) 75%, transparent);
+}
+
+.agent-debug-feed {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.agent-debug-feed li {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.78rem;
+  align-items: baseline;
+}
+
+.agent-debug-feed li .event-data {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-debug-feed-start {
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  font-style: italic;
+}
+
 .palette-settings-button {
   display: flex;
   align-items: center;

@@ -350,6 +350,9 @@ export interface AgentStepEvent {
   nodeId: string
   nodeType: string
   output: string
+  // "start" = the node just began long-running work (an LLM call); output is
+  // a short status like "calling model X". Absent for a normal result event.
+  phase?: 'start'
 }
 
 // AgentMessageEvent is a user-facing message a "say" node emitted mid-turn,

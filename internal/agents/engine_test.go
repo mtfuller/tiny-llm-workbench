@@ -13,11 +13,13 @@ import (
 type fakeLLM struct {
 	responses []string // returned in order, one per call
 	calls     []string // prompts received, in order
+	models    []string // model arg received, in order
 	err       error
 }
 
 func (f *fakeLLM) Generate(ctx context.Context, model, prompt string) (string, error) {
 	f.calls = append(f.calls, prompt)
+	f.models = append(f.models, model)
 	if f.err != nil {
 		return "", f.err
 	}
@@ -84,11 +86,27 @@ func TestRunLinearGraph(t *testing.T) {
 	if reply != "hello there!" {
 		t.Errorf("Run() = %q, want %q", reply, "hello there!")
 	}
-	if len(steps) != 2 || steps[0].NodeType != "input" || steps[1].NodeType != "prompt" {
-		t.Errorf("steps = %+v, want input, prompt in order", steps)
+	// The prompt node emits a "start" phase event before its (blocking) model
+	// call, for the step debugger's live feed; the result events are the rest.
+	sawPromptStart := false
+	var results []StepEvent
+	for _, s := range steps {
+		if s.Phase == "start" {
+			if s.NodeType == "prompt" {
+				sawPromptStart = true
+			}
+			continue
+		}
+		results = append(results, s)
 	}
-	if steps[1].Output != "hello there!" {
-		t.Errorf("steps[1].Output = %q, want the prompt node's own reply (%q), not the input passed into it", steps[1].Output, "hello there!")
+	if !sawPromptStart {
+		t.Errorf("steps = %+v, want a prompt/start event before the model call", steps)
+	}
+	if len(results) != 2 || results[0].NodeType != "input" || results[1].NodeType != "prompt" {
+		t.Errorf("result steps = %+v, want input, prompt in order", results)
+	}
+	if results[1].Output != "hello there!" {
+		t.Errorf("results[1].Output = %q, want the prompt node's own reply (%q), not the input passed into it", results[1].Output, "hello there!")
 	}
 	if len(llm.calls) != 1 || !strings.Contains(llm.calls[0], "Be nice.") || !strings.Contains(llm.calls[0], "USER: hi") {
 		t.Errorf("llm.calls = %v, want a single prompt containing the system prompt and user message", llm.calls)

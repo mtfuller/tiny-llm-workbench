@@ -38,11 +38,11 @@ func (f *fakeModelSaver) SaveModel(m registry.Model) error {
 	return nil
 }
 
-func (f *fakeModelSaver) GetModel(name string) (registry.Model, error) {
-	if m, ok := f.models[name]; ok {
-		return m, nil
+func (f *fakeModelSaver) ResolveModelRef(ref string) string {
+	if m, ok := f.models[ref]; ok && m.Path != "" {
+		return m.Path
 	}
-	return registry.Model{}, errors.New("not found")
+	return ref
 }
 
 func (f *fakeModelSaver) ModelDir(name string) string {

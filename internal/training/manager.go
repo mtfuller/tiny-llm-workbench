@@ -37,9 +37,9 @@ type modelStore interface {
 	// ModelDir returns where a model named name's files should live, so a
 	// successful run's adapter can be fused there before SaveModel is called.
 	ModelDir(name string) string
-	// GetModel resolves a registry model by name — used to turn a base model
-	// picked by name into the local path / repo id mlx-lm's --model expects.
-	GetModel(name string) (registry.Model, error)
+	// ResolveModelRef turns a base model picked by registry name into the
+	// local path / repo id mlx-lm's --model expects (a raw ref passes through).
+	ResolveModelRef(ref string) string
 }
 
 // Manager owns the lifecycle of training runs: starting them, tracking
@@ -141,14 +141,11 @@ func (m *Manager) StartRun(cfg Config) (*Run, error) {
 	}
 
 	// The Training page's picker sends a base model by registry name; mlx-lm's
-	// --model wants a local path or a full HF repo id. Resolve a known
-	// registry model to its Path (a fused-model dir for a trained model, or
-	// the "mlx-community/…" repo id for one added from Hugging Face). Anything
-	// that isn't a registry model — a raw repo id or path typed directly —
-	// passes through unchanged.
-	if md, err := m.models.GetModel(cfg.BaseModel); err == nil && md.Path != "" {
-		cfg.BaseModel = md.Path
-	}
+	// --model wants a local path or a full HF repo id. ResolveModelRef turns a
+	// known registry model into its Path (a fused-model dir for a trained
+	// model, or the "mlx-community/…" repo id for one added from Hugging
+	// Face); a raw repo id or path typed directly passes through unchanged.
+	cfg.BaseModel = m.models.ResolveModelRef(cfg.BaseModel)
 
 	examples, err := m.datasets.ListExamples(cfg.Dataset)
 	if err != nil {

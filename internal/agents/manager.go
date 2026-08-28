@@ -23,9 +23,13 @@ const StepEventType = "agent.step"
 // is a TurnMessage with the run id attached.
 const MessageEventType = "agent.message"
 
-// agentReader is the subset of registry.Registry Manager needs.
-type agentReader interface {
+// agentStore is the subset of registry.Registry Manager needs: loading an
+// agent's saved definition, and resolving a model reference (a prompt or
+// agent node's model field may be a registry model name, which mlx-lm can't
+// resolve on its own — see registry.ResolveModelRef).
+type agentStore interface {
 	GetAgent(name string) (registry.Agent, error)
+	ResolveModelRef(ref string) string
 }
 
 // environmentRunner is the subset of environments.Manager Manager needs:
@@ -71,7 +75,7 @@ type Run struct {
 // through the Engine.
 type Manager struct {
 	ctx       context.Context
-	agents    agentReader
+	agents    agentStore
 	envs      environmentRunner
 	envReader environmentReader
 	toolStore toolReader
@@ -91,7 +95,7 @@ type Manager struct {
 // (its list of attached tool names); toolStore resolves each of those names
 // against the global Tool catalog; kb resolves a knowledge node's named
 // KnowledgeBase (independent of any Environment).
-func NewManager(ctx context.Context, agentsReader agentReader, llm llmClient, envs environmentRunner, envReader environmentReader, toolStore toolReader, kb knowledgeReader, bus *eventbus.Bus) *Manager {
+func NewManager(ctx context.Context, agentsReader agentStore, llm llmClient, envs environmentRunner, envReader environmentReader, toolStore toolReader, kb knowledgeReader, bus *eventbus.Bus) *Manager {
 	return &Manager{
 		ctx:       ctx,
 		agents:    agentsReader,
@@ -215,7 +219,8 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 		return ChatMessage{}, err
 	}
 
-	reply, err := m.engine.Run(m.ctx, agent.Graph, history, message, run.InstanceID, tools, &RunHooks{
+	graph := m.resolveGraphModels(agent.Graph)
+	reply, err := m.engine.Run(m.ctx, graph, history, message, run.InstanceID, tools, &RunHooks{
 		OnStep:    func(step StepEvent) { m.publishStep(runID, step) },
 		OnMessage: func(msg TurnMessage) { m.publishTurnMessage(runID, msg) },
 	})
@@ -234,6 +239,26 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 	m.mu.Unlock()
 
 	return assistantMsg, nil
+}
+
+// resolveGraphModels returns a copy of g with every prompt node's Model and
+// every agent node's AgentModel run through the registry — so a model
+// picked by its registry name (e.g. "Llama-3.2-1B-Instruct-4bit") becomes
+// the path / repo id mlx-lm's --model expects before the engine ever calls
+// the runner. The saved graph is untouched; the canvas still shows the
+// friendly name. Shared by SendMessage and the step-by-step debugger.
+func (m *Manager) resolveGraphModels(g registry.Graph) registry.Graph {
+	nodes := make([]registry.Node, len(g.Nodes))
+	for i, n := range g.Nodes {
+		switch n.Type {
+		case "prompt":
+			n.Data.Model = m.agents.ResolveModelRef(n.Data.Model)
+		case "agent":
+			n.Data.AgentModel = m.agents.ResolveModelRef(n.Data.AgentModel)
+		}
+		nodes[i] = n
+	}
+	return registry.Graph{Nodes: nodes, Edges: g.Edges}
 }
 
 // resolveTools returns the real Tool catalog entries the named Environment
