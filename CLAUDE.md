@@ -233,6 +233,39 @@ choice:
   `datasets/<name>/metadata.json` + `data.jsonl`. Since the Ollama removal (see the MLX integration
   entry above), the registry is the *only* model source — no external catalog to merge with. See
   `internal/registry`.
+
+  **2026-08-28 addendum — "Add from Hugging Face" model search on the Models page.** The user wanted
+  to discover and pull down mlx-community models from the Hub without leaving the app ("easily have
+  access to a plethora of small models"). Design forks were surfaced via `AskUserQuestion`; the user's
+  answers, verbatim where they redirected: **download mechanism** — *"can't we just use mlx-lm to
+  download models? We just need to fetch a list"* (so: no downloader is built at all — see below);
+  **search scope** — mlx-community org only (everything it publishes is MLX-loadable); **registry
+  naming** — the repo basename (`Qwen2.5-0.5B-Instruct-4bit`), full repo id kept as `BaseModel`; **UI**
+  — a button + modal on the Models page.
+  - New `internal/huggingface` package: a tiny read-only `Client.SearchModels(ctx, query)` that GETs
+    `https://huggingface.co/api/models?author=mlx-community&search=<q>&sort=downloads&full=true` (no
+    auth, only ever triggered by a user typing in the search box — no background polling), plus
+    `IsMLXCommunityRepo` / `RepoShortName` helpers. This is the project's **only outbound network
+    call**; it's in-scope here only because the user explicitly asked for Hub search.
+  - **Nothing is downloaded on "Add".** `POST /api/huggingface/models {repoId}` just writes a registry
+    model: `{Name: <basename>, BaseModel: <repo id>, Source: "huggingface", Path: <repo id>}`. Setting
+    `Path` to the repo id (not a filesystem path) is deliberate — `mlx_lm.server`/`mlx_lm.generate`
+    resolve a repo id identically to a local dir, downloading to `~/.cache/huggingface/hub` on first
+    use, exactly as typing the repo id into a model picker already did. So an added model works
+    everywhere `model.Path` is read (chat modal, agent tool/prompt nodes, benchmarks, training base)
+    with zero downstream changes. Verified live: added a repo via the API, then chatted with it — the
+    runner resolved the repo id and replied.
+  - `GET /api/huggingface/models?q=` returns results with `added: true` when a registry model's
+    `Source=="huggingface"` && `Path` already tracks that repo id, so the modal shows "✓ Added" instead
+    of an Add button. Routes live under `/api/huggingface/models` (not `/api/models/...`) to sidestep
+    the `/api/models/{name}` wildcard. `modelStore` gained `SaveModel`.
+  - Frontend: `HuggingFaceSearchModal.tsx` (debounced search, empty query = most-downloaded; rows show
+    downloads/likes/filtered tags + a Hub link + Add/Added). `Models.tsx` gained a `Sparkles`
+    toolbar button and a "Source" column ("Hugging Face" / "Trained" / raw source). `api.ts`:
+    `HuggingFaceModel`, `searchHuggingFaceModels`, `addHuggingFaceModel`.
+  - **Not built** (possible follow-ups): explicit pre-download / cache-warming with a progress bar
+    (would need the async-job + eventbus pattern; the user chose to lean on mlx-lm's first-use
+    download instead); per-file size in the search list; broadening search beyond mlx-community.
 - **Docker orchestration**: which client library, and the contract between an "Environment" definition
   and the container it launches — filesystem mounts, tool exposure, lifecycle (Phase 2).
   **Decided:** the official Docker SDK for Go (`github.com/docker/docker/client`) talking to the local

@@ -13,6 +13,7 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
+	"github.com/mtfuller/tiny-llm-workbench/internal/huggingface"
 	"github.com/mtfuller/tiny-llm-workbench/internal/mlxrunner"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
@@ -24,7 +25,14 @@ import (
 type modelStore interface {
 	ListModels() ([]registry.Model, error)
 	GetModel(name string) (registry.Model, error)
+	SaveModel(m registry.Model) error
 	DeleteModel(name string) error
+}
+
+// hfSearcher is the subset of huggingface.Client the server needs to power
+// the Models page's "Add from Hugging Face" search.
+type hfSearcher interface {
+	SearchModels(ctx context.Context, query string) ([]huggingface.Model, error)
 }
 
 // modelRunner is the subset of mlxrunner.Runner the server needs to chat
@@ -184,6 +192,7 @@ type Deps struct {
 	Bus          *eventbus.Bus
 	Models       modelStore
 	ModelRunner  modelRunner
+	HuggingFace  hfSearcher
 	Datasets     datasetStore
 	Generator    variationGenerator
 	Training     trainingManager
@@ -218,6 +227,8 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /api/events", sseHandler(deps.Bus))
 	mux.HandleFunc("GET /api/system", systemInfoHandler(deps.RegistryRoot))
 	mux.HandleFunc("GET /api/models", listModelsHandler(deps.Models))
+	mux.HandleFunc("GET /api/huggingface/models", searchHuggingFaceModelsHandler(deps.HuggingFace, deps.Models))
+	mux.HandleFunc("POST /api/huggingface/models", addHuggingFaceModelHandler(deps.Models))
 	mux.HandleFunc("GET /api/models/{name}", getModelHandler(deps.Models, deps.Training))
 	mux.HandleFunc("DELETE /api/models/{name}", deleteModelHandler(deps.Models))
 	mux.HandleFunc("POST /api/models/{name}/chat", chatWithModelHandler(deps.Models, deps.ModelRunner))

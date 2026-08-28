@@ -9,6 +9,7 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
+	"github.com/mtfuller/tiny-llm-workbench/internal/huggingface"
 	"github.com/mtfuller/tiny-llm-workbench/internal/mlxrunner"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
@@ -18,12 +19,23 @@ type fakeModelStore struct {
 	list      []registry.Model
 	err       error
 	getErr    error
+	saveErr   error
+	saved     []registry.Model
 	deleteErr error
 	deleted   []string
 }
 
 func (f *fakeModelStore) ListModels() ([]registry.Model, error) {
 	return f.list, f.err
+}
+
+func (f *fakeModelStore) SaveModel(m registry.Model) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.saved = append(f.saved, m)
+	f.list = append(f.list, m)
+	return nil
 }
 
 func (f *fakeModelStore) GetModel(name string) (registry.Model, error) {
@@ -828,11 +840,23 @@ func (f *fakeBenchmarkManager) ListResults(benchmarkName string) ([]benchmarks.R
 // testDeps builds a minimal Deps with working fakes for tests that don't
 // care about the Models/Dataset/Training/Environments/Agents/Evaluations/
 // Benchmarks API surface.
+type fakeHFSearcher struct {
+	results []huggingface.Model
+	err     error
+	queries []string
+}
+
+func (f *fakeHFSearcher) SearchModels(ctx context.Context, query string) ([]huggingface.Model, error) {
+	f.queries = append(f.queries, query)
+	return f.results, f.err
+}
+
 func testDeps() Deps {
 	return Deps{
 		Bus:          eventbus.New(),
 		Models:       &fakeModelStore{},
 		ModelRunner:  &fakeModelRunner{},
+		HuggingFace:  &fakeHFSearcher{},
 		Datasets:     newFakeDatasetStore(),
 		Generator:    &fakeGenerator{},
 		Training:     &fakeTrainingManager{},

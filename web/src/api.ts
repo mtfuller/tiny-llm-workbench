@@ -594,6 +594,36 @@ export function deleteModel(name: string): Promise<void> {
   return fetch(`/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
 }
 
+// HuggingFaceModel is one result from GET /api/huggingface/models — an
+// mlx-community model on the Hub. `added` is true when a local registry
+// model already tracks this repo. `name` is the short name it would be
+// registered under.
+export interface HuggingFaceModel {
+  repoId: string
+  name: string
+  downloads: number
+  likes: number
+  tags: string[]
+  lastModified: string
+  added: boolean
+}
+
+// searchHuggingFaceModels runs a user-initiated search of the mlx-community
+// org on the Hugging Face Hub. An empty query returns the most downloaded.
+export function searchHuggingFaceModels(query: string): Promise<HuggingFaceModel[]> {
+  return fetch(`/api/huggingface/models?q=${encodeURIComponent(query)}`).then(json<HuggingFaceModel[]>)
+}
+
+// addHuggingFaceModel registers an mlx-community repo as a local model. No
+// weights are fetched now — mlx_lm downloads them on first use.
+export function addHuggingFaceModel(repoId: string): Promise<Model> {
+  return fetch('/api/huggingface/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repoId }),
+  }).then(json<Model>)
+}
+
 export interface ChatTurn {
   role: 'user' | 'assistant'
   content: string

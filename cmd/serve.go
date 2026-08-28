@@ -21,6 +21,7 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
+	"github.com/mtfuller/tiny-llm-workbench/internal/huggingface"
 	"github.com/mtfuller/tiny-llm-workbench/internal/logger"
 	"github.com/mtfuller/tiny-llm-workbench/internal/mlxrunner"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
@@ -58,6 +59,7 @@ URL in a browser. Stop it with Ctrl+C.`,
 		runner := mlxrunner.New(ctx)
 		generator := datasetgen.New(runner)
 		testCaseGenerator := testcasegen.New(runner)
+		hfClient := huggingface.New()
 
 		// trainingMgr's context (ctx, not the per-request context an HTTP
 		// handler would otherwise capture) bounds how long a run can keep
@@ -95,6 +97,7 @@ URL in a browser. Stop it with Ctrl+C.`,
 			Bus:          bus,
 			Models:       reg,
 			ModelRunner:  runner,
+			HuggingFace:  hfClient,
 			Datasets:     reg,
 			Generator:    generator,
 			Training:     trainingMgr,

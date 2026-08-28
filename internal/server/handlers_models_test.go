@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mtfuller/tiny-llm-workbench/internal/huggingface"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
 )
@@ -222,5 +224,104 @@ func TestListModelsStoreError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("GET /api/models status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestSearchHuggingFaceModels(t *testing.T) {
+	deps := testDeps()
+	deps.HuggingFace = &fakeHFSearcher{results: []huggingface.Model{
+		{ID: "mlx-community/Qwen2.5-0.5B-Instruct-4bit", Downloads: 12345, Likes: 20, Tags: []string{"mlx", "4-bit"}, LastModified: time.Date(2025, 3, 5, 0, 0, 0, 0, time.UTC)},
+		{ID: "mlx-community/Llama-3.2-1B-Instruct-4bit", Downloads: 999},
+	}}
+	// One repo already added locally.
+	deps.Models = &fakeModelStore{list: []registry.Model{
+		{Name: "Llama-3.2-1B-Instruct-4bit", Source: "huggingface", Path: "mlx-community/Llama-3.2-1B-Instruct-4bit"},
+	}}
+
+	handler, _ := New(deps)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/huggingface/models?q=qwen", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var got []hfModelJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2", len(got))
+	}
+	if got[0].RepoID != "mlx-community/Qwen2.5-0.5B-Instruct-4bit" || got[0].Name != "Qwen2.5-0.5B-Instruct-4bit" || got[0].Downloads != 12345 {
+		t.Errorf("got[0] = %+v", got[0])
+	}
+	if got[0].Added {
+		t.Error("got[0].Added = true, want false — not in the registry")
+	}
+	if !got[1].Added {
+		t.Error("got[1].Added = false, want true — already added locally")
+	}
+}
+
+func TestSearchHuggingFaceModelsUpstreamError(t *testing.T) {
+	deps := testDeps()
+	deps.HuggingFace = &fakeHFSearcher{err: errors.New("hub down")}
+	handler, _ := New(deps)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/huggingface/models?q=x", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestAddHuggingFaceModel(t *testing.T) {
+	deps := testDeps()
+	store := &fakeModelStore{}
+	deps.Models = store
+	handler, _ := New(deps)
+
+	rec := httptest.NewRecorder()
+	body := bytes.NewBufferString(`{"repoId":"mlx-community/Qwen2.5-0.5B-Instruct-4bit"}`)
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/huggingface/models", body))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("saved %d models, want 1", len(store.saved))
+	}
+	m := store.saved[0]
+	if m.Name != "Qwen2.5-0.5B-Instruct-4bit" || m.Source != "huggingface" ||
+		m.Path != "mlx-community/Qwen2.5-0.5B-Instruct-4bit" || m.BaseModel != "mlx-community/Qwen2.5-0.5B-Instruct-4bit" {
+		t.Errorf("saved model = %+v", m)
+	}
+	if m.CreatedAt.IsZero() {
+		t.Error("saved model CreatedAt is zero")
+	}
+}
+
+func TestAddHuggingFaceModelRejectsNonMLXCommunity(t *testing.T) {
+	deps := testDeps()
+	handler, _ := New(deps)
+
+	rec := httptest.NewRecorder()
+	body := bytes.NewBufferString(`{"repoId":"meta-llama/Llama-3.2-1B"}`)
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/huggingface/models", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAddHuggingFaceModelRejectsDuplicate(t *testing.T) {
+	deps := testDeps()
+	deps.Models = &fakeModelStore{list: []registry.Model{{Name: "Qwen2.5-0.5B-Instruct-4bit"}}}
+	handler, _ := New(deps)
+
+	rec := httptest.NewRecorder()
+	body := bytes.NewBufferString(`{"repoId":"mlx-community/Qwen2.5-0.5B-Instruct-4bit"}`)
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/huggingface/models", body))
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
 }

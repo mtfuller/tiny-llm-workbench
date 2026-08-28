@@ -68,10 +68,11 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
 - [x] **Phase 1 — Dataset and Training**
   - [x] Add Models / Dataset / Training pages to the navbar
   - [x] Models: list local models — registered automatically when a training run succeeds (fused into a
-        standalone, directly-runnable model, not just the raw LoRA adapter). There's still no manual
-        "import an existing model file" flow, so a model only appears in the registry by being trained
-        here; any other MLX-format Hugging Face repo id can still be used anywhere a model is picked,
-        downloaded automatically on first use.
+        standalone, directly-runnable model, not just the raw LoRA adapter). **"Add from Hugging Face"**
+        searches the `mlx-community` org on the Hub (by download count) and registers a chosen repo as
+        a local model with one click; nothing is fetched at add time — mlx-lm downloads the weights on
+        first use, exactly as for a repo id typed straight into a model picker. Any MLX-format repo id
+        can still be used ad hoc without adding it.
   - [x] Dataset: list input/output training pairs
   - [x] Training: select model + dataset, configure and run training against MLX, view results — the
         full pipeline (including the happy path, a real successful `mlx_lm.lora` run producing a

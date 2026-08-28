@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
+	"github.com/mtfuller/tiny-llm-workbench/internal/huggingface"
 	"github.com/mtfuller/tiny-llm-workbench/internal/mlxrunner"
+	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
 )
 
@@ -67,6 +70,106 @@ func getModelHandler(models modelStore, trainingMgr trainingManager) http.Handle
 		}
 
 		writeJSON(w, http.StatusOK, detail)
+	}
+}
+
+// hfModelJSON is one Hugging Face search result as returned by
+// GET /api/huggingface/models.
+type hfModelJSON struct {
+	RepoID       string   `json:"repoId"`
+	Name         string   `json:"name"` // the short name it'd be registered under
+	Downloads    int      `json:"downloads"`
+	Likes        int      `json:"likes"`
+	Tags         []string `json:"tags"`
+	LastModified string   `json:"lastModified"`
+	Added        bool     `json:"added"` // already in the local registry
+}
+
+// searchHuggingFaceModelsHandler proxies a user-initiated search of the
+// mlx-community org on the Hugging Face Hub. Results are marked `added` if a
+// registry model already tracks that repo, so the UI can disable its button.
+func searchHuggingFaceModelsHandler(hf hfSearcher, models modelStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if hf == nil {
+			writeError(w, http.StatusServiceUnavailable, errors.New("Hugging Face search is not configured"))
+			return
+		}
+
+		results, err := hf.SearchModels(r.Context(), r.URL.Query().Get("q"))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+
+		// Which repos are already tracked locally (by repo id, stored as the
+		// model's Path when added from the Hub).
+		added := map[string]bool{}
+		if existing, err := models.ListModels(); err == nil {
+			for _, m := range existing {
+				if m.Source == "huggingface" && m.Path != "" {
+					added[m.Path] = true
+				}
+			}
+		}
+
+		out := make([]hfModelJSON, len(results))
+		for i, m := range results {
+			out[i] = hfModelJSON{
+				RepoID:       m.ID,
+				Name:         huggingface.RepoShortName(m.ID),
+				Downloads:    m.Downloads,
+				Likes:        m.Likes,
+				Tags:         m.Tags,
+				LastModified: m.LastModified.Format(time.RFC3339),
+				Added:        added[m.ID],
+			}
+			if out[i].Tags == nil {
+				out[i].Tags = []string{}
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// addHuggingFaceModelRequest is the POST /api/huggingface/models body.
+type addHuggingFaceModelRequest struct {
+	RepoID string `json:"repoId"`
+}
+
+// addHuggingFaceModelHandler registers an mlx-community repo as a local
+// model. No weights are fetched here — the model's Path is the repo id, and
+// mlx_lm downloads it on first use (chat, an agent run, a benchmark, …),
+// exactly as it does for a repo id typed straight into a model picker.
+func addHuggingFaceModelHandler(models modelStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req addHuggingFaceModelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+		if !huggingface.IsMLXCommunityRepo(req.RepoID) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("%q is not an mlx-community model repo", req.RepoID))
+			return
+		}
+
+		name := huggingface.RepoShortName(req.RepoID)
+		if _, err := models.GetModel(name); err == nil {
+			writeError(w, http.StatusConflict, fmt.Errorf("a model named %q already exists", name))
+			return
+		}
+
+		model := registry.Model{
+			Name:      name,
+			BaseModel: req.RepoID,
+			Source:    "huggingface",
+			Path:      req.RepoID,
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := models.SaveModel(model); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, modelJSON{Name: model.Name, BaseModel: model.BaseModel, Source: model.Source})
 	}
 }
 
