@@ -3,6 +3,8 @@ package environments
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,7 +16,8 @@ import (
 type fakeDocker struct {
 	launchID  string
 	launchErr error
-	launched  []string // environment names launched
+	launched  []string         // workspace names launched
+	mounts    [][]docker.Mount // mounts passed per launch
 
 	stopErr    error
 	stoppedIDs []string
@@ -28,8 +31,9 @@ type fakeDocker struct {
 	execCommands [][]string
 }
 
-func (f *fakeDocker) Launch(ctx context.Context, name, environmentName, image string, mounts []docker.Mount) (string, error) {
-	f.launched = append(f.launched, environmentName)
+func (f *fakeDocker) Launch(ctx context.Context, name, workspaceName, image string, mounts []docker.Mount) (string, error) {
+	f.launched = append(f.launched, workspaceName)
+	f.mounts = append(f.mounts, mounts)
 	if f.launchErr != nil {
 		return "", f.launchErr
 	}
@@ -53,69 +57,113 @@ func (f *fakeDocker) ExecStream(ctx context.Context, containerID string, cmd []s
 	return f.execExit, f.execErr
 }
 
-type fakeEnvironmentReader struct {
-	envs map[string]registry.Environment
-	err  error
+type fakeWorkspaceReader struct {
+	ws  map[string]registry.Workspace
+	err error
 }
 
-func (f *fakeEnvironmentReader) GetEnvironment(name string) (registry.Environment, error) {
+func (f *fakeWorkspaceReader) GetWorkspace(name string) (registry.Workspace, error) {
 	if f.err != nil {
-		return registry.Environment{}, f.err
+		return registry.Workspace{}, f.err
 	}
-	env, ok := f.envs[name]
+	w, ok := f.ws[name]
 	if !ok {
-		return registry.Environment{}, errors.New("not found")
+		return registry.Workspace{}, errors.New("not found")
 	}
-	return env, nil
+	return w, nil
 }
 
-func TestLaunchSuccess(t *testing.T) {
-	d := &fakeDocker{launchID: "abc123"}
-	envs := &fakeEnvironmentReader{envs: map[string]registry.Environment{
-		"WebSearch": {Name: "WebSearch", Image: "curlimages/curl:8.10.1"},
-	}}
-	m := NewManager(context.Background(), d, envs, eventbus.New())
+func newTestManager(t *testing.T, d dockerClient, wr workspaceReader) *Manager {
+	t.Helper()
+	return NewManager(context.Background(), d, wr, eventbus.New(), t.TempDir())
+}
 
-	instance, err := m.Launch(context.Background(), "WebSearch", "")
+func TestLaunchRealWorkspaceBindMountsDirectly(t *testing.T) {
+	realDir := t.TempDir()
+	d := &fakeDocker{launchID: "abc123"}
+	wr := &fakeWorkspaceReader{ws: map[string]registry.Workspace{
+		"my-project": {Name: "my-project", Type: registry.WorkspaceReal, HostPath: realDir},
+	}}
+	m := newTestManager(t, d, wr)
+
+	instance, err := m.Launch(context.Background(), "my-project", "")
 	if err != nil {
 		t.Fatalf("Launch() error = %v", err)
 	}
 	if instance.ID != "abc123" {
 		t.Errorf("Launch().ID = %q, want %q", instance.ID, "abc123")
 	}
-	if instance.Image != "curlimages/curl:8.10.1" {
-		t.Errorf("Launch().Image = %q, want %q", instance.Image, "curlimages/curl:8.10.1")
+	if instance.Image != docker.DefaultSandboxImage {
+		t.Errorf("Launch().Image = %q, want the fixed default %q", instance.Image, docker.DefaultSandboxImage)
 	}
-	if len(d.launched) != 1 || d.launched[0] != "WebSearch" {
-		t.Errorf("d.launched = %v, want [WebSearch]", d.launched)
+	if instance.WorkspaceName != "my-project" || instance.WorkspaceType != "real" {
+		t.Errorf("Launch() workspace fields = %q/%q, want my-project/real", instance.WorkspaceName, instance.WorkspaceType)
+	}
+	if instance.WorkspacePath != realDir {
+		t.Errorf("Launch().WorkspacePath = %q, want the real dir %q (no copy)", instance.WorkspacePath, realDir)
+	}
+	if len(d.mounts) != 1 || len(d.mounts[0]) != 1 || d.mounts[0][0].HostPath != realDir || d.mounts[0][0].ContainerPath != docker.ContainerWorkdir {
+		t.Errorf("d.mounts = %+v, want a single %s -> %s bind mount", d.mounts, realDir, docker.ContainerWorkdir)
 	}
 }
 
-func TestLaunchUnknownEnvironment(t *testing.T) {
-	d := &fakeDocker{}
-	envs := &fakeEnvironmentReader{envs: map[string]registry.Environment{}}
-	m := NewManager(context.Background(), d, envs, eventbus.New())
+func TestLaunchTestWorkspaceStagesAThrowawayCopy(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "notes.txt"), []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	d := &fakeDocker{launchID: "abc123"}
+	wr := &fakeWorkspaceReader{ws: map[string]registry.Workspace{
+		"scratch": {Name: "scratch", Type: registry.WorkspaceTest, HostPath: src},
+	}}
+	m := newTestManager(t, d, wr)
+
+	instance, err := m.Launch(context.Background(), "scratch", "inst-1")
+	if err != nil {
+		t.Fatalf("Launch() error = %v", err)
+	}
+	if instance.WorkspacePath == src {
+		t.Fatalf("Launch().WorkspacePath = %q, want a staged copy, not the source", instance.WorkspacePath)
+	}
+	staged := filepath.Join(instance.WorkspacePath, "notes.txt")
+	got, err := os.ReadFile(staged)
+	if err != nil || string(got) != "seed" {
+		t.Fatalf("staged copy missing seed file: content=%q err=%v", got, err)
+	}
+	// Editing the staged copy must not touch the source.
+	if err := os.WriteFile(staged, []byte("changed"), 0o644); err != nil {
+		t.Fatalf("write staged: %v", err)
+	}
+	src0, _ := os.ReadFile(filepath.Join(src, "notes.txt"))
+	if string(src0) != "seed" {
+		t.Errorf("source file changed to %q, want it untouched at %q", src0, "seed")
+	}
+}
+
+func TestLaunchUnknownWorkspace(t *testing.T) {
+	m := newTestManager(t, &fakeDocker{}, &fakeWorkspaceReader{ws: map[string]registry.Workspace{}})
 
 	if _, err := m.Launch(context.Background(), "does-not-exist", ""); err == nil {
-		t.Error("Launch() error = nil, want an error for an unknown environment")
+		t.Error("Launch() error = nil, want an error for an unknown workspace")
 	}
 }
 
 func TestLaunchDockerError(t *testing.T) {
+	realDir := t.TempDir()
 	d := &fakeDocker{launchErr: errors.New("docker daemon unreachable")}
-	envs := &fakeEnvironmentReader{envs: map[string]registry.Environment{
-		"WebSearch": {Name: "WebSearch", Image: "curlimages/curl:8.10.1"},
+	wr := &fakeWorkspaceReader{ws: map[string]registry.Workspace{
+		"my-project": {Name: "my-project", Type: registry.WorkspaceReal, HostPath: realDir},
 	}}
-	m := NewManager(context.Background(), d, envs, eventbus.New())
+	m := newTestManager(t, d, wr)
 
-	if _, err := m.Launch(context.Background(), "WebSearch", ""); err == nil {
+	if _, err := m.Launch(context.Background(), "my-project", ""); err == nil {
 		t.Error("Launch() error = nil, want the docker error to propagate")
 	}
 }
 
 func TestStopDelegatesToDocker(t *testing.T) {
 	d := &fakeDocker{}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	if err := m.Stop(context.Background(), "abc123"); err != nil {
 		t.Fatalf("Stop() error = %v", err)
@@ -127,16 +175,16 @@ func TestStopDelegatesToDocker(t *testing.T) {
 
 func TestListInstancesReflectsDocker(t *testing.T) {
 	d := &fakeDocker{listResult: []docker.ContainerInfo{
-		{ID: "abc123", Name: "tlw-websearch-1", Image: "curlimages/curl:8.10.1", State: "running", EnvironmentName: "WebSearch"},
+		{ID: "abc123", Name: "tlw-scratch-1", Image: docker.DefaultSandboxImage, State: "running", WorkspaceName: "scratch"},
 	}}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	instances, err := m.ListInstances(context.Background())
 	if err != nil {
 		t.Fatalf("ListInstances() error = %v", err)
 	}
-	if len(instances) != 1 || instances[0].ID != "abc123" || instances[0].EnvironmentName != "WebSearch" {
-		t.Errorf("ListInstances() = %+v, want a single abc123/WebSearch entry", instances)
+	if len(instances) != 1 || instances[0].ID != "abc123" || instances[0].WorkspaceName != "scratch" {
+		t.Errorf("ListInstances() = %+v, want a single abc123/scratch entry", instances)
 	}
 }
 
@@ -155,7 +203,7 @@ func waitForExecStatus(t *testing.T, m *Manager, id string, want ExecStatus, tim
 
 func TestStartExecSuccess(t *testing.T) {
 	d := &fakeDocker{execOutput: []string{"hello\n"}, execExit: 0}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	exec, err := m.StartExec("abc123", "echo hello")
 	if err != nil {
@@ -191,7 +239,7 @@ func TestStartExecSuccess(t *testing.T) {
 
 func TestStartExecDockerError(t *testing.T) {
 	d := &fakeDocker{execErr: errors.New("container not running")}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	exec, err := m.StartExec("abc123", "echo hello")
 	if err != nil {
@@ -205,7 +253,7 @@ func TestStartExecDockerError(t *testing.T) {
 }
 
 func TestStartExecRequiresCommand(t *testing.T) {
-	m := NewManager(context.Background(), &fakeDocker{}, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, &fakeDocker{}, &fakeWorkspaceReader{})
 
 	if _, err := m.StartExec("abc123", ""); err == nil {
 		t.Error("StartExec() error = nil, want an error for an empty command")
@@ -213,7 +261,7 @@ func TestStartExecRequiresCommand(t *testing.T) {
 }
 
 func TestGetExecUnknown(t *testing.T) {
-	m := NewManager(context.Background(), &fakeDocker{}, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, &fakeDocker{}, &fakeWorkspaceReader{})
 
 	if _, ok := m.GetExec("does-not-exist"); ok {
 		t.Error("GetExec() ok = true, want false for an unknown exec")
@@ -222,7 +270,7 @@ func TestGetExecUnknown(t *testing.T) {
 
 func TestRunToolSyncSuccess(t *testing.T) {
 	d := &fakeDocker{execOutput: []string{"hello\n"}, execExit: 0}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	output, err := m.RunToolSync(context.Background(), "abc123", "echo hello")
 	if err != nil {
@@ -249,7 +297,7 @@ func TestRunToolSyncSuccess(t *testing.T) {
 
 func TestRunToolSyncNonZeroExit(t *testing.T) {
 	d := &fakeDocker{execOutput: []string{"boom"}, execExit: 1}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	output, err := m.RunToolSync(context.Background(), "abc123", "false")
 	if err == nil {
@@ -262,7 +310,7 @@ func TestRunToolSyncNonZeroExit(t *testing.T) {
 
 func TestRunToolSyncDockerError(t *testing.T) {
 	d := &fakeDocker{execErr: errors.New("container not running")}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	if _, err := m.RunToolSync(context.Background(), "abc123", "echo hello"); err == nil {
 		t.Error("RunToolSync() error = nil, want the docker error to propagate")
@@ -270,7 +318,7 @@ func TestRunToolSyncDockerError(t *testing.T) {
 }
 
 func TestRunToolSyncRequiresCommand(t *testing.T) {
-	m := NewManager(context.Background(), &fakeDocker{}, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, &fakeDocker{}, &fakeWorkspaceReader{})
 
 	if _, err := m.RunToolSync(context.Background(), "abc123", ""); err == nil {
 		t.Error("RunToolSync() error = nil, want an error for an empty command")
@@ -368,7 +416,7 @@ func TestRenderToolCommandValidatesBooleanType(t *testing.T) {
 
 func TestTryToolStartsExecWithRenderedCommand(t *testing.T) {
 	d := &fakeDocker{execOutput: []string{"file contents\n"}, execExit: 0}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	tool := registry.Tool{
 		Command:    "cat {{path}}",
@@ -391,7 +439,7 @@ func TestTryToolStartsExecWithRenderedCommand(t *testing.T) {
 
 func TestTryToolValidationErrorNeverStartsExec(t *testing.T) {
 	d := &fakeDocker{}
-	m := NewManager(context.Background(), d, &fakeEnvironmentReader{}, eventbus.New())
+	m := newTestManager(t, d, &fakeWorkspaceReader{})
 
 	tool := registry.Tool{
 		Command:    "cat {{path}}",

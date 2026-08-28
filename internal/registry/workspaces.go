@@ -9,215 +9,147 @@ import (
 	"time"
 )
 
-const environmentMetadataFile = "metadata.json"
+const workspaceMetadataFile = "metadata.json"
 
-// Mount is a host↔container bind mount an Environment's container should
-// have when launched.
-type Mount struct {
-	HostPath      string `json:"hostPath"`
-	ContainerPath string `json:"containerPath"`
-	ReadOnly      bool   `json:"readOnly,omitempty"`
+// WorkspaceType distinguishes a throwaway sandbox from a real project
+// directory.
+type WorkspaceType string
+
+const (
+	// WorkspaceTest is a throwaway workspace: an editable directory kept
+	// under the registry root that is *copied* into a fresh sandbox
+	// container per agent run / debug session / evaluation test case. The
+	// agent's changes never flow back to the source, so a test workspace is
+	// safe to experiment against repeatedly. Only test workspaces are
+	// selectable for an Agent or an Evaluation test case.
+	WorkspaceTest WorkspaceType = "test"
+	// WorkspaceReal points at a real directory on the user's machine,
+	// bind-mounted read-write so the agent's changes persist. Used by
+	// Deployments for actual work — real workspaces are filtered out of the
+	// agent editor.
+	WorkspaceReal WorkspaceType = "real"
+)
+
+// Workspace is a registry-tracked workspace: just a directory plus a
+// test/real flag. There is no image or tool list here — the sandbox image
+// is a fixed default (see internal/docker) and an agent's tools/knowledge
+// are chosen on the agent now, not on the workspace.
+//
+// For a test workspace, HostPath is always <root>/workspaces/<name>/files,
+// created on save and meant to be edited directly (VS Code, etc.). For a
+// real workspace, HostPath is a caller-supplied absolute path on the user's
+// machine (the handler validates it exists and is a directory).
+type Workspace struct {
+	Name      string        `json:"name"`
+	Type      WorkspaceType `json:"type"`
+	HostPath  string        `json:"hostPath"`
+	CreatedAt time.Time     `json:"createdAt"`
 }
 
-// Environment is a registry-tracked Environment definition: a Docker image,
-// the mounts it should launch with (its "file structure" — what's visible
-// inside the container from the host), and the names of catalog Tools
-// (see tools.go) available to run inside it once launched (see
-// internal/environments). Tools is a list of names, not embedded
-// definitions — attaching a tool to an environment is a live reference to
-// the shared catalog entry, not a copy.
-type Environment struct {
-	Name      string    `json:"name"`
-	Image     string    `json:"image"`
-	Tools     []string  `json:"tools"`
-	Mounts    []Mount   `json:"mounts"`
-	Prebuilt  bool      `json:"prebuilt"`
-	CreatedAt time.Time `json:"createdAt"`
+func (r *Registry) workspacesDir() string {
+	return filepath.Join(r.root, "workspaces")
 }
 
-func (r *Registry) environmentDir(name string) string {
-	return filepath.Join(r.environmentsDir(), name)
+func (r *Registry) workspaceDir(name string) string {
+	return filepath.Join(r.workspacesDir(), name)
 }
 
-func (r *Registry) environmentsDir() string {
-	return filepath.Join(r.root, "environments")
+// WorkspaceFilesDir returns the on-disk directory a test workspace's
+// starting files live in — the folder a user edits to set up a scenario.
+func (r *Registry) WorkspaceFilesDir(name string) string {
+	return filepath.Join(r.workspaceDir(name), "files")
 }
 
-// SaveEnvironment writes e's metadata, creating its directory if needed.
-func (r *Registry) SaveEnvironment(e Environment) error {
-	dir := r.environmentDir(e.Name)
+// SaveWorkspace writes w's metadata, creating its directory if needed. For a
+// test workspace it also ensures the editable files/ subdirectory exists and
+// forces HostPath to point at it; a real workspace keeps its caller-supplied
+// HostPath. CreatedAt is set on first save and preserved on overwrite.
+func (r *Registry) SaveWorkspace(w Workspace) error {
+	if existing, err := r.GetWorkspace(w.Name); err == nil {
+		w.CreatedAt = existing.CreatedAt
+	} else if w.CreatedAt.IsZero() {
+		w.CreatedAt = time.Now().UTC()
+	}
+
+	dir := r.workspaceDir(w.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create environment directory: %w", err)
+		return fmt.Errorf("create workspace directory: %w", err)
 	}
 
-	data, err := json.MarshalIndent(e, "", "  ")
+	if w.Type == WorkspaceTest {
+		filesDir := r.WorkspaceFilesDir(w.Name)
+		if err := os.MkdirAll(filesDir, 0o755); err != nil {
+			return fmt.Errorf("create workspace files directory: %w", err)
+		}
+		w.HostPath = filesDir
+	}
+
+	data, err := json.MarshalIndent(w, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal environment metadata: %w", err)
+		return fmt.Errorf("marshal workspace metadata: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, environmentMetadataFile), data, 0o644); err != nil {
-		return fmt.Errorf("write environment metadata: %w", err)
+	if err := os.WriteFile(filepath.Join(dir, workspaceMetadataFile), data, 0o644); err != nil {
+		return fmt.Errorf("write workspace metadata: %w", err)
 	}
 
 	return nil
 }
 
-// GetEnvironment returns the named environment definition.
-func (r *Registry) GetEnvironment(name string) (Environment, error) {
-	data, err := os.ReadFile(filepath.Join(r.environmentDir(name), environmentMetadataFile))
+// GetWorkspace returns the named workspace.
+func (r *Registry) GetWorkspace(name string) (Workspace, error) {
+	data, err := os.ReadFile(filepath.Join(r.workspaceDir(name), workspaceMetadataFile))
 	if err != nil {
-		return Environment{}, fmt.Errorf("read environment %q: %w", name, err)
+		return Workspace{}, fmt.Errorf("read workspace %q: %w", name, err)
 	}
 
-	var env Environment
-	if err := json.Unmarshal(data, &env); err != nil {
-		return Environment{}, fmt.Errorf("parse metadata for environment %q: %w", name, err)
+	var w Workspace
+	if err := json.Unmarshal(data, &w); err != nil {
+		return Workspace{}, fmt.Errorf("parse metadata for workspace %q: %w", name, err)
 	}
 
-	return env, nil
+	return w, nil
 }
 
-// DeleteEnvironment removes an environment definition's directory. Deleting
-// a prebuilt definition is allowed — it won't be reseeded until the next
-// `tlw serve` start. It's an error to delete one that doesn't exist.
-func (r *Registry) DeleteEnvironment(name string) error {
-	dir := r.environmentDir(name)
+// DeleteWorkspace removes a workspace's registry directory. For a test
+// workspace this also deletes its files/ subtree; a real workspace's target
+// directory on the user's machine is never touched, only the registry
+// pointer to it. It's an error to delete one that doesn't exist.
+func (r *Registry) DeleteWorkspace(name string) error {
+	dir := r.workspaceDir(name)
 	if _, err := os.Stat(dir); err != nil {
-		return fmt.Errorf("environment %q not found", name)
+		return fmt.Errorf("workspace %q not found", name)
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("delete environment %q: %w", name, err)
+		return fmt.Errorf("delete workspace %q: %w", name, err)
 	}
 	return nil
 }
 
-// UpdateConfig overwrites the named environment's image and mounts, leaving
-// its attached tools untouched — the "Configuration" side of the
-// environment workspace page.
-func (r *Registry) UpdateConfig(name, image string, mounts []Mount) error {
-	env, err := r.GetEnvironment(name)
-	if err != nil {
-		return err
-	}
-	env.Image = image
-	env.Mounts = mounts
-	return r.SaveEnvironment(env)
-}
-
-// AttachTool references an existing catalog tool from the named
-// environment. It's idempotent (attaching an already-attached tool is a
-// no-op) and validates the tool actually exists in the catalog first, so a
-// typo'd name can't silently create a dangling reference at attach time.
-func (r *Registry) AttachTool(name, toolName string) error {
-	env, err := r.GetEnvironment(name)
-	if err != nil {
-		return err
-	}
-	if _, err := r.GetTool(toolName); err != nil {
-		return fmt.Errorf("tool %q not found in the catalog: %w", toolName, err)
-	}
-	for _, t := range env.Tools {
-		if t == toolName {
-			return nil
-		}
-	}
-	env.Tools = append(env.Tools, toolName)
-	return r.SaveEnvironment(env)
-}
-
-// DetachTool removes a tool reference from the named environment. This
-// doesn't touch the catalog tool itself, only this environment's list of
-// which tools it makes available. It's an error if the environment doesn't
-// currently reference toolName.
-func (r *Registry) DetachTool(name, toolName string) error {
-	env, err := r.GetEnvironment(name)
-	if err != nil {
-		return err
-	}
-	for i, t := range env.Tools {
-		if t == toolName {
-			env.Tools = append(env.Tools[:i], env.Tools[i+1:]...)
-			return r.SaveEnvironment(env)
-		}
-	}
-	return fmt.Errorf("environment %q doesn't have tool %q attached", name, toolName)
-}
-
-// ListEnvironments returns every registry-tracked environment, sorted by
-// name.
-func (r *Registry) ListEnvironments() ([]Environment, error) {
-	entries, err := os.ReadDir(r.environmentsDir())
+// ListWorkspaces returns every registry-tracked workspace, sorted by name.
+func (r *Registry) ListWorkspaces() ([]Workspace, error) {
+	entries, err := os.ReadDir(r.workspacesDir())
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read environments directory: %w", err)
+		return nil, fmt.Errorf("read workspaces directory: %w", err)
 	}
 
-	var environments []Environment
+	var workspaces []Workspace
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 
-		env, err := r.GetEnvironment(entry.Name())
+		w, err := r.GetWorkspace(entry.Name())
 		if err != nil {
 			continue // skip directories without valid metadata
 		}
-		environments = append(environments, env)
+		workspaces = append(workspaces, w)
 	}
 
-	sort.Slice(environments, func(i, j int) bool { return environments[i].Name < environments[j].Name })
+	sort.Slice(workspaces, func(i, j int) bool { return workspaces[i].Name < workspaces[j].Name })
 
-	return environments, nil
-}
-
-// EnsurePrebuiltEnvironments seeds the registry's built-in environment
-// definitions (WebSearch, SoftwareDev, OfficeWorker) if they don't already
-// exist. It never overwrites an existing definition, so a user is free to
-// edit or replace them. Call EnsurePrebuiltTools first — these definitions
-// reference catalog tools by name and assume they already exist.
-func (r *Registry) EnsurePrebuiltEnvironments() error {
-	for _, env := range PrebuiltEnvironments() {
-		if _, err := r.GetEnvironment(env.Name); err == nil {
-			continue // already present
-		}
-		if err := r.SaveEnvironment(env); err != nil {
-			return fmt.Errorf("seed prebuilt environment %q: %w", env.Name, err)
-		}
-	}
-	return nil
-}
-
-// PrebuiltEnvironments returns TLW's built-in Environment definitions.
-// Their images are deliberately generic (no dedicated web-search/dev/office
-// container images exist yet) — they're a starting point to launch, exec
-// into, and customize, not finished task-specific sandboxes. Tools are
-// referenced by name from the prebuilt tool catalog (see PrebuiltTools) —
-// EnsurePrebuiltTools must run first for these references to resolve.
-func PrebuiltEnvironments() []Environment {
-	now := time.Now().UTC()
-	return []Environment{
-		{
-			Name:      "WebSearch",
-			Image:     "curlimages/curl:8.10.1",
-			Tools:     []string{"web_search", "read_file", "write_file"},
-			Prebuilt:  true,
-			CreatedAt: now,
-		},
-		{
-			Name:      "SoftwareDev",
-			Image:     "python:3.12-slim",
-			Tools:     []string{"read_file", "write_file", "read_directory"},
-			Prebuilt:  true,
-			CreatedAt: now,
-		},
-		{
-			Name:      "OfficeWorker",
-			Image:     "debian:bookworm-slim",
-			Tools:     []string{"read_file", "write_file", "read_directory"},
-			Prebuilt:  true,
-			CreatedAt: now,
-		},
-	}
+	return workspaces, nil
 }

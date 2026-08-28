@@ -27,11 +27,11 @@ type Assertion struct {
 	Threshold float64 `json:"threshold,omitempty"`
 }
 
-// VerifyStep is a shell command run in a test case's launched Environment
-// instance after the agent's turn finishes, checked against its own
-// combined stdout/stderr output with the same assertion types used against
-// a reply. Evaluations-only: a Benchmark tests a model directly with no
-// Environment/instance to verify against. The command's exit code is
+// VerifyStep is a shell command run in a test case's sandbox instance after
+// the agent's turn finishes, checked against its own combined stdout/stderr
+// output with the same assertion types used against a reply. Evaluations-only:
+// a Benchmark tests a model directly with no sandbox to verify against. The
+// command's exit code is
 // deliberately not itself pass/fail — a command like `grep` legitimately
 // exits non-zero for "not found," so whether that counts as success is
 // entirely up to the assertions checked against its output text, the same
@@ -43,41 +43,36 @@ type VerifyStep struct {
 
 // TestCase is one prompt + the assertions its reply must satisfy, plus two
 // fields only Evaluations use (a Benchmark's test cases always leave them
-// empty, since there's no Environment to set up or verify): Setup is a list
-// of shell commands run in sequence in the test case's launched instance
-// before the agent's turn, to prepare a realistic starting scenario (seed
-// files, init a repo, etc.); VerifyCommands are run after the agent's turn
-// to check the environment's resulting state. Tags are optional, freeform
-// labels for filtering the test case list.
+// empty, since there's no sandbox to set up or verify): Workspace names a
+// TEST workspace (see registry.Workspace) whose files are copied into a
+// fresh sandbox for the test case, so a scenario's starting state is edited
+// as real files rather than scripted; VerifyCommands are run after the
+// agent's turn to check the sandbox's resulting state. Tags are optional,
+// freeform labels for filtering the test case list.
 type TestCase struct {
 	ID             string       `json:"id"`
 	Prompt         string       `json:"prompt"`
-	Setup          []string     `json:"setup,omitempty"`
+	Workspace      string       `json:"workspace,omitempty"`
 	Assertions     []Assertion  `json:"assertions"`
 	VerifyCommands []VerifyStep `json:"verifyCommands,omitempty"`
 	Tags           []string     `json:"tags,omitempty"`
 }
 
 // Evaluation is a registry-tracked test suite run against a set of agents.
-// Environment is optional and, unlike TestCases, is not versioned — it's a
-// live setting, like an Agent's own Environment binding, not part of the
-// "what does this test suite check" content a published version snapshots.
-// For a test case's Setup/VerifyCommands to mean anything, the agent(s)
-// this evaluation runs against should themselves be bound to this same
-// Environment (see internal/evaluations): Setup and Verify commands run in
-// the exact instance the agent's own Tool nodes act in during its turn, not
-// a second, separate container.
+// There is no evaluation-level environment binding: each test case names its
+// own TEST workspace (TestCase.Workspace), and a fresh copy of it is the
+// sandbox that case's setup, the agent's turn, and its VerifyCommands all
+// share.
 //
 // TestCases here is the *draft*: freely editable (Add/Update/DeleteTestCase)
 // and never run directly — mirrors registry.Benchmark exactly. Version is
 // the number of the most recently published EvaluationVersion (0 if none
 // has ever been published); only PublishVersion changes it.
 type Evaluation struct {
-	Name        string     `json:"name"`
-	Environment string     `json:"environment,omitempty"`
-	Version     int        `json:"version"`
-	TestCases   []TestCase `json:"testCases"`
-	CreatedAt   time.Time  `json:"createdAt"`
+	Name      string     `json:"name"`
+	Version   int        `json:"version"`
+	TestCases []TestCase `json:"testCases"`
+	CreatedAt time.Time  `json:"createdAt"`
 }
 
 // EvaluationVersion is an immutable snapshot of an evaluation's test cases,
@@ -146,21 +141,6 @@ func (r *Registry) GetEvaluation(name string) (Evaluation, error) {
 		return Evaluation{}, fmt.Errorf("parse definition for evaluation %q: %w", name, err)
 	}
 
-	return eval, nil
-}
-
-// UpdateEnvironment sets an existing evaluation's Environment binding
-// without touching its draft TestCases, Version, or CreatedAt — a plain
-// live-setting update, not a versioned change.
-func (r *Registry) UpdateEnvironment(name, environment string) (Evaluation, error) {
-	eval, err := r.GetEvaluation(name)
-	if err != nil {
-		return Evaluation{}, err
-	}
-	eval.Environment = environment
-	if err := r.SaveEvaluation(eval); err != nil {
-		return Evaluation{}, err
-	}
 	return eval, nil
 }
 

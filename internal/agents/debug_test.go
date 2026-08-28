@@ -11,56 +11,59 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
-func newDebugTestManager(llm *fakeLLM, envs environmentRunner, tools toolReader) *Manager {
-	envReader := &fakeEnvironmentReader{envs: map[string]registry.Environment{
-		"WebSearch": {Name: "WebSearch", Tools: []string{"echo_tool"}},
-	}}
-	return NewManager(context.Background(), &fakeAgentReader{}, llm, envs, envReader, tools, &fakeKnowledgeReader{}, eventbus.New())
+func newDebugTestManager(llm *fakeLLM, envs *fakeWorkspaceRunner, tools *fakeToolReader) *Manager {
+	if envs == nil {
+		envs = &fakeWorkspaceRunner{}
+	}
+	if tools == nil {
+		tools = &fakeToolReader{}
+	}
+	return NewManager(context.Background(), &fakeAgentReader{}, llm, envs, tools, &fakeKnowledgeReader{}, eventbus.New())
 }
 
-func TestStartDebugRunNoEnvironment(t *testing.T) {
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
+func TestStartDebugRunNoWorkspace(t *testing.T) {
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
 
-	state, err := m.StartDebugRun("greeter", linearGraph(), "")
+	state, err := m.StartDebugRun("greeter", linearGraph(), "", nil)
 	if err != nil {
 		t.Fatalf("StartDebugRun() error = %v", err)
 	}
 	if state.InstanceID != "" {
-		t.Errorf("state.InstanceID = %q, want empty for no Environment", state.InstanceID)
+		t.Errorf("state.InstanceID = %q, want empty for no workspace", state.InstanceID)
 	}
 	if state.Finished || state.PendingNodeID != "" {
 		t.Errorf("state = %+v, want idle (no turn started yet)", state)
 	}
 }
 
-func TestStartDebugRunLaunchesEnvironment(t *testing.T) {
-	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}}
-	m := newDebugTestManager(&fakeLLM{}, envs, &fakeToolReader{})
+func TestStartDebugRunLaunchesWorkspace(t *testing.T) {
+	envs := &fakeWorkspaceRunner{launchResult: environments.Instance{ID: "container-1"}}
+	m := newDebugTestManager(&fakeLLM{}, envs, nil)
 
-	state, err := m.StartDebugRun("researcher", linearGraph(), "WebSearch")
+	state, err := m.StartDebugRun("researcher", linearGraph(), "scratch", nil)
 	if err != nil {
 		t.Fatalf("StartDebugRun() error = %v", err)
 	}
 	if state.InstanceID != "container-1" {
 		t.Errorf("state.InstanceID = %q, want %q", state.InstanceID, "container-1")
 	}
-	if len(envs.launched) != 1 || envs.launched[0] != "WebSearch" {
-		t.Errorf("envs.launched = %v, want [WebSearch]", envs.launched)
+	if len(envs.launched) != 1 || envs.launched[0] != "scratch" {
+		t.Errorf("envs.launched = %v, want [scratch]", envs.launched)
 	}
 }
 
 func TestStartDebugRunInvalidGraph(t *testing.T) {
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
 
 	graph := registry.Graph{Nodes: []registry.Node{{ID: "p1", Type: "prompt"}}}
-	if _, err := m.StartDebugRun("greeter", graph, ""); err == nil {
+	if _, err := m.StartDebugRun("greeter", graph, "", nil); err == nil {
 		t.Error("StartDebugRun() error = nil, want an error for a graph with no input node")
 	}
 }
 
 func TestSendDebugMessageSetsPendingToInput(t *testing.T) {
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
+	started, _ := m.StartDebugRun("greeter", linearGraph(), "", nil)
 
 	state, err := m.SendDebugMessage(started.ID, "hi")
 	if err != nil {
@@ -75,8 +78,8 @@ func TestSendDebugMessageSetsPendingToInput(t *testing.T) {
 }
 
 func TestSendDebugMessageRequiresMessage(t *testing.T) {
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
+	started, _ := m.StartDebugRun("greeter", linearGraph(), "", nil)
 
 	if _, err := m.SendDebugMessage(started.ID, ""); err == nil {
 		t.Error("SendDebugMessage() error = nil, want an error for an empty message")
@@ -84,7 +87,7 @@ func TestSendDebugMessageRequiresMessage(t *testing.T) {
 }
 
 func TestSendDebugMessageUnknownRun(t *testing.T) {
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
 
 	if _, err := m.SendDebugMessage("does-not-exist", "hi"); err == nil {
 		t.Error("SendDebugMessage() error = nil, want an error for an unknown debug run")
@@ -93,8 +96,8 @@ func TestSendDebugMessageUnknownRun(t *testing.T) {
 
 func TestSendDebugMessageMidTurnErrors(t *testing.T) {
 	llm := &fakeLLM{responses: []string{"hello!"}}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("greeter", linearGraph(), "", nil)
 	m.SendDebugMessage(started.ID, "hi")
 	m.StepDebugRun(started.ID) // steps input, pending now = prompt node
 
@@ -105,8 +108,8 @@ func TestSendDebugMessageMidTurnErrors(t *testing.T) {
 
 func TestStepDebugRunWalksToCompletionAndRecordsMessages(t *testing.T) {
 	llm := &fakeLLM{responses: []string{"hello there!"}}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("greeter", linearGraph(), "", nil)
 	m.SendDebugMessage(started.ID, "hi")
 
 	// Step 1: input node — output equals the raw message.
@@ -156,8 +159,8 @@ func TestStepDebugRunFollowsSchemaFailHandle(t *testing.T) {
 		},
 	}
 	llm := &fakeLLM{responses: []string{"not json", "recovered reply"}}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", graph, "")
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("greeter", graph, "", nil)
 	m.SendDebugMessage(started.ID, "hi")
 
 	m.StepDebugRun(started.ID) // input
@@ -184,8 +187,8 @@ func TestStepDebugRunSayFinalIsTheReply(t *testing.T) {
 			{ID: "e2", Source: "s1", Target: "s2"},
 		},
 	}
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", graph, "")
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
+	started, _ := m.StartDebugRun("greeter", graph, "", nil)
 	m.SendDebugMessage(started.ID, "hi")
 
 	m.StepDebugRun(started.ID)           // input
@@ -202,9 +205,39 @@ func TestStepDebugRunSayFinalIsTheReply(t *testing.T) {
 	}
 }
 
+// The debugger must tolerate a stray sourceHandle on an otherwise-linear
+// edge exactly as Run does — otherwise stepping the input node "finishes"
+// the turn immediately and the reply is just the echoed user message.
+func TestStepDebugRunToleratesStraySourceHandle(t *testing.T) {
+	graph := linearGraph()
+	graph.Nodes[0].ID = "in"
+	graph.Edges[0] = registry.Edge{ID: "e1", Source: "in", SourceHandle: "fail", Target: graph.Nodes[1].ID}
+
+	llm := &fakeLLM{responses: []string{"the real reply"}}
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("greeter", graph, "", nil)
+	m.SendDebugMessage(started.ID, "hi")
+
+	s1, err := m.StepDebugRun(started.ID) // input
+	if err != nil {
+		t.Fatalf("StepDebugRun() (input) error = %v", err)
+	}
+	if s1.Finished || s1.PendingNodeID != graph.Nodes[1].ID {
+		t.Fatalf("after stepping input: state = %+v, want it pending at the prompt node, not finished", s1)
+	}
+
+	s2, err := m.StepDebugRun(started.ID) // prompt — dead end, turn ends
+	if err != nil {
+		t.Fatalf("StepDebugRun() (prompt) error = %v", err)
+	}
+	if !s2.Finished || len(s2.Messages) != 2 || s2.Messages[1].Content != "the real reply" {
+		t.Errorf("s2 = %+v, want the assistant reply to be the prompt node's output", s2)
+	}
+}
+
 func TestStepDebugRunNothingPendingErrors(t *testing.T) {
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
+	started, _ := m.StartDebugRun("greeter", linearGraph(), "", nil)
 
 	if _, err := m.StepDebugRun(started.ID); err == nil {
 		t.Error("StepDebugRun() error = nil, want an error when no message has been sent yet")
@@ -213,8 +246,8 @@ func TestStepDebugRunNothingPendingErrors(t *testing.T) {
 
 func TestStepDebugRunFailureLeavesSessionUnchanged(t *testing.T) {
 	llm := &fakeLLM{err: errors.New("model runner unreachable")}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("greeter", linearGraph(), "", nil)
 	m.SendDebugMessage(started.ID, "hi")
 	m.StepDebugRun(started.ID) // input node succeeds regardless
 
@@ -233,8 +266,8 @@ func TestStepDebugRunFailureLeavesSessionUnchanged(t *testing.T) {
 
 func TestRetryDebugRunGetsAFreshResult(t *testing.T) {
 	llm := &fakeLLM{responses: []string{"first reply", "second reply"}}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("greeter", linearGraph(), "", nil)
 	m.SendDebugMessage(started.ID, "hi")
 	m.StepDebugRun(started.ID) // input
 	first, err := m.StepDebugRun(started.ID)
@@ -255,8 +288,6 @@ func TestRetryDebugRunGetsAFreshResult(t *testing.T) {
 	if !retried.Finished {
 		t.Error("retried.Finished = false, want true — retrying a dead-end node still finishes the turn")
 	}
-	// The finished turn's assistant message should reflect the retried
-	// (second) reply, not the discarded first one.
 	last := retried.Messages[len(retried.Messages)-1]
 	if last.Content != "second reply" {
 		t.Errorf("final assistant message = %q, want the retried reply %q", last.Content, "second reply")
@@ -264,8 +295,8 @@ func TestRetryDebugRunGetsAFreshResult(t *testing.T) {
 }
 
 func TestRetryDebugRunNothingToRetryErrors(t *testing.T) {
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("greeter", linearGraph(), "")
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
+	started, _ := m.StartDebugRun("greeter", linearGraph(), "", nil)
 	m.SendDebugMessage(started.ID, "hi")
 
 	if _, err := m.RetryDebugRun(started.ID); err == nil {
@@ -274,15 +305,12 @@ func TestRetryDebugRunNothingToRetryErrors(t *testing.T) {
 }
 
 func TestRetryDebugRunDiscardsStaleDownstreamReference(t *testing.T) {
-	// Classifier (OutputSchema requiring "city") -> Responder, referencing
-	// {{Classifier.city}}. Retrying Classifier with a different reply must
-	// make Responder see the NEW city, not the first attempt's.
 	schema := `{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}`
 	graph := schemaChainGraph(schema, "please help with {{Classifier.city}}")
 	llm := &fakeLLM{responses: []string{`{"city": "Paris"}`, `{"city": "Tokyo"}`, "final reply"}}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	m := newDebugTestManager(llm, nil, nil)
 
-	started, _ := m.StartDebugRun("planner", graph, "")
+	started, _ := m.StartDebugRun("planner", graph, "", nil)
 	m.SendDebugMessage(started.ID, "where should I go?")
 	m.StepDebugRun(started.ID) // input
 	m.StepDebugRun(started.ID) // Classifier -> {"city": "Paris"}
@@ -304,9 +332,9 @@ func TestRetryDebugRunDiscardsStaleDownstreamReference(t *testing.T) {
 }
 
 func TestStopDebugRunStopsOwnedInstance(t *testing.T) {
-	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}}
-	m := newDebugTestManager(&fakeLLM{}, envs, &fakeToolReader{})
-	started, _ := m.StartDebugRun("researcher", linearGraph(), "WebSearch")
+	envs := &fakeWorkspaceRunner{launchResult: environments.Instance{ID: "container-1"}}
+	m := newDebugTestManager(&fakeLLM{}, envs, nil)
+	started, _ := m.StartDebugRun("researcher", linearGraph(), "scratch", nil)
 
 	if err := m.StopDebugRun(started.ID); err != nil {
 		t.Fatalf("StopDebugRun() error = %v", err)
@@ -320,7 +348,7 @@ func TestStopDebugRunStopsOwnedInstance(t *testing.T) {
 }
 
 func TestStopDebugRunUnknownRunIsNotAnError(t *testing.T) {
-	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	m := newDebugTestManager(&fakeLLM{}, nil, nil)
 
 	if err := m.StopDebugRun("does-not-exist"); err != nil {
 		t.Errorf("StopDebugRun() error = %v, want nil for an unknown session (idempotent cleanup)", err)
@@ -328,12 +356,12 @@ func TestStopDebugRunUnknownRunIsNotAnError(t *testing.T) {
 }
 
 func TestDebugRunToolNodeUsesSessionInstance(t *testing.T) {
-	envs := &fakeEnvironmentRunner{launchResult: environments.Instance{ID: "container-1"}, toolOutput: "tool output"}
+	envs := &fakeWorkspaceRunner{launchResult: environments.Instance{ID: "container-1"}, toolOutput: "tool output"}
 	toolStore := &fakeToolReader{tools: map[string]registry.Tool{"echo_tool": {Name: "echo_tool", Command: "echo hi"}}}
 	m := newDebugTestManager(&fakeLLM{}, envs, toolStore)
 
 	graph := toolGraph(registry.NodeData{ToolName: "echo_tool"})
-	started, _ := m.StartDebugRun("worker", graph, "WebSearch")
+	started, _ := m.StartDebugRun("worker", graph, "scratch", []string{"echo_tool"})
 	m.SendDebugMessage(started.ID, "hi")
 	m.StepDebugRun(started.ID) // input
 
@@ -347,10 +375,6 @@ func TestDebugRunToolNodeUsesSessionInstance(t *testing.T) {
 }
 
 func TestRetryDebugRunLoopNodeDoesNotDoubleIncrement(t *testing.T) {
-	// input -> L(loop_start, name L) --body--> P(prompt, template
-	// "{{L.iteration}}"). Stepping L once sets iteration=1; retrying L must
-	// re-run it from the pre-increment snapshot, yielding iteration=1 again,
-	// not 2.
 	graph := registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input"},
@@ -363,8 +387,8 @@ func TestRetryDebugRunLoopNodeDoesNotDoubleIncrement(t *testing.T) {
 		},
 	}
 	llm := &fakeLLM{responses: []string{"p reply"}}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("looper", graph, "")
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("looper", graph, "", nil)
 	m.SendDebugMessage(started.ID, "go")
 	m.StepDebugRun(started.ID) // input -> pending L
 	m.StepDebugRun(started.ID) // L: iteration 1 -> pending P
@@ -389,8 +413,8 @@ func TestRetryDebugRunAgentNodeReRunsInternalLoop(t *testing.T) {
 		Edges: []registry.Edge{{ID: "e1", Source: "in", Target: "a1"}},
 	}
 	llm := &fakeLLM{responses: []string{"FINAL: first", "FINAL: second"}}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("assistant", graph, "")
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("assistant", graph, "", nil)
 	m.SendDebugMessage(started.ID, "go")
 	m.StepDebugRun(started.ID) // input
 
@@ -415,9 +439,6 @@ func TestRetryDebugRunAgentNodeReRunsInternalLoop(t *testing.T) {
 }
 
 func TestStepDebugRunFollowsLoopEndBackToStart(t *testing.T) {
-	// input -> L(loop_start, max 3) --body--> W(prompt) -> LE(loop_end -> L);
-	// L --done--> F(prompt). Stepping should visit W three times (the walk
-	// jumping LE -> L each time) before L routes "done" to F.
 	graph := registry.Graph{
 		Nodes: []registry.Node{
 			{ID: "in", Type: "input"},
@@ -434,8 +455,8 @@ func TestStepDebugRunFollowsLoopEndBackToStart(t *testing.T) {
 		},
 	}
 	llm := &fakeLLM{responses: []string{"w1", "w2", "w3", "f reply"}}
-	m := newDebugTestManager(llm, &fakeEnvironmentRunner{}, &fakeToolReader{})
-	started, _ := m.StartDebugRun("looper", graph, "")
+	m := newDebugTestManager(llm, nil, nil)
+	started, _ := m.StartDebugRun("looper", graph, "", nil)
 	m.SendDebugMessage(started.ID, "go")
 
 	var visited []string

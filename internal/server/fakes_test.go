@@ -6,6 +6,7 @@ import (
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
 	"github.com/mtfuller/tiny-llm-workbench/internal/benchmarks"
+	"github.com/mtfuller/tiny-llm-workbench/internal/deployments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
@@ -236,41 +237,37 @@ func (f *fakeTrainingManager) GetRun(id string) (*training.Run, bool) {
 	return nil, f.getOK
 }
 
-type fakeEnvironmentStore struct {
-	list      []registry.Environment
+type fakeWorkspaceStore struct {
+	list      []registry.Workspace
 	listErr   error
 	saveErr   error
-	saved     []registry.Environment
-	get       registry.Environment
+	saved     []registry.Workspace
+	get       registry.Workspace
 	getErr    error
 	deleteErr error
 	deleted   []string
-
-	updateConfigErr error
-	updatedConfigs  []registry.Environment
-	attachErr       error
-	attached        []string
-	detachErr       error
-	detached        []string
 }
 
-func (f *fakeEnvironmentStore) ListEnvironments() ([]registry.Environment, error) {
+func (f *fakeWorkspaceStore) ListWorkspaces() ([]registry.Workspace, error) {
 	return f.list, f.listErr
 }
 
-func (f *fakeEnvironmentStore) SaveEnvironment(e registry.Environment) error {
+func (f *fakeWorkspaceStore) SaveWorkspace(ws registry.Workspace) error {
 	if f.saveErr != nil {
 		return f.saveErr
 	}
-	f.saved = append(f.saved, e)
+	f.saved = append(f.saved, ws)
+	if f.get.Name == "" {
+		f.get = ws
+	}
 	return nil
 }
 
-func (f *fakeEnvironmentStore) GetEnvironment(name string) (registry.Environment, error) {
+func (f *fakeWorkspaceStore) GetWorkspace(name string) (registry.Workspace, error) {
 	return f.get, f.getErr
 }
 
-func (f *fakeEnvironmentStore) DeleteEnvironment(name string) error {
+func (f *fakeWorkspaceStore) DeleteWorkspace(name string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
@@ -278,31 +275,7 @@ func (f *fakeEnvironmentStore) DeleteEnvironment(name string) error {
 	return nil
 }
 
-func (f *fakeEnvironmentStore) UpdateConfig(name, image string, mounts []registry.Mount) error {
-	if f.updateConfigErr != nil {
-		return f.updateConfigErr
-	}
-	f.updatedConfigs = append(f.updatedConfigs, registry.Environment{Name: name, Image: image, Mounts: mounts})
-	return nil
-}
-
-func (f *fakeEnvironmentStore) AttachTool(name, toolName string) error {
-	if f.attachErr != nil {
-		return f.attachErr
-	}
-	f.attached = append(f.attached, toolName)
-	return nil
-}
-
-func (f *fakeEnvironmentStore) DetachTool(name, toolName string) error {
-	if f.detachErr != nil {
-		return f.detachErr
-	}
-	f.detached = append(f.detached, toolName)
-	return nil
-}
-
-type fakeEnvironmentManager struct {
+type fakeWorkspaceManager struct {
 	launchResult environments.Instance
 	launchErr    error
 	launched     []string
@@ -325,32 +298,110 @@ type fakeEnvironmentManager struct {
 	tryToolCalls  []string
 }
 
-func (f *fakeEnvironmentManager) Launch(ctx context.Context, environmentName, instanceName string) (environments.Instance, error) {
-	f.launched = append(f.launched, environmentName)
+func (f *fakeWorkspaceManager) Launch(ctx context.Context, workspaceName, instanceName string) (environments.Instance, error) {
+	f.launched = append(f.launched, workspaceName)
 	return f.launchResult, f.launchErr
 }
 
-func (f *fakeEnvironmentManager) Stop(ctx context.Context, instanceID string) error {
+func (f *fakeWorkspaceManager) Stop(ctx context.Context, instanceID string) error {
 	f.stoppedIDs = append(f.stoppedIDs, instanceID)
 	return f.stopErr
 }
 
-func (f *fakeEnvironmentManager) ListInstances(ctx context.Context) ([]environments.Instance, error) {
+func (f *fakeWorkspaceManager) ListInstances(ctx context.Context) ([]environments.Instance, error) {
 	return f.listResult, f.listErr
 }
 
-func (f *fakeEnvironmentManager) StartExec(instanceID, command string) (*environments.Exec, error) {
+func (f *fakeWorkspaceManager) StartExec(instanceID, command string) (*environments.Exec, error) {
 	f.execCalls = append(f.execCalls, command)
 	return f.execResult, f.execErr
 }
 
-func (f *fakeEnvironmentManager) GetExec(id string) (*environments.Exec, bool) {
+func (f *fakeWorkspaceManager) GetExec(id string) (*environments.Exec, bool) {
 	return f.getExecResult, f.getExecOK
 }
 
-func (f *fakeEnvironmentManager) TryTool(instanceID string, tool registry.Tool, args map[string]string) (*environments.Exec, error) {
+func (f *fakeWorkspaceManager) TryTool(instanceID string, tool registry.Tool, args map[string]string) (*environments.Exec, error) {
 	f.tryToolCalls = append(f.tryToolCalls, instanceID)
 	return f.tryToolResult, f.tryToolErr
+}
+
+type fakeDeploymentStore struct {
+	list      []registry.Deployment
+	listErr   error
+	saveErr   error
+	saved     []registry.Deployment
+	get       registry.Deployment
+	getErr    error
+	deleteErr error
+	deleted   []string
+}
+
+func (f *fakeDeploymentStore) ListDeployments() ([]registry.Deployment, error) {
+	return f.list, f.listErr
+}
+
+func (f *fakeDeploymentStore) SaveDeployment(d registry.Deployment) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.saved = append(f.saved, d)
+	if f.get.Name == "" {
+		f.get = d
+	}
+	return nil
+}
+
+func (f *fakeDeploymentStore) GetDeployment(name string) (registry.Deployment, error) {
+	return f.get, f.getErr
+}
+
+func (f *fakeDeploymentStore) DeleteDeployment(name string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+
+type fakeDeploymentManager struct {
+	startResult *deployments.Session
+	startErr    error
+	started     []string
+
+	sendResult agents.ChatMessage
+	sendErr    error
+	sent       []string
+
+	getResult *deployments.Session
+	getOK     bool
+
+	stopErr    error
+	stopped    []string
+	listResult []*deployments.Session
+}
+
+func (f *fakeDeploymentManager) Start(deploymentName string) (*deployments.Session, error) {
+	f.started = append(f.started, deploymentName)
+	return f.startResult, f.startErr
+}
+
+func (f *fakeDeploymentManager) SendMessage(sessionID, message string) (agents.ChatMessage, error) {
+	f.sent = append(f.sent, message)
+	return f.sendResult, f.sendErr
+}
+
+func (f *fakeDeploymentManager) Stop(sessionID string) error {
+	f.stopped = append(f.stopped, sessionID)
+	return f.stopErr
+}
+
+func (f *fakeDeploymentManager) Get(sessionID string) (*deployments.Session, bool) {
+	return f.getResult, f.getOK
+}
+
+func (f *fakeDeploymentManager) List() []*deployments.Session {
+	return f.listResult
 }
 
 type fakeToolStore struct {
@@ -492,9 +543,10 @@ func (f *fakeAgentStore) DeleteAgent(name string) error {
 }
 
 type fakeAgentManager struct {
-	startResult *agents.Run
-	startErr    error
-	started     []string
+	startResult       *agents.Run
+	startErr          error
+	started           []string
+	startedWorkspaces []string
 
 	stopErr     error
 	stoppedRuns []string
@@ -522,8 +574,9 @@ type fakeAgentManager struct {
 	debugStoppedRuns   []string
 }
 
-func (f *fakeAgentManager) StartRun(agentName string) (*agents.Run, error) {
+func (f *fakeAgentManager) StartRun(agentName, workspaceOverride string) (*agents.Run, error) {
 	f.started = append(f.started, agentName)
+	f.startedWorkspaces = append(f.startedWorkspaces, workspaceOverride)
 	return f.startResult, f.startErr
 }
 
@@ -541,7 +594,7 @@ func (f *fakeAgentManager) GetRun(id string) (*agents.Run, bool) {
 	return f.getResult, f.getOK
 }
 
-func (f *fakeAgentManager) StartDebugRun(agentName string, graph registry.Graph, environment string) (*agents.DebugState, error) {
+func (f *fakeAgentManager) StartDebugRun(agentName string, graph registry.Graph, workspace string, tools []string) (*agents.DebugState, error) {
 	f.debugStarted = append(f.debugStarted, agentName)
 	return f.debugStartResult, f.debugStartErr
 }
@@ -577,10 +630,6 @@ type fakeEvaluationStore struct {
 	getErr    error
 	deleteErr error
 	deleted   []string
-
-	updateEnvErr    error
-	updatedEnv      string
-	updatedEnvEvals []string
 
 	addTestCasesErr error
 	addedTestCases  [][]registry.TestCase
@@ -622,16 +671,6 @@ func (f *fakeEvaluationStore) DeleteEvaluation(name string) error {
 	}
 	f.deleted = append(f.deleted, name)
 	return nil
-}
-
-func (f *fakeEvaluationStore) UpdateEnvironment(name, environment string) (registry.Evaluation, error) {
-	if f.updateEnvErr != nil {
-		return registry.Evaluation{}, f.updateEnvErr
-	}
-	f.updatedEnvEvals = append(f.updatedEnvEvals, name)
-	f.updatedEnv = environment
-	f.get.Environment = environment
-	return f.get, nil
 }
 
 func (f *fakeEvaluationStore) AddEvaluationTestCases(evaluationName string, tcs []registry.TestCase) error {
@@ -853,23 +892,25 @@ func (f *fakeHFSearcher) SearchModels(ctx context.Context, query string) ([]hugg
 
 func testDeps() Deps {
 	return Deps{
-		Bus:          eventbus.New(),
-		Models:       &fakeModelStore{},
-		ModelRunner:  &fakeModelRunner{},
-		HuggingFace:  &fakeHFSearcher{},
-		Datasets:     newFakeDatasetStore(),
-		Generator:    &fakeGenerator{},
-		Training:     &fakeTrainingManager{},
-		Environments: &fakeEnvironmentStore{},
-		Instances:    &fakeEnvironmentManager{},
-		Tools:        &fakeToolStore{},
-		Knowledge:    &fakeKnowledgeStore{},
-		Agents:       &fakeAgentStore{},
-		AgentRuns:    &fakeAgentManager{},
-		Evaluations:  &fakeEvaluationStore{},
-		EvalRuns:     &fakeEvaluationManager{},
-		Benchmarks:   &fakeBenchmarkStore{},
-		BenchRuns:    &fakeBenchmarkManager{},
-		TestCaseGen:  &fakeTestCaseGenerator{},
+		Bus:                eventbus.New(),
+		Models:             &fakeModelStore{},
+		ModelRunner:        &fakeModelRunner{},
+		HuggingFace:        &fakeHFSearcher{},
+		Datasets:           newFakeDatasetStore(),
+		Generator:          &fakeGenerator{},
+		Training:           &fakeTrainingManager{},
+		Workspaces:         &fakeWorkspaceStore{},
+		Instances:          &fakeWorkspaceManager{},
+		Tools:              &fakeToolStore{},
+		Knowledge:          &fakeKnowledgeStore{},
+		Agents:             &fakeAgentStore{},
+		AgentRuns:          &fakeAgentManager{},
+		Evaluations:        &fakeEvaluationStore{},
+		EvalRuns:           &fakeEvaluationManager{},
+		Benchmarks:         &fakeBenchmarkStore{},
+		BenchRuns:          &fakeBenchmarkManager{},
+		Deployments:        &fakeDeploymentStore{},
+		DeploymentSessions: &fakeDeploymentManager{},
+		TestCaseGen:        &fakeTestCaseGenerator{},
 	}
 }

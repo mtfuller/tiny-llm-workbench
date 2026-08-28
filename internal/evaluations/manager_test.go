@@ -54,7 +54,7 @@ type fakeAgentRunner struct {
 	stoppedRunIDs   []string
 }
 
-func (f *fakeAgentRunner) StartRun(agentName string) (*agents.Run, error) {
+func (f *fakeAgentRunner) StartRun(agentName, workspaceOverride string) (*agents.Run, error) {
 	f.startedAgents = append(f.startedAgents, agentName)
 	if f.startErr != nil {
 		return nil, f.startErr
@@ -84,7 +84,7 @@ func (f *fakeAgentRunner) StopRun(runID string) error {
 	return nil
 }
 
-type fakeEnvironmentLauncher struct {
+type fakeWorkspaceLauncher struct {
 	launchResult environments.Instance
 	launchErr    error
 	launched     []string
@@ -97,17 +97,17 @@ type fakeEnvironmentLauncher struct {
 	ranCommands         []string
 }
 
-func (f *fakeEnvironmentLauncher) Launch(ctx context.Context, environmentName, instanceName string) (environments.Instance, error) {
-	f.launched = append(f.launched, environmentName)
+func (f *fakeWorkspaceLauncher) Launch(ctx context.Context, workspaceName, instanceName string) (environments.Instance, error) {
+	f.launched = append(f.launched, workspaceName)
 	return f.launchResult, f.launchErr
 }
 
-func (f *fakeEnvironmentLauncher) Stop(ctx context.Context, instanceID string) error {
+func (f *fakeWorkspaceLauncher) Stop(ctx context.Context, instanceID string) error {
 	f.stoppedIDs = append(f.stoppedIDs, instanceID)
 	return nil
 }
 
-func (f *fakeEnvironmentLauncher) RunToolSync(ctx context.Context, instanceID, command string) (string, error) {
+func (f *fakeWorkspaceLauncher) RunToolSync(ctx context.Context, instanceID, command string) (string, error) {
 	f.ranCommands = append(f.ranCommands, command)
 	if f.toolErrByCommand != nil {
 		if err, ok := f.toolErrByCommand[command]; ok {
@@ -131,7 +131,7 @@ func simpleVersion() registry.EvaluationVersion {
 	}
 }
 
-func newTestManager(t *testing.T, evalReader evaluationReader, runner agentRunner, envs environmentLauncher) *Manager {
+func newTestManager(t *testing.T, evalReader evaluationReader, runner agentRunner, envs workspaceLauncher) *Manager {
 	t.Helper()
 	return NewManager(context.Background(), evalReader, runner, envs, eventbus.New(), filepath.Join(t.TempDir(), "results"))
 }
@@ -155,7 +155,7 @@ func TestStartRunSucceedsWithMixedResults(t *testing.T) {
 		versions: map[string]map[int]registry.EvaluationVersion{"greeting": {1: simpleVersion()}},
 	}
 	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "see you later"}}
-	m := newTestManager(t, evalReader, runner, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, evalReader, runner, &fakeWorkspaceLauncher{})
 
 	run, err := m.StartRun("greeting", 1, []string{"greeter"})
 	if err != nil {
@@ -181,14 +181,14 @@ func TestStartRunSucceedsWithMixedResults(t *testing.T) {
 		t.Errorf("Results[1] = %+v, want failed (reply doesn't contain 'bye')", ar.Results[1])
 	}
 
-	// No Environment configured, so agents run via plain StartRun.
+	// No workspace on the test cases, so agents run via plain StartRun.
 	if len(runner.startedInInst) != 0 {
-		t.Errorf("runner.startedInInst = %v, want none — no Environment configured", runner.startedInInst)
+		t.Errorf("runner.startedInInst = %v, want none — no workspace configured", runner.startedInInst)
 	}
 }
 
 func TestStartRunRequiresAgents(t *testing.T) {
-	m := newTestManager(t, &fakeEvaluationReader{}, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, &fakeEvaluationReader{}, &fakeAgentRunner{}, &fakeWorkspaceLauncher{})
 
 	if _, err := m.StartRun("greeting", 1, nil); err == nil {
 		t.Error("StartRun() error = nil, want an error when no agents are given")
@@ -197,7 +197,7 @@ func TestStartRunRequiresAgents(t *testing.T) {
 
 func TestStartRunUnknownEvaluation(t *testing.T) {
 	evalReader := &fakeEvaluationReader{evals: map[string]registry.Evaluation{}}
-	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeWorkspaceLauncher{})
 
 	if _, err := m.StartRun("does-not-exist", 1, []string{"greeter"}); err == nil {
 		t.Error("StartRun() error = nil, want an error for an unknown evaluation")
@@ -209,7 +209,7 @@ func TestStartRunUnknownVersion(t *testing.T) {
 		evals:    map[string]registry.Evaluation{"greeting": simpleEvaluation("greeting")},
 		versions: map[string]map[int]registry.EvaluationVersion{},
 	}
-	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeWorkspaceLauncher{})
 
 	if _, err := m.StartRun("greeting", 1, []string{"greeter"}); err == nil {
 		t.Error("StartRun() error = nil, want an error for a version that hasn't been published")
@@ -221,37 +221,36 @@ func TestStartRunEmptyVersion(t *testing.T) {
 		evals:    map[string]registry.Evaluation{"empty": {Name: "empty", Version: 1}},
 		versions: map[string]map[int]registry.EvaluationVersion{"empty": {1: {Version: 1}}},
 	}
-	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, evalReader, &fakeAgentRunner{}, &fakeWorkspaceLauncher{})
 
 	if _, err := m.StartRun("empty", 1, []string{"greeter"}); err == nil {
 		t.Error("StartRun() error = nil, want an error for a version with no test cases")
 	}
 }
 
-func TestRunTestCaseLaunchesSetupAndVerifyInSameInstance(t *testing.T) {
-	eval := registry.Evaluation{Name: "coding", Environment: "SoftwareDev", Version: 1}
+func TestRunTestCaseLaunchesWorkspaceAndVerifiesInSameInstance(t *testing.T) {
 	ver := registry.EvaluationVersion{
 		Version: 1,
 		TestCases: []registry.TestCase{
 			{
 				ID:         "tc1",
 				Prompt:     "write hello.txt",
-				Setup:      []string{"mkdir -p /repo"},
+				Workspace:  "repo-scenario",
 				Assertions: []registry.Assertion{{Type: "contains", Value: "done"}},
 				VerifyCommands: []registry.VerifyStep{
-					{Command: "cat /repo/hello.txt", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
+					{Command: "cat /workspace/hello.txt", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
 				},
 			},
 		},
 	}
 	evalReader := &fakeEvaluationReader{
-		evals:    map[string]registry.Evaluation{"coding": eval},
+		evals:    map[string]registry.Evaluation{"coding": {Name: "coding", Version: 1}},
 		versions: map[string]map[int]registry.EvaluationVersion{"coding": {1: ver}},
 	}
 	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"write hello.txt": "done"}}
-	envs := &fakeEnvironmentLauncher{
+	envs := &fakeWorkspaceLauncher{
 		launchResult:        environments.Instance{ID: "container-1"},
-		toolOutputByCommand: map[string]string{"cat /repo/hello.txt": "hello world"},
+		toolOutputByCommand: map[string]string{"cat /workspace/hello.txt": "hello world"},
 	}
 	m := newTestManager(t, evalReader, runner, envs)
 
@@ -273,16 +272,16 @@ func TestRunTestCaseLaunchesSetupAndVerifyInSameInstance(t *testing.T) {
 		t.Errorf("TestCaseResult.VerifyResults = %+v, want a single passing verify step", tcResult.VerifyResults)
 	}
 
-	// Setup ran before the agent's turn, and the agent's turn used the SAME
-	// instance Setup ran in (via StartRunInInstance), not a fresh one.
-	if len(envs.ranCommands) != 2 || envs.ranCommands[0] != "mkdir -p /repo" || envs.ranCommands[1] != "cat /repo/hello.txt" {
-		t.Errorf("envs.ranCommands = %v, want [mkdir -p /repo, cat /repo/hello.txt]", envs.ranCommands)
+	// The agent's turn used the SAME instance the workspace was launched into
+	// (via StartRunInInstance), and Verify ran there too.
+	if len(envs.ranCommands) != 1 || envs.ranCommands[0] != "cat /workspace/hello.txt" {
+		t.Errorf("envs.ranCommands = %v, want [cat /workspace/hello.txt]", envs.ranCommands)
 	}
 	if len(runner.startedInInst) != 1 || runner.startedInInst[0] != "container-1" {
-		t.Errorf("runner.startedInInst = %v, want [container-1] — the agent must act in the same instance Setup/Verify use", runner.startedInInst)
+		t.Errorf("runner.startedInInst = %v, want [container-1] — the agent must act in the same instance Verify uses", runner.startedInInst)
 	}
-	if len(envs.launched) != 1 || envs.launched[0] != "SoftwareDev" {
-		t.Errorf("envs.launched = %v, want [SoftwareDev]", envs.launched)
+	if len(envs.launched) != 1 || envs.launched[0] != "repo-scenario" {
+		t.Errorf("envs.launched = %v, want [repo-scenario]", envs.launched)
 	}
 	if len(envs.stoppedIDs) != 1 || envs.stoppedIDs[0] != "container-1" {
 		t.Errorf("envs.stoppedIDs = %v, want [container-1] — Evaluations owns this instance's lifecycle", envs.stoppedIDs)
@@ -292,23 +291,19 @@ func TestRunTestCaseLaunchesSetupAndVerifyInSameInstance(t *testing.T) {
 	}
 }
 
-func TestRunTestCaseSetupCommandFailureFailsTestCaseWithoutRunningAgent(t *testing.T) {
-	eval := registry.Evaluation{Name: "coding", Environment: "SoftwareDev", Version: 1}
+func TestRunTestCaseWorkspaceLaunchFailureFailsTestCaseWithoutRunningAgent(t *testing.T) {
 	ver := registry.EvaluationVersion{
 		Version: 1,
 		TestCases: []registry.TestCase{
-			{ID: "tc1", Prompt: "write hello.txt", Setup: []string{"exit 1"}},
+			{ID: "tc1", Prompt: "write hello.txt", Workspace: "repo-scenario"},
 		},
 	}
 	evalReader := &fakeEvaluationReader{
-		evals:    map[string]registry.Evaluation{"coding": eval},
+		evals:    map[string]registry.Evaluation{"coding": {Name: "coding", Version: 1}},
 		versions: map[string]map[int]registry.EvaluationVersion{"coding": {1: ver}},
 	}
 	runner := &fakeAgentRunner{}
-	envs := &fakeEnvironmentLauncher{
-		launchResult:     environments.Instance{ID: "container-1"},
-		toolErrByCommand: map[string]error{"exit 1": errors.New("command exited with status 1")},
-	}
+	envs := &fakeWorkspaceLauncher{launchErr: errors.New("docker daemon unreachable")}
 	m := newTestManager(t, evalReader, runner, envs)
 
 	run, err := m.StartRun("coding", 1, []string{"coder"})
@@ -319,28 +314,32 @@ func TestRunTestCaseSetupCommandFailureFailsTestCaseWithoutRunningAgent(t *testi
 	finished := waitForRunStatus(t, m, run.ID, StatusSucceeded, time.Second)
 	tcResult := finished.Results[0].Results[0]
 	if tcResult.Error == "" {
-		t.Error("TestCaseResult.Error is empty, want the setup failure recorded")
+		t.Error("TestCaseResult.Error is empty, want the workspace launch failure recorded")
 	}
 	if len(runner.startedAgents) != 0 {
-		t.Errorf("runner.startedAgents = %v, want none — a failed setup must not start the agent", runner.startedAgents)
-	}
-	if len(envs.stoppedIDs) != 1 {
-		t.Errorf("envs.stoppedIDs = %v, want the instance still cleaned up despite the setup failure", envs.stoppedIDs)
+		t.Errorf("runner.startedAgents = %v, want none — a failed workspace launch must not start the agent", runner.startedAgents)
 	}
 }
 
-func TestRunTestCaseSetupWithoutEnvironmentFailsWithClearError(t *testing.T) {
-	eval := registry.Evaluation{Name: "coding", Version: 1} // no Environment configured
+func TestRunTestCaseVerifyWithoutWorkspaceFailsWithClearError(t *testing.T) {
 	ver := registry.EvaluationVersion{
-		Version:   1,
-		TestCases: []registry.TestCase{{ID: "tc1", Prompt: "write hello.txt", Setup: []string{"mkdir -p /repo"}}},
+		Version: 1,
+		TestCases: []registry.TestCase{
+			{
+				ID:     "tc1",
+				Prompt: "write hello.txt",
+				VerifyCommands: []registry.VerifyStep{
+					{Command: "cat /workspace/hello.txt", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
+				},
+			},
+		},
 	}
 	evalReader := &fakeEvaluationReader{
-		evals:    map[string]registry.Evaluation{"coding": eval},
+		evals:    map[string]registry.Evaluation{"coding": {Name: "coding", Version: 1}},
 		versions: map[string]map[int]registry.EvaluationVersion{"coding": {1: ver}},
 	}
 	runner := &fakeAgentRunner{}
-	envs := &fakeEnvironmentLauncher{}
+	envs := &fakeWorkspaceLauncher{}
 	m := newTestManager(t, evalReader, runner, envs)
 
 	run, err := m.StartRun("coding", 1, []string{"coder"})
@@ -354,7 +353,7 @@ func TestRunTestCaseSetupWithoutEnvironmentFailsWithClearError(t *testing.T) {
 		t.Error("TestCaseResult.Error is empty, want a clear misconfiguration error")
 	}
 	if len(envs.launched) != 0 {
-		t.Errorf("envs.launched = %v, want none — there's no Environment to launch", envs.launched)
+		t.Errorf("envs.launched = %v, want none — there's no workspace to launch", envs.launched)
 	}
 	if len(runner.startedAgents) != 0 {
 		t.Errorf("runner.startedAgents = %v, want none", runner.startedAgents)
@@ -362,28 +361,28 @@ func TestRunTestCaseSetupWithoutEnvironmentFailsWithClearError(t *testing.T) {
 }
 
 func TestRunTestCaseVerifyCommandFailingAssertionFailsTestCaseEvenWithPassingReply(t *testing.T) {
-	eval := registry.Evaluation{Name: "coding", Environment: "SoftwareDev", Version: 1}
 	ver := registry.EvaluationVersion{
 		Version: 1,
 		TestCases: []registry.TestCase{
 			{
 				ID:         "tc1",
 				Prompt:     "write hello.txt",
+				Workspace:  "repo-scenario",
 				Assertions: []registry.Assertion{{Type: "contains", Value: "done"}},
 				VerifyCommands: []registry.VerifyStep{
-					{Command: "cat /repo/hello.txt", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
+					{Command: "cat /workspace/hello.txt", Assertions: []registry.Assertion{{Type: "contains", Value: "hello"}}},
 				},
 			},
 		},
 	}
 	evalReader := &fakeEvaluationReader{
-		evals:    map[string]registry.Evaluation{"coding": eval},
+		evals:    map[string]registry.Evaluation{"coding": {Name: "coding", Version: 1}},
 		versions: map[string]map[int]registry.EvaluationVersion{"coding": {1: ver}},
 	}
 	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"write hello.txt": "done"}}
-	envs := &fakeEnvironmentLauncher{
+	envs := &fakeWorkspaceLauncher{
 		launchResult:        environments.Instance{ID: "container-1"},
-		toolOutputByCommand: map[string]string{"cat /repo/hello.txt": "the file is empty"},
+		toolOutputByCommand: map[string]string{"cat /workspace/hello.txt": "the file is empty"},
 	}
 	m := newTestManager(t, evalReader, runner, envs)
 
@@ -408,7 +407,7 @@ func TestStartRunAgentStartFailureRecordsErrorPerTestCase(t *testing.T) {
 		versions: map[string]map[int]registry.EvaluationVersion{"greeting": {1: simpleVersion()}},
 	}
 	runner := &fakeAgentRunner{startErr: errors.New("no such agent")}
-	m := newTestManager(t, evalReader, runner, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, evalReader, runner, &fakeWorkspaceLauncher{})
 
 	run, err := m.StartRun("greeting", 1, []string{"greeter"})
 	if err != nil {
@@ -433,7 +432,7 @@ func TestListRunsMostRecentFirst(t *testing.T) {
 		versions: map[string]map[int]registry.EvaluationVersion{"greeting": {1: simpleVersion()}},
 	}
 	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
-	m := newTestManager(t, evalReader, runner, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, evalReader, runner, &fakeWorkspaceLauncher{})
 
 	first, err := m.StartRun("greeting", 1, []string{"greeter"})
 	if err != nil {
@@ -460,7 +459,7 @@ func TestListResultsPersistsAcrossRuns(t *testing.T) {
 		versions: map[string]map[int]registry.EvaluationVersion{"greeting": {1: simpleVersion()}},
 	}
 	runner := &fakeAgentRunner{repliesByPrompt: map[string]string{"say hi": "hello!", "say bye": "bye!"}}
-	m := newTestManager(t, evalReader, runner, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, evalReader, runner, &fakeWorkspaceLauncher{})
 
 	run, err := m.StartRun("greeting", 1, []string{"greeter"})
 	if err != nil {
@@ -478,7 +477,7 @@ func TestListResultsPersistsAcrossRuns(t *testing.T) {
 }
 
 func TestListResultsEmptyForUnknownEvaluation(t *testing.T) {
-	m := newTestManager(t, &fakeEvaluationReader{}, &fakeAgentRunner{}, &fakeEnvironmentLauncher{})
+	m := newTestManager(t, &fakeEvaluationReader{}, &fakeAgentRunner{}, &fakeWorkspaceLauncher{})
 
 	results, err := m.ListResults("never-run")
 	if err != nil {

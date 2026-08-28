@@ -15,7 +15,6 @@ func TestSaveAndGetEvaluation(t *testing.T) {
 	reg := New(t.TempDir())
 
 	want := testEvaluation("greeting-eval")
-	want.Environment = "WebSearch"
 	if err := reg.SaveEvaluation(want); err != nil {
 		t.Fatalf("SaveEvaluation() error = %v", err)
 	}
@@ -24,7 +23,7 @@ func TestSaveAndGetEvaluation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEvaluation() error = %v", err)
 	}
-	if got.Name != want.Name || got.Environment != "WebSearch" || len(got.TestCases) != 1 {
+	if got.Name != want.Name || len(got.TestCases) != 1 {
 		t.Errorf("GetEvaluation() = %+v, want %+v", got, want)
 	}
 	if len(got.TestCases[0].Assertions) != 1 || got.TestCases[0].Assertions[0].Value != "hello" {
@@ -74,41 +73,6 @@ func TestGetEvaluationUnknown(t *testing.T) {
 
 	if _, err := reg.GetEvaluation("does-not-exist"); err == nil {
 		t.Error("GetEvaluation() error = nil, want an error for an unknown evaluation")
-	}
-}
-
-func TestUpdateEnvironment(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEvaluation(testEvaluation("greeting-eval")); err != nil {
-		t.Fatalf("SaveEvaluation() error = %v", err)
-	}
-
-	got, err := reg.UpdateEnvironment("greeting-eval", "SoftwareDev")
-	if err != nil {
-		t.Fatalf("UpdateEnvironment() error = %v", err)
-	}
-	if got.Environment != "SoftwareDev" {
-		t.Errorf("UpdateEnvironment().Environment = %q, want %q", got.Environment, "SoftwareDev")
-	}
-	if len(got.TestCases) != 1 {
-		t.Errorf("UpdateEnvironment().TestCases = %+v, want the draft test cases preserved", got.TestCases)
-	}
-
-	reread, err := reg.GetEvaluation("greeting-eval")
-	if err != nil {
-		t.Fatalf("GetEvaluation() error = %v", err)
-	}
-	if reread.Environment != "SoftwareDev" {
-		t.Errorf("GetEvaluation().Environment = %q, want %q to persist", reread.Environment, "SoftwareDev")
-	}
-}
-
-func TestUpdateEnvironmentUnknown(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if _, err := reg.UpdateEnvironment("does-not-exist", "WebSearch"); err == nil {
-		t.Error("UpdateEnvironment() error = nil, want an error for an unknown evaluation")
 	}
 }
 
@@ -177,9 +141,9 @@ func TestAddEvaluationTestCasesDoesNotBumpVersion(t *testing.T) {
 		{Prompt: "say hi", Assertions: []Assertion{{Type: "contains", Value: "hi"}}},
 		{
 			Prompt:         "write a file",
-			Setup:          []string{"mkdir -p /repo"},
+			Workspace:      "repo-scenario",
 			Assertions:     []Assertion{{Type: "contains", Value: "done"}},
-			VerifyCommands: []VerifyStep{{Command: "cat /repo/out.txt", Assertions: []Assertion{{Type: "contains", Value: "hello"}}}},
+			VerifyCommands: []VerifyStep{{Command: "cat /workspace/out.txt", Assertions: []Assertion{{Type: "contains", Value: "hello"}}}},
 			Tags:           []string{"software-dev"},
 		},
 	}); err != nil {
@@ -196,10 +160,10 @@ func TestAddEvaluationTestCasesDoesNotBumpVersion(t *testing.T) {
 	if got.TestCases[0].ID == "" || got.TestCases[1].ID == "" || got.TestCases[0].ID == got.TestCases[1].ID {
 		t.Errorf("GetEvaluation().TestCases IDs = %q, %q, want distinct, non-empty IDs assigned", got.TestCases[0].ID, got.TestCases[1].ID)
 	}
-	if len(got.TestCases[1].Setup) != 1 || got.TestCases[1].Setup[0] != "mkdir -p /repo" {
-		t.Errorf("GetEvaluation().TestCases[1].Setup = %v, want [mkdir -p /repo]", got.TestCases[1].Setup)
+	if got.TestCases[1].Workspace != "repo-scenario" {
+		t.Errorf("GetEvaluation().TestCases[1].Workspace = %q, want repo-scenario", got.TestCases[1].Workspace)
 	}
-	if len(got.TestCases[1].VerifyCommands) != 1 || got.TestCases[1].VerifyCommands[0].Command != "cat /repo/out.txt" {
+	if len(got.TestCases[1].VerifyCommands) != 1 || got.TestCases[1].VerifyCommands[0].Command != "cat /workspace/out.txt" {
 		t.Errorf("GetEvaluation().TestCases[1].VerifyCommands = %+v, want a single cat command", got.TestCases[1].VerifyCommands)
 	}
 	if got.Version != 0 {

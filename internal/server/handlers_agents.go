@@ -9,14 +9,21 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
-// normalizeAgent ensures Graph.Nodes/Edges never serialize as JSON "null",
-// same reasoning as normalizeEnvironment.
+// normalizeAgent ensures Graph.Nodes/Edges and the Tools/KnowledgeBases sets
+// never serialize as JSON "null", which breaks frontend code that calls
+// array methods on a parsed response.
 func normalizeAgent(a registry.Agent) registry.Agent {
 	if a.Graph.Nodes == nil {
 		a.Graph.Nodes = []registry.Node{}
 	}
 	if a.Graph.Edges == nil {
 		a.Graph.Edges = []registry.Edge{}
+	}
+	if a.Tools == nil {
+		a.Tools = []string{}
+	}
+	if a.KnowledgeBases == nil {
+		a.KnowledgeBases = []string{}
 	}
 	return a
 }
@@ -40,10 +47,12 @@ func listAgentsHandler(store agentStore) http.HandlerFunc {
 
 // saveAgentRequest is the POST /api/agents request body.
 type saveAgentRequest struct {
-	Name        string         `json:"name"`
-	Environment string         `json:"environment,omitempty"`
-	Description string         `json:"description,omitempty"`
-	Graph       registry.Graph `json:"graph"`
+	Name           string         `json:"name"`
+	Workspace      string         `json:"workspace,omitempty"`
+	Tools          []string       `json:"tools"`
+	KnowledgeBases []string       `json:"knowledgeBases"`
+	Description    string         `json:"description,omitempty"`
+	Graph          registry.Graph `json:"graph"`
 }
 
 // saveAgentHandler creates or overwrites an agent's definition.
@@ -59,7 +68,14 @@ func saveAgentHandler(store agentStore) http.HandlerFunc {
 			return
 		}
 
-		agent := registry.Agent{Name: req.Name, Environment: req.Environment, Description: req.Description, Graph: req.Graph}
+		agent := registry.Agent{
+			Name:           req.Name,
+			Workspace:      req.Workspace,
+			Tools:          req.Tools,
+			KnowledgeBases: req.KnowledgeBases,
+			Description:    req.Description,
+			Graph:          req.Graph,
+		}
 		if err := store.SaveAgent(agent); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -101,10 +117,21 @@ func deleteAgentHandler(store agentStore) http.HandlerFunc {
 	}
 }
 
+// startAgentRunRequest is the optional POST /api/agents/{name}/runs body. A
+// non-empty Workspace overrides the agent's own bound (test) workspace for
+// this run — the chat/debug UI's "run against a different test workspace"
+// picker.
+type startAgentRunRequest struct {
+	Workspace string `json:"workspace,omitempty"`
+}
+
 // startAgentRunHandler begins a new chat session against the named agent.
 func startAgentRunHandler(mgr agentManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		run, err := mgr.StartRun(r.PathValue("name"))
+		var req startAgentRunRequest
+		_ = json.NewDecoder(r.Body).Decode(&req) // body is optional
+
+		run, err := mgr.StartRun(r.PathValue("name"), req.Workspace)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -169,12 +196,15 @@ func stopAgentRunHandler(mgr agentManager) http.HandlerFunc {
 }
 
 // startDebugRunRequest is the POST /api/agents/{name}/debug request body.
-// The graph (and environment binding) come straight from the caller rather
-// than the agent's saved definition, so a session can debug the canvas's
-// current, possibly unsaved edits without round-tripping through Save.
+// The graph, workspace, and tool set come straight from the caller (the
+// live canvas, which may have unsaved edits) rather than the agent's saved
+// definition, so a session can debug work in progress without a Save
+// round-trip.
 type startDebugRunRequest struct {
-	Graph       registry.Graph `json:"graph"`
-	Environment string         `json:"environment,omitempty"`
+	Graph          registry.Graph `json:"graph"`
+	Workspace      string         `json:"workspace,omitempty"`
+	Tools          []string       `json:"tools,omitempty"`
+	KnowledgeBases []string       `json:"knowledgeBases,omitempty"` // accepted for parity; the engine resolves knowledge bases per node
 }
 
 // startDebugRunHandler begins a new paused debug session.
@@ -186,7 +216,7 @@ func startDebugRunHandler(mgr agentManager) http.HandlerFunc {
 			return
 		}
 
-		state, err := mgr.StartDebugRun(r.PathValue("name"), req.Graph, req.Environment)
+		state, err := mgr.StartDebugRun(r.PathValue("name"), req.Graph, req.Workspace, req.Tools)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

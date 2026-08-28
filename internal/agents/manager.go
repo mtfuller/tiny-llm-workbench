@@ -32,23 +32,18 @@ type agentStore interface {
 	ResolveModelRef(ref string) string
 }
 
-// environmentRunner is the subset of environments.Manager Manager needs:
-// launching/stopping the instance a run's Tool nodes execute in.
-type environmentRunner interface {
-	Launch(ctx context.Context, environmentName, instanceName string) (environments.Instance, error)
+// workspaceRunner is the subset of environments.Manager Manager needs:
+// launching/stopping the sandbox instance a run's Tool/Agent nodes execute
+// in (a fresh copy of the agent's test workspace).
+type workspaceRunner interface {
+	Launch(ctx context.Context, workspaceName, instanceName string) (environments.Instance, error)
 	Stop(ctx context.Context, instanceID string) error
 	RunToolSync(ctx context.Context, instanceID, command string) (string, error)
 }
 
-// environmentReader is the subset of registry.Registry Manager needs to
-// resolve a Tool node's named tool against its agent's bound Environment.
-type environmentReader interface {
-	GetEnvironment(name string) (registry.Environment, error)
-}
-
 // toolReader is the subset of registry.Registry Manager needs to resolve
-// the Tool catalog entries an Environment names by reference (Environment
-// itself only stores tool names, not full definitions — see registry.Tool).
+// the Tool catalog entries an agent's Tools set names by reference (the
+// agent stores tool names, not full definitions — see registry.Tool).
 type toolReader interface {
 	GetTool(name string) (registry.Tool, error)
 }
@@ -56,12 +51,12 @@ type toolReader interface {
 // Run is a chat session against one agent. History is in-memory only —
 // unlike Phase 1's training runs, losing it on a `tlw serve` restart isn't
 // costly enough to warrant persisting to disk. InstanceID is set for the
-// run's lifetime if the agent has an Environment configured, so its Tool
-// nodes all share one running container across turns. ownsInstance is
-// unexported (never serialized) — it's true only when StartRun itself
-// launched InstanceID; a run started via StartRunInInstance reuses an
-// instance some other caller (Evaluations) owns the lifecycle of, so
-// StopRun must not stop it out from under them.
+// run's lifetime if the agent (or the run's caller) named a workspace, so
+// its Tool/Agent nodes all share one running sandbox across turns.
+// ownsInstance is unexported (never serialized) — it's true only when
+// StartRun itself launched InstanceID; a run started via StartRunInInstance
+// reuses an instance some other caller (Evaluations, Deployments) owns the
+// lifecycle of, so StopRun must not stop it out from under them.
 type Run struct {
 	ID           string        `json:"id"`
 	AgentName    string        `json:"agentName"`
@@ -76,8 +71,7 @@ type Run struct {
 type Manager struct {
 	ctx       context.Context
 	agents    agentStore
-	envs      environmentRunner
-	envReader environmentReader
+	envs      workspaceRunner
 	toolStore toolReader
 	engine    *Engine
 	bus       *eventbus.Bus
@@ -91,16 +85,14 @@ type Manager struct {
 // a turn makes; SendMessage itself is synchronous, so in practice this just
 // needs to outlive individual HTTP requests, but using the server's
 // lifetime context (not a request context) keeps this consistent with
-// Phase 1/2's managers. envReader resolves an agent's bound Environment
-// (its list of attached tool names); toolStore resolves each of those names
-// against the global Tool catalog; kb resolves a knowledge node's named
-// KnowledgeBase (independent of any Environment).
-func NewManager(ctx context.Context, agentsReader agentStore, llm llmClient, envs environmentRunner, envReader environmentReader, toolStore toolReader, kb knowledgeReader, bus *eventbus.Bus) *Manager {
+// Phase 1/2's managers. toolStore resolves each name in an agent's Tools
+// set against the global Tool catalog; kb resolves a knowledge node's named
+// KnowledgeBase; envs launches the sandbox an agent's workspace runs in.
+func NewManager(ctx context.Context, agentsReader agentStore, llm llmClient, envs workspaceRunner, toolStore toolReader, kb knowledgeReader, bus *eventbus.Bus) *Manager {
 	return &Manager{
 		ctx:       ctx,
 		agents:    agentsReader,
 		envs:      envs,
-		envReader: envReader,
 		toolStore: toolStore,
 		engine:    NewEngine(llm, envs, kb),
 		bus:       bus,
@@ -109,11 +101,13 @@ func NewManager(ctx context.Context, agentsReader agentStore, llm llmClient, env
 	}
 }
 
-// StartRun begins a new chat session against the named agent. If the agent
-// has an Environment configured, a real instance of it is launched for the
-// run's duration — its Tool nodes execute in that same instance across
-// every turn of this run.
-func (m *Manager) StartRun(agentName string) (*Run, error) {
+// StartRun begins a new chat session against the named agent. The workspace
+// used is workspaceOverride when non-empty (the per-run test workspace the
+// chat/debug UI lets you pick), otherwise the agent's own bound Workspace.
+// If either names one, a fresh sandbox is launched for the run's duration —
+// the graph's Tool/Agent nodes execute in that same sandbox across every
+// turn of this run.
+func (m *Manager) StartRun(agentName, workspaceOverride string) (*Run, error) {
 	agent, err := m.agents.GetAgent(agentName)
 	if err != nil {
 		return nil, fmt.Errorf("look up agent %q: %w", agentName, err)
@@ -126,10 +120,14 @@ func (m *Manager) StartRun(agentName string) (*Run, error) {
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if agent.Environment != "" {
-		instance, err := m.envs.Launch(m.ctx, agent.Environment, fmt.Sprintf("agent-%s", run.ID))
+	workspace := workspaceOverride
+	if workspace == "" {
+		workspace = agent.Workspace
+	}
+	if workspace != "" {
+		instance, err := m.envs.Launch(m.ctx, workspace, fmt.Sprintf("agent-%s", run.ID))
 		if err != nil {
-			return nil, fmt.Errorf("launch environment %q: %w", agent.Environment, err)
+			return nil, fmt.Errorf("launch workspace %q: %w", workspace, err)
 		}
 		run.InstanceID = instance.ID
 		run.ownsInstance = true
@@ -214,7 +212,7 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 		return ChatMessage{}, fmt.Errorf("look up agent %q: %w", run.AgentName, err)
 	}
 
-	tools, err := m.resolveTools(agent.Environment)
+	tools, err := m.resolveTools(agent.Tools)
 	if err != nil {
 		return ChatMessage{}, err
 	}
@@ -261,27 +259,16 @@ func (m *Manager) resolveGraphModels(g registry.Graph) registry.Graph {
 	return registry.Graph{Nodes: nodes, Edges: g.Edges}
 }
 
-// resolveTools returns the real Tool catalog entries the named Environment
-// makes available (empty if environment is ""), — shared by SendMessage and
-// the step-by-step debugger (see debug.go) so both resolve tools identically.
-func (m *Manager) resolveTools(environment string) ([]registry.Tool, error) {
-	if environment == "" {
-		return nil, nil
-	}
-
-	env, err := m.envReader.GetEnvironment(environment)
-	if err != nil {
-		return nil, fmt.Errorf("look up environment %q: %w", environment, err)
-	}
-
+// resolveTools returns the real Tool catalog entries for the given names
+// (the agent's Tools set) — shared by SendMessage and the step-by-step
+// debugger (see debug.go) so both resolve tools identically. A name that's
+// since been deleted from the catalog is skipped here, not an error: the
+// engine's own "tool not found" reporting for a node that actually tries to
+// use it is the same graceful-degradation path.
+func (m *Manager) resolveTools(toolNames []string) ([]registry.Tool, error) {
 	var tools []registry.Tool
-	// A tool name the environment references but that's since been deleted
-	// from the catalog is skipped here, not an error — the engine's own
-	// "tool not found" reporting for a node that actually tries to use it
-	// is the same graceful-degradation path a tool removed from the
-	// environment already goes through.
-	for _, toolName := range env.Tools {
-		if tool, err := m.toolStore.GetTool(toolName); err == nil {
+	for _, name := range toolNames {
+		if tool, err := m.toolStore.GetTool(name); err == nil {
 			tools = append(tools, tool)
 		}
 	}

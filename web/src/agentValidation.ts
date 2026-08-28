@@ -1,4 +1,4 @@
-import type { AgentNodeData, Environment, KnowledgeBase, Tool } from './api'
+import type { AgentNodeData, KnowledgeBase, Tool, Workspace } from './api'
 
 // GraphIssue is one problem found in the agent graph. `error` blocks Run and
 // Debug; `warning` is advisory (surfaced, but the graph can still run).
@@ -24,12 +24,14 @@ interface GraphEdgeLike {
 interface ValidateArgs {
   nodes: GraphNodeLike[]
   edges: GraphEdgeLike[]
-  environment: string
-  // The tools actually available on the bound environment, already resolved
-  // against the catalog (AgentEditor computes this as `availableTools`).
-  availableTools: Tool[]
+  // The agent's access: a bound TEST workspace, and the pools a tool /
+  // knowledge / agent node picks from (names into the global catalogs).
+  workspace: string
+  agentTools: string[]
+  agentKnowledgeBases: string[]
+  toolCatalog: Tool[]
   knowledgeBases: KnowledgeBase[]
-  environments: Environment[]
+  workspaces: Workspace[]
 }
 
 const TEMPLATE_REF = /\{\{\s*([^{}]+?)\s*\}\}/g
@@ -72,14 +74,19 @@ function templateStringsFor(n: GraphNodeLike): string[] {
 export function validateGraph({
   nodes,
   edges,
-  environment,
-  availableTools,
+  workspace,
+  agentTools,
+  agentKnowledgeBases,
+  toolCatalog,
   knowledgeBases,
-  environments,
+  workspaces,
 }: ValidateArgs): GraphIssue[] {
   const issues: GraphIssue[] = []
   const add = (severity: GraphIssue['severity'], message: string, nodeId?: string) =>
     issues.push({ severity, message, nodeId })
+
+  const toolSet = new Set(agentTools)
+  const kbSet = new Set(agentKnowledgeBases)
 
   const byId = new Map(nodes.map((n) => [n.id, n]))
   const names = nodes.map((n) => n.data.name?.trim()).filter((s): s is string => !!s)
@@ -198,17 +205,21 @@ export function validateGraph({
       }
 
       case 'tool': {
-        if (!environment) {
-          add('error', `Tool node ${label(n)} needs the agent bound to an Environment (Agent settings).`, n.id)
+        if (!workspace) {
+          add('error', `Tool node ${label(n)} needs the agent to have a workspace (Agent settings).`, n.id)
           break
         }
         if (!d.toolName) {
           add('error', `Tool node ${label(n)} has no tool selected.`, n.id)
           break
         }
-        const tool = availableTools.find((t) => t.name === d.toolName)
+        if (!toolSet.has(d.toolName)) {
+          add('error', `Tool node ${label(n)}: tool "${d.toolName}" is not in the agent's tools (Agent settings).`, n.id)
+          break
+        }
+        const tool = toolCatalog.find((t) => t.name === d.toolName)
         if (!tool) {
-          add('error', `Tool node ${label(n)}: tool "${d.toolName}" is not on the "${environment}" environment.`, n.id)
+          add('error', `Tool node ${label(n)}: tool "${d.toolName}" no longer exists in the catalog.`, n.id)
           break
         }
         for (const p of tool.parameters) {
@@ -229,17 +240,15 @@ export function validateGraph({
         }
         const picked = d.agentTools ?? []
         const pickedKbs = d.agentKnowledgeBases ?? []
-        if (picked.length > 0 && !environment)
-          add('error', `Agent node ${label(n)} has tools selected but the agent has no Environment.`, n.id)
-        if (environment) {
-          for (const t of picked) {
-            if (!availableTools.some((a) => a.name === t))
-              add('error', `Agent node ${label(n)}: tool "${t}" is not on the "${environment}" environment.`, n.id)
-          }
+        if (picked.length > 0 && !workspace)
+          add('error', `Agent node ${label(n)} has tools selected but the agent has no workspace.`, n.id)
+        for (const t of picked) {
+          if (!toolSet.has(t))
+            add('error', `Agent node ${label(n)}: tool "${t}" is not in the agent's tools (Agent settings).`, n.id)
         }
         for (const kb of pickedKbs) {
-          if (!knowledgeBases.some((k) => k.name === kb))
-            add('error', `Agent node ${label(n)}: knowledge base "${kb}" no longer exists.`, n.id)
+          if (!kbSet.has(kb))
+            add('error', `Agent node ${label(n)}: knowledge base "${kb}" is not in the agent's set (Agent settings).`, n.id)
         }
         if (picked.length === 0 && pickedKbs.length === 0)
           add(
@@ -252,8 +261,12 @@ export function validateGraph({
 
       case 'knowledge':
         if (!d.knowledgeBaseName) add('error', `Knowledge node ${label(n)} has no knowledge base selected.`, n.id)
-        else if (!knowledgeBases.some((k) => k.name === d.knowledgeBaseName))
-          add('error', `Knowledge node ${label(n)}: knowledge base "${d.knowledgeBaseName}" no longer exists.`, n.id)
+        else if (!kbSet.has(d.knowledgeBaseName))
+          add(
+            'error',
+            `Knowledge node ${label(n)}: knowledge base "${d.knowledgeBaseName}" is not in the agent's set (Agent settings).`,
+            n.id,
+          )
         break
 
       case 'say':
@@ -282,9 +295,19 @@ export function validateGraph({
     }
   }
 
-  // Environment binding that no longer resolves.
-  if (environment && !environments.some((e) => e.name === environment))
-    add('error', `This agent is bound to Environment "${environment}", which no longer exists.`)
+  // Agent-level tool/KB references that no longer resolve against the catalogs.
+  for (const t of agentTools) {
+    if (!toolCatalog.some((c) => c.name === t))
+      add('warning', `The agent's tool set includes "${t}", which no longer exists in the catalog.`)
+  }
+  for (const kb of agentKnowledgeBases) {
+    if (!knowledgeBases.some((c) => c.name === kb))
+      add('warning', `The agent's knowledge set includes "${kb}", which no longer exists.`)
+  }
+
+  // Workspace binding that no longer resolves (or isn't a test workspace).
+  if (workspace && !workspaces.some((w) => w.name === workspace && w.type === 'test'))
+    add('error', `This agent is bound to workspace "${workspace}", which no longer exists or isn't a test workspace.`)
 
   // More than one Say node marked final — whichever runs last on the taken
   // path wins, which is easy to get wrong.

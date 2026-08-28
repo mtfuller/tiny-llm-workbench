@@ -98,7 +98,7 @@ func TestSaveAgent(t *testing.T) {
 	}
 }
 
-func TestSaveAgentIncludesEnvironment(t *testing.T) {
+func TestSaveAgentIncludesWorkspaceToolsAndKnowledge(t *testing.T) {
 	deps := testDeps()
 	store := &fakeAgentStore{}
 	deps.Agents = store
@@ -109,9 +109,11 @@ func TestSaveAgentIncludesEnvironment(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(saveAgentRequest{
-		Name:        "researcher",
-		Environment: "WebSearch",
-		Graph:       registry.Graph{Nodes: []registry.Node{{ID: "1", Type: "input"}}},
+		Name:           "researcher",
+		Workspace:      "scratch",
+		Tools:          []string{"web_search"},
+		KnowledgeBases: []string{"faq"},
+		Graph:          registry.Graph{Nodes: []registry.Node{{ID: "1", Type: "input"}}},
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
@@ -120,8 +122,12 @@ func TestSaveAgentIncludesEnvironment(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /api/agents status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if len(store.saved) != 1 || store.saved[0].Environment != "WebSearch" {
-		t.Errorf("store.saved = %+v, want Environment=WebSearch", store.saved)
+	if len(store.saved) != 1 {
+		t.Fatalf("store.saved = %+v, want 1 agent", store.saved)
+	}
+	got := store.saved[0]
+	if got.Workspace != "scratch" || len(got.Tools) != 1 || got.Tools[0] != "web_search" || len(got.KnowledgeBases) != 1 || got.KnowledgeBases[0] != "faq" {
+		t.Errorf("store.saved[0] = %+v, want workspace=scratch tools=[web_search] knowledgeBases=[faq]", got)
 	}
 }
 

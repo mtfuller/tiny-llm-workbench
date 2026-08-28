@@ -1384,6 +1384,45 @@ textarea {
   font-style: italic;
 }
 
+/* --- Debug activity in the right sidebar --- */
+
+.agent-activity-panel {
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow-y: auto;
+}
+
+/* In the sidebar the feed can use more vertical room than it did crammed
+   into the left panel. */
+.agent-activity-panel .agent-debug-feed {
+  max-height: none;
+}
+
+.agent-activity-panel .agent-debug-output {
+  max-height: 40vh;
+}
+
+.agent-debug-feed-tool .event-type {
+  color: var(--accent);
+}
+
+.agent-tool-call {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: color-mix(in srgb, var(--text) 5%, var(--surface));
+  border-radius: 5px;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.75rem;
+}
+
+.expandable-toggle {
+  margin-left: 0.4rem;
+  font-size: 0.72rem;
+}
+
 .palette-settings-button {
   display: flex;
   align-items: center;
@@ -3001,4 +3040,92 @@ textarea {
   text-align: right;
   color: color-mix(in srgb, var(--text) 60%, transparent);
   font-variant-numeric: tabular-nums;
+}
+
+/* --- Workspace type radio + directory picker --- */
+
+.radio-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.radio-group legend {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  padding: 0 0.3rem;
+}
+
+.radio-label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.55rem;
+  align-items: start;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.radio-label input {
+  margin-top: 0.2rem;
+}
+
+.input-with-button {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.input-with-button input {
+  flex: 1;
+}
+
+.dir-picker-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dir-picker-path {
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 0.35rem 0.5rem;
+  background: color-mix(in srgb, var(--text) 4%, var(--surface));
+  border-radius: 6px;
+}
+
+.dir-picker-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0.25rem;
+}
+
+.dir-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.dir-picker-row:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.run-workspace-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
 }

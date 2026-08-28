@@ -6,16 +6,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"os"
 	"testing"
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
-func TestListEnvironments(t *testing.T) {
+func TestListWorkspaces(t *testing.T) {
 	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{list: []registry.Environment{{Name: "WebSearch", Image: "curlimages/curl:8.10.1"}}}
+	deps.Workspaces = &fakeWorkspaceStore{list: []registry.Workspace{{Name: "scratch", Type: registry.WorkspaceTest, HostPath: "/x/files"}}}
 
 	handler, err := New(deps)
 	if err != nil {
@@ -23,218 +23,179 @@ func TestListEnvironments(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/environments", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/environments status = %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("GET /api/workspaces status = %d, want %d", rec.Code, http.StatusOK)
 	}
-
-	var got []registry.Environment
+	var got []registry.Workspace
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+		t.Fatalf("decode: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != "WebSearch" {
-		t.Errorf("GET /api/environments body = %+v, want a single WebSearch entry", got)
+	if len(got) != 1 || got[0].Name != "scratch" || got[0].Type != registry.WorkspaceTest {
+		t.Errorf("GET /api/workspaces = %+v, want a single test workspace", got)
 	}
 }
 
-func TestListEnvironmentsEmptyIsJSONArrayNotNull(t *testing.T) {
+func TestListWorkspacesEmptyIsJSONArrayNotNull(t *testing.T) {
+	handler, err := New(testDeps())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/workspaces", nil))
+	if body := rec.Body.String(); body != "[]\n" && body != "[]" {
+		t.Errorf("GET /api/workspaces body = %q, want an empty JSON array", body)
+	}
+}
+
+func TestCreateTestWorkspace(t *testing.T) {
 	deps := testDeps()
+	store := &fakeWorkspaceStore{}
+	deps.Workspaces = store
 
 	handler, err := New(deps)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
+	body, _ := json.Marshal(createWorkspaceRequest{Name: "scratch", Type: "test"})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/environments", nil)
-	handler.ServeHTTP(rec, req)
-
-	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
-		t.Errorf("GET /api/environments (empty) body = %q, want %q", got, "[]")
-	}
-}
-
-func TestListEnvironmentsNilMountsIsJSONArrayNotNull(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{list: []registry.Environment{{Name: "WebSearch", Image: "curlimages/curl:8.10.1"}}}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/environments", nil)
-	handler.ServeHTTP(rec, req)
-
-	if !strings.Contains(rec.Body.String(), `"mounts":[]`) || !strings.Contains(rec.Body.String(), `"tools":[]`) {
-		t.Errorf("GET /api/environments body = %q, want tools/mounts to serialize as []", rec.Body.String())
-	}
-}
-
-func TestCreateEnvironment(t *testing.T) {
-	deps := testDeps()
-	store := &fakeEnvironmentStore{}
-	deps.Environments = store
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(createEnvironmentRequest{Name: "my-env", Image: "alpine:3.20"})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/workspaces", bytes.NewReader(body)))
 
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST /api/environments status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+		t.Fatalf("POST /api/workspaces status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if len(store.saved) != 1 || store.saved[0].Name != "my-env" {
-		t.Errorf("store.saved = %+v, want [my-env]", store.saved)
+	if len(store.saved) != 1 || store.saved[0].Name != "scratch" || store.saved[0].Type != registry.WorkspaceTest {
+		t.Errorf("store.saved = %+v, want a single test workspace", store.saved)
 	}
 }
 
-func TestCreateEnvironmentRequiresImage(t *testing.T) {
+func TestCreateRealWorkspaceValidatesDirectory(t *testing.T) {
 	deps := testDeps()
+	store := &fakeWorkspaceStore{}
+	deps.Workspaces = store
+	handler, _ := New(deps)
 
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(createEnvironmentRequest{Name: "my-env"})
+	// A path that doesn't exist -> 400.
+	body, _ := json.Marshal(createWorkspaceRequest{Name: "proj", Type: "real", HostPath: "/definitely/not/here"})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/workspaces", bytes.NewReader(body)))
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("POST /api/environments (no image) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestDeleteEnvironment(t *testing.T) {
-	deps := testDeps()
-	store := &fakeEnvironmentStore{}
-	deps.Environments = store
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Errorf("POST real workspace with a bad path status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/environments/my-env", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("DELETE /api/environments/my-env status = %d, want %d", rec.Code, http.StatusNoContent)
-	}
-	if len(store.deleted) != 1 || store.deleted[0] != "my-env" {
-		t.Errorf("store.deleted = %v, want [my-env]", store.deleted)
-	}
-}
-
-func TestDeleteEnvironmentNotFound(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{deleteErr: errors.New("environment not found")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/environments/missing", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("DELETE /api/environments/missing status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
-}
-
-func TestLaunchEnvironment(t *testing.T) {
-	deps := testDeps()
-	mgr := &fakeEnvironmentManager{launchResult: environments.Instance{ID: "abc123", EnvironmentName: "WebSearch"}}
-	deps.Instances = mgr
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/WebSearch/launch", bytes.NewReader([]byte(`{}`)))
-	handler.ServeHTTP(rec, req)
-
+	// An existing directory -> created.
+	dir := t.TempDir()
+	body, _ = json.Marshal(createWorkspaceRequest{Name: "proj", Type: "real", HostPath: dir})
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/workspaces", bytes.NewReader(body)))
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST /api/environments/WebSearch/launch status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+		t.Fatalf("POST real workspace with a real dir status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if len(mgr.launched) != 1 || mgr.launched[0] != "WebSearch" {
-		t.Errorf("mgr.launched = %v, want [WebSearch]", mgr.launched)
+	if len(store.saved) != 1 || store.saved[0].Type != registry.WorkspaceReal || store.saved[0].HostPath != dir {
+		t.Errorf("store.saved = %+v, want a real workspace pointing at %q", store.saved, dir)
 	}
 }
 
-func TestLaunchEnvironmentError(t *testing.T) {
-	deps := testDeps()
-	deps.Instances = &fakeEnvironmentManager{launchErr: errors.New("docker daemon unreachable")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+func TestCreateWorkspaceRejectsUnknownType(t *testing.T) {
+	handler, _ := New(testDeps())
+	body, _ := json.Marshal(createWorkspaceRequest{Name: "x", Type: "hybrid"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/workspaces", bytes.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/workspaces (bad type) status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
+}
+
+func TestGetWorkspaceNotFound(t *testing.T) {
+	deps := testDeps()
+	deps.Workspaces = &fakeWorkspaceStore{getErr: errors.New("workspace not found")}
+	handler, _ := New(deps)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/WebSearch/launch", bytes.NewReader([]byte(`{}`)))
-	handler.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/workspaces/missing", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /api/workspaces/missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
 
+func TestDeleteWorkspace(t *testing.T) {
+	deps := testDeps()
+	store := &fakeWorkspaceStore{}
+	deps.Workspaces = store
+	handler, _ := New(deps)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/workspaces/scratch", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/workspaces/scratch status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "scratch" {
+		t.Errorf("store.deleted = %v, want [scratch]", store.deleted)
+	}
+}
+
+func TestLaunchWorkspace(t *testing.T) {
+	deps := testDeps()
+	mgr := &fakeWorkspaceManager{launchResult: environments.Instance{ID: "abc123", WorkspaceName: "scratch", WorkspacePath: "/runs/abc123"}}
+	deps.Instances = mgr
+	handler, _ := New(deps)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/workspaces/scratch/launch", nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/workspaces/scratch/launch status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	var got environments.Instance
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.ID != "abc123" || got.WorkspacePath != "/runs/abc123" {
+		t.Errorf("launch response = %+v, want the instance with its staged path", got)
+	}
+	if len(mgr.launched) != 1 || mgr.launched[0] != "scratch" {
+		t.Errorf("mgr.launched = %v, want [scratch]", mgr.launched)
+	}
+}
+
+func TestLaunchWorkspaceError(t *testing.T) {
+	deps := testDeps()
+	deps.Instances = &fakeWorkspaceManager{launchErr: errors.New("docker daemon unreachable")}
+	handler, _ := New(deps)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/workspaces/scratch/launch", nil))
 	if rec.Code != http.StatusBadGateway {
-		t.Errorf("POST /api/environments/WebSearch/launch (error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+		t.Errorf("POST .../launch (docker down) status = %d, want %d", rec.Code, http.StatusBadGateway)
 	}
 }
 
 func TestListInstances(t *testing.T) {
 	deps := testDeps()
-	deps.Instances = &fakeEnvironmentManager{listResult: []environments.Instance{{ID: "abc123", EnvironmentName: "WebSearch"}}}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	deps.Instances = &fakeWorkspaceManager{listResult: []environments.Instance{{ID: "abc123", WorkspaceName: "scratch"}}}
+	handler, _ := New(deps)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/environments/instances", nil)
-	handler.ServeHTTP(rec, req)
-
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/workspaces/instances", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/environments/instances status = %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("GET /api/workspaces/instances status = %d, want %d", rec.Code, http.StatusOK)
 	}
-
 	var got []environments.Instance
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != "abc123" {
-		t.Errorf("GET /api/environments/instances body = %+v, want a single abc123 entry", got)
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) != 1 || got[0].WorkspaceName != "scratch" {
+		t.Errorf("instances = %+v, want a single scratch instance", got)
 	}
 }
 
 func TestStopInstance(t *testing.T) {
 	deps := testDeps()
-	mgr := &fakeEnvironmentManager{}
+	mgr := &fakeWorkspaceManager{}
 	deps.Instances = mgr
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	handler, _ := New(deps)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/instances/abc123/stop", nil)
-	handler.ServeHTTP(rec, req)
-
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/workspaces/instances/abc123/stop", nil))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("POST .../stop status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
@@ -243,381 +204,66 @@ func TestStopInstance(t *testing.T) {
 	}
 }
 
-func TestStartExec(t *testing.T) {
+func TestStartExecAndGetExec(t *testing.T) {
 	deps := testDeps()
-	mgr := &fakeEnvironmentManager{execResult: &environments.Exec{ID: "exec-1", Status: environments.ExecRunning}}
-	deps.Instances = mgr
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	mgr := &fakeWorkspaceManager{
+		execResult:    &environments.Exec{ID: "exec-1", Status: environments.ExecRunning},
+		getExecResult: &environments.Exec{ID: "exec-1", Status: environments.ExecDone},
+		getExecOK:     true,
 	}
+	deps.Instances = mgr
+	handler, _ := New(deps)
 
-	body, _ := json.Marshal(startExecRequest{Command: "echo hi"})
+	body, _ := json.Marshal(startExecRequest{Command: "ls -la"})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/instances/abc123/exec", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/workspaces/instances/abc123/exec", bytes.NewReader(body)))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("POST .../exec status = %d, want %d, body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
 	}
-	if len(mgr.execCalls) != 1 || mgr.execCalls[0] != "echo hi" {
-		t.Errorf("mgr.execCalls = %v, want [echo hi]", mgr.execCalls)
-	}
-}
-
-func TestGetExec(t *testing.T) {
-	deps := testDeps()
-	deps.Instances = &fakeEnvironmentManager{getExecResult: &environments.Exec{ID: "exec-1", Status: environments.ExecDone}, getExecOK: true}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	if len(mgr.execCalls) != 1 || mgr.execCalls[0] != "ls -la" {
+		t.Errorf("mgr.execCalls = %v, want [ls -la]", mgr.execCalls)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/environments/instances/abc123/execs/exec-1", nil)
-	handler.ServeHTTP(rec, req)
-
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/workspaces/instances/abc123/execs/exec-1", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET .../execs/exec-1 status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 
-func TestGetExecNotFound(t *testing.T) {
-	deps := testDeps()
-	deps.Instances = &fakeEnvironmentManager{getExecOK: false}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+func TestListDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(root+"/alpha", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root+"/beta", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(root+"/file.txt", []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
+	handler, _ := New(testDeps())
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/environments/instances/abc123/execs/missing", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET .../execs/missing status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
-}
-
-func TestGetEnvironment(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{get: registry.Environment{Name: "my-env", Image: "alpine:3.20"}}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/environments/my-env", nil)
-	handler.ServeHTTP(rec, req)
-
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/fs/list?path="+root, nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/environments/my-env status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("GET /api/fs/list status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-
-	var got registry.Environment
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+	var got listDirectoryResponse
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Path != root || got.Parent == "" {
+		t.Errorf("listing = %+v, want path=%q and a non-empty parent", got, root)
 	}
-	if got.Name != "my-env" {
-		t.Errorf("GET /api/environments/my-env body = %+v, want Name = my-env", got)
-	}
-}
-
-func TestGetEnvironmentNotFound(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{getErr: errors.New("environment not found")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/environments/missing", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET /api/environments/missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	if len(got.Entries) != 2 || got.Entries[0].Name != "alpha" || got.Entries[1].Name != "beta" {
+		t.Errorf("entries = %+v, want [alpha, beta] (directories only, sorted)", got.Entries)
 	}
 }
 
-func TestUpdateEnvironmentConfig(t *testing.T) {
-	deps := testDeps()
-	store := &fakeEnvironmentStore{get: registry.Environment{Name: "my-env", Image: "alpine:3.21"}}
-	deps.Environments = store
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(updateEnvironmentConfigRequest{
-		Image:  "alpine:3.21",
-		Mounts: []registry.Mount{{HostPath: "/host", ContainerPath: "/container", ReadOnly: true}},
-	})
+func TestListDirectoryRejectsRelativePath(t *testing.T) {
+	handler, _ := New(testDeps())
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/environments/my-env/config", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("PUT .../config status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if len(store.updatedConfigs) != 1 || store.updatedConfigs[0].Image != "alpine:3.21" {
-		t.Errorf("store.updatedConfigs = %+v, want a single alpine:3.21 entry", store.updatedConfigs)
-	}
-}
-
-func TestUpdateEnvironmentConfigRequiresImage(t *testing.T) {
-	deps := testDeps()
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(updateEnvironmentConfigRequest{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/environments/my-env/config", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/fs/list?path=relative/dir", nil))
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("PUT .../config (no image) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestUpdateEnvironmentConfigError(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{updateConfigErr: errors.New("environment not found")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(updateEnvironmentConfigRequest{Image: "alpine:3.21"})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/environments/missing/config", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("PUT .../config (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestAttachTool(t *testing.T) {
-	deps := testDeps()
-	store := &fakeEnvironmentStore{get: registry.Environment{Name: "my-env", Tools: []string{"read_file"}}}
-	deps.Environments = store
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(attachToolRequest{ToolName: "read_file"})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/my-env/tools", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST .../tools status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
-	}
-	if len(store.attached) != 1 || store.attached[0] != "read_file" {
-		t.Errorf("store.attached = %v, want [read_file]", store.attached)
-	}
-}
-
-func TestAttachToolRequiresToolName(t *testing.T) {
-	deps := testDeps()
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(attachToolRequest{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/my-env/tools", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("POST .../tools (empty) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestAttachToolError(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{attachErr: errors.New("tool not found in the catalog")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(attachToolRequest{ToolName: "does-not-exist"})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/my-env/tools", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("POST .../tools (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestDetachTool(t *testing.T) {
-	deps := testDeps()
-	store := &fakeEnvironmentStore{}
-	deps.Environments = store
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/environments/my-env/tools/read_file", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("DELETE .../tools/read_file status = %d, want %d", rec.Code, http.StatusNoContent)
-	}
-	if len(store.detached) != 1 || store.detached[0] != "read_file" {
-		t.Errorf("store.detached = %v, want [read_file]", store.detached)
-	}
-}
-
-func TestDetachToolError(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{detachErr: errors.New("not attached")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/environments/my-env/tools/read_file", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("DELETE .../tools/read_file (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestTryTool(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{get: registry.Environment{Name: "my-env", Tools: []string{"read_file"}}}
-	deps.Tools = &fakeToolStore{get: registry.Tool{
-		Name:       "read_file",
-		Command:    "cat {{path}}",
-		Parameters: []registry.ToolParameter{{Name: "path", Type: registry.ToolParamString, Required: true}},
-	}}
-	mgr := &fakeEnvironmentManager{tryToolResult: &environments.Exec{ID: "exec-1", Status: environments.ExecRunning}}
-	deps.Instances = mgr
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(tryToolRequest{InstanceID: "abc123", Args: map[string]string{"path": "/etc/hosts"}})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/my-env/tools/read_file/try", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST .../tools/read_file/try status = %d, want %d, body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
-	}
-	if len(mgr.tryToolCalls) != 1 || mgr.tryToolCalls[0] != "abc123" {
-		t.Errorf("mgr.tryToolCalls = %v, want [abc123]", mgr.tryToolCalls)
-	}
-}
-
-func TestTryToolRequiresInstanceID(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{get: registry.Environment{Name: "my-env", Tools: []string{"read_file"}}}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(tryToolRequest{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/my-env/tools/read_file/try", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("POST .../tools/read_file/try (no instanceId) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestTryToolNotAttached(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{get: registry.Environment{Name: "my-env", Tools: []string{"write_file"}}}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(tryToolRequest{InstanceID: "abc123"})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/my-env/tools/read_file/try", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("POST .../tools/read_file/try (not attached) status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestTryToolCatalogEntryMissing(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{get: registry.Environment{Name: "my-env", Tools: []string{"read_file"}}}
-	deps.Tools = &fakeToolStore{getErr: errors.New("not found")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(tryToolRequest{InstanceID: "abc123"})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/my-env/tools/read_file/try", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("POST .../tools/read_file/try (deleted from catalog) status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
-}
-
-func TestTryToolValidationError(t *testing.T) {
-	deps := testDeps()
-	deps.Environments = &fakeEnvironmentStore{get: registry.Environment{Name: "my-env", Tools: []string{"read_file"}}}
-	deps.Tools = &fakeToolStore{get: registry.Tool{
-		Name:       "read_file",
-		Command:    "cat {{path}}",
-		Parameters: []registry.ToolParameter{{Name: "path", Type: registry.ToolParamString, Required: true}},
-	}}
-	mgr := &fakeEnvironmentManager{tryToolErr: errors.New(`missing required parameter "path"`)}
-	deps.Instances = mgr
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(tryToolRequest{InstanceID: "abc123", Args: map[string]string{}})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/environments/my-env/tools/read_file/try", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("POST .../tools/read_file/try (validation error) status = %d, want %d", rec.Code, http.StatusBadRequest)
+		t.Errorf("GET /api/fs/list?path=relative status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }

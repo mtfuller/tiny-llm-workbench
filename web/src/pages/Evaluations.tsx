@@ -1,7 +1,7 @@
 import { Plus, Trash2 } from 'lucide-react'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { deleteEvaluation, listEnvironments, listEvaluations, saveEvaluation, type Environment, type Evaluation } from '../api'
+import { deleteEvaluation, listEvaluations, saveEvaluation, type Evaluation } from '../api'
 import IconButton from '../IconButton'
 import ListPanel from '../ListPanel'
 import Modal from '../Modal'
@@ -18,22 +18,15 @@ function Evaluations() {
     deletedToast: (e) => `Deleted evaluation "${e.name}"`,
   })
 
-  const [environments, setEnvironments] = useState<Environment[]>([])
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
-  useEffect(() => {
-    listEnvironments()
-      .then(setEnvironments)
-      .catch(() => setEnvironments([]))
-  }, [])
-
-  const handleCreate = async (name: string, environment: string) => {
+  const handleCreate = async (name: string) => {
     setCreating(true)
     setCreateError(null)
     try {
-      await saveEvaluation({ name, environment: environment || undefined })
+      await saveEvaluation({ name })
       setCreateOpen(false)
       // A brand-new evaluation has no test cases yet — send the user
       // straight to its detail page to add some.
@@ -51,9 +44,9 @@ function Evaluations() {
         <h2>Evaluations</h2>
       </div>
       <p className="hint">
-        Define test cases — a prompt, optional setup commands to prepare a scenario, and assertions on
-        the reply and the environment's resulting state — and run them against a set of agents to see how
-        well they actually complete real software-dev, knowledge-work, or office-work tasks.
+        Define test cases — a prompt, an optional test workspace to seed a starting scenario, and
+        assertions on the reply and the sandbox's resulting state — and run them against a set of agents
+        to see how well they actually complete real software-dev, knowledge-work, or office-work tasks.
       </p>
 
       <ListPanel
@@ -67,7 +60,7 @@ function Evaluations() {
         hasMatches={list.filtered.length > 0}
         emptyMessage="No evaluations yet. Create one above."
         noMatchMessage="No evaluations match your search."
-        skeletonColumns={5}
+        skeletonColumns={4}
         page={list.page}
         pageCount={list.pageCount}
         setPage={list.setPage}
@@ -79,7 +72,6 @@ function Evaluations() {
           <thead>
             <tr>
               <th>Name</th>
-              <th>Environment</th>
               <th>Version</th>
               <th>Test cases</th>
               <th></th>
@@ -91,7 +83,6 @@ function Evaluations() {
                 <td>
                   <Link to={`/evaluations/${encodeURIComponent(evaluation.name)}`}>{evaluation.name}</Link>
                 </td>
-                <td>{evaluation.environment || '—'}</td>
                 <td>v{evaluation.version}</td>
                 <td>{evaluation.testCases.length}</td>
                 <td className="row-actions">
@@ -110,7 +101,6 @@ function Evaluations() {
 
       {createOpen && (
         <CreateEvaluationModal
-          environments={environments}
           creating={creating}
           error={createError}
           onCreate={handleCreate}
@@ -122,21 +112,19 @@ function Evaluations() {
 }
 
 interface CreateEvaluationModalProps {
-  environments: Environment[]
   creating: boolean
   error: string | null
-  onCreate: (name: string, environment: string) => void
+  onCreate: (name: string) => void
   onClose: () => void
 }
 
-function CreateEvaluationModal({ environments, creating, error, onCreate, onClose }: CreateEvaluationModalProps) {
+function CreateEvaluationModal({ creating, error, onCreate, onClose }: CreateEvaluationModalProps) {
   const [name, setName] = useState('')
-  const [environment, setEnvironment] = useState('')
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
-    onCreate(name.trim(), environment)
+    onCreate(name.trim())
   }
 
   return (
@@ -145,20 +133,6 @@ function CreateEvaluationModal({ environments, creating, error, onCreate, onClos
         <label>
           Name
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-        </label>
-        <label>
-          Environment (optional)
-          <select value={environment} onChange={(e) => setEnvironment(e.target.value)}>
-            <option value="">None</option>
-            {environments.map((env) => (
-              <option key={env.name} value={env.name}>
-                {env.name}
-              </option>
-            ))}
-          </select>
-          <span className="field-hint">
-            Needed only if a test case's setup/verify commands should run against a real environment.
-          </span>
         </label>
         <p className="hint">You'll add test cases on the evaluation's own page next.</p>
 

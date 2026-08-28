@@ -8,16 +8,14 @@ import {
   getEvaluation,
   getEvaluationResults,
   listAgents,
-  listEnvironments,
   listEvaluationRuns,
   listEvaluationVersions,
+  listWorkspaces,
   publishEvaluationVersion,
   startEvaluationRun,
-  updateEvaluationConfig,
   updateEvaluationTestCase,
   type Agent,
   type Assertion,
-  type Environment,
   type Evaluation,
   type EvaluationRun,
   type EvaluationRunResult,
@@ -25,6 +23,7 @@ import {
   type TestCase,
   type TestCaseResult,
   type VerifyStep,
+  type Workspace,
 } from '../api'
 import { useConfirm } from '../ConfirmDialog'
 import { useEventStream } from '../eventStream'
@@ -62,7 +61,7 @@ type SortKey = 'agentName' | 'evaluationVersion' | MetricSortKey
 type SortDir = 'asc' | 'desc'
 type TestCaseModalState = { mode: 'add' } | { mode: 'edit'; index: number } | null
 
-const emptyTestCase: TestCase = { id: '', prompt: '', setup: [], assertions: [], verifyCommands: [], tags: [] }
+const emptyTestCase: TestCase = { id: '', prompt: '', workspace: '', assertions: [], verifyCommands: [], tags: [] }
 
 function sortResults(results: EvaluationRunResult[], key: SortKey, dir: SortDir): EvaluationRunResult[] {
   const sorted = [...results].sort((a, b) => {
@@ -88,16 +87,13 @@ function EvaluationDetail() {
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null)
   const [versions, setVersions] = useState<EvaluationVersion[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
-  const [environments, setEnvironments] = useState<Environment[]>([])
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [results, setResults] = useState<EvaluationRunResult[] | null>(null)
   const [runs, setRuns] = useState<EvaluationRun[]>([])
   const [runModalOpen, setRunModalOpen] = useState(false)
   const [starting, setStarting] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const [envDraft, setEnvDraft] = useState('')
-  const [savingEnv, setSavingEnv] = useState(false)
 
   const [testCaseSearch, setTestCaseSearch] = useState('')
   const [resultSearch, setResultSearch] = useState('')
@@ -118,10 +114,7 @@ function EvaluationDetail() {
 
   const reloadEvaluation = useCallback(() => {
     getEvaluation(name)
-      .then((e) => {
-        setEvaluation(e)
-        setEnvDraft(e.environment ?? '')
-      })
+      .then(setEvaluation)
       .catch((err: Error) => setError(err.message))
   }, [name])
 
@@ -144,9 +137,9 @@ function EvaluationDetail() {
     listAgents()
       .then(setAgents)
       .catch(() => setAgents([]))
-    listEnvironments()
-      .then(setEnvironments)
-      .catch(() => setEnvironments([]))
+    listWorkspaces()
+      .then(setWorkspaces)
+      .catch(() => setWorkspaces([]))
     listEvaluationRuns()
       .then((all) => setRuns(all.filter((r) => r.evaluationName === name)))
       .catch(() => setRuns([]))
@@ -206,23 +199,9 @@ function EvaluationDetail() {
     }
   }
 
-  const handleSaveEnvironment = async () => {
-    setSavingEnv(true)
-    setError(null)
-    try {
-      await updateEvaluationConfig(name, envDraft)
-      showToast('Saved configuration')
-      reloadEvaluation()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setSavingEnv(false)
-    }
-  }
-
   const handleSaveTestCaseModal = async (tc: {
     prompt: string
-    setup?: string[]
+    workspace?: string
     assertions: Assertion[]
     verifyCommands?: VerifyStep[]
     tags?: string[]
@@ -361,29 +340,10 @@ function EvaluationDetail() {
             <dt>Created</dt>
             <dd>{new Date(evaluation.createdAt).toLocaleString()}</dd>
           </dl>
-          <div className="stacked-form">
-            <label>
-              Environment (optional)
-              <select value={envDraft} onChange={(e) => setEnvDraft(e.target.value)}>
-                <option value="">None</option>
-                {environments.map((env) => (
-                  <option key={env.name} value={env.name}>
-                    {env.name}
-                  </option>
-                ))}
-              </select>
-              <span className="field-hint">
-                For setup/verify commands to mean anything, the agents you run against here should
-                themselves be bound to this same environment — setup/verify act on the exact instance an
-                agent's own Tool nodes use during its turn.
-              </span>
-            </label>
-            <div className="row-actions confirm-actions">
-              <button type="button" disabled={savingEnv || envDraft === (evaluation.environment ?? '')} onClick={handleSaveEnvironment}>
-                {savingEnv ? 'Saving…' : 'Save configuration'}
-              </button>
-            </div>
-          </div>
+          <p className="hint">
+            Each test case can name a <strong>test workspace</strong> — a fresh copy of its files becomes
+            the sandbox that case's agent turn and verify commands share.
+          </p>
           {testCases.length > 0 && draftDiffersFromLatest && (
             <p className="hint">
               {latestVersion
@@ -455,7 +415,7 @@ function EvaluationDetail() {
                 <thead>
                   <tr>
                     <th>Prompt</th>
-                    <th>Setup</th>
+                    <th>Workspace</th>
                     <th>Assertions</th>
                     <th>Verify</th>
                     <th>Tags</th>
@@ -466,7 +426,7 @@ function EvaluationDetail() {
                   {testCasePageItems.map(({ tc, index }) => (
                     <tr key={tc.id}>
                       <td className="cell-truncate">{tc.prompt}</td>
-                      <td>{tc.setup && tc.setup.length > 0 ? `${tc.setup.length} command${tc.setup.length === 1 ? '' : 's'}` : '—'}</td>
+                      <td>{tc.workspace || '—'}</td>
                       <td>
                         {tc.assertions.map((a, i) => (
                           <div key={i}>
@@ -643,6 +603,7 @@ function EvaluationDetail() {
           title={testCaseModal.mode === 'add' ? 'Add test case' : 'Edit test case'}
           initial={testCaseModal.mode === 'edit' ? testCases[testCaseModal.index] : emptyTestCase}
           allTags={allTags}
+          testWorkspaces={workspaces.filter((w) => w.type === 'test')}
           saving={testCaseModalSaving}
           error={testCaseModalError}
           onSave={handleSaveTestCaseModal}
@@ -754,19 +715,20 @@ interface TestCaseModalProps {
   title: string
   initial: TestCase
   allTags: string[]
+  testWorkspaces: Workspace[]
   saving: boolean
   error: string | null
-  onSave: (tc: { prompt: string; setup?: string[]; assertions: Assertion[]; verifyCommands?: VerifyStep[]; tags?: string[] }) => void
+  onSave: (tc: { prompt: string; workspace?: string; assertions: Assertion[]; verifyCommands?: VerifyStep[]; tags?: string[] }) => void
   onClose: () => void
 }
 
-// TestCaseModal is the single prompt/setup/assertions/verify/tags editing
+// TestCaseModal is the single prompt/workspace/assertions/verify/tags editing
 // surface used for both adding a new test case and editing an existing
 // one — mirrors BenchmarkDetail's TestCaseModal, plus the two
-// Evaluations-only fields (Setup, Verify steps) this feature adds.
-function TestCaseModal({ title, initial, allTags, saving, error, onSave, onClose }: TestCaseModalProps) {
+// Evaluations-only fields (test workspace, verify steps) this feature adds.
+function TestCaseModal({ title, initial, allTags, testWorkspaces, saving, error, onSave, onClose }: TestCaseModalProps) {
   const [prompt, setPrompt] = useState(initial.prompt)
-  const [setupText, setSetupText] = useState((initial.setup ?? []).join('\n'))
+  const [workspace, setWorkspace] = useState(initial.workspace ?? '')
   const [assertions, setAssertions] = useState<DraftAssertion[]>(toDraftAssertions(initial.assertions))
   const [verifySteps, setVerifySteps] = useState<DraftVerifyStep[]>(toDraftVerifySteps(initial.verifyCommands))
   const [tags, setTags] = useState<string[]>(initial.tags ?? [])
@@ -774,13 +736,9 @@ function TestCaseModal({ title, initial, allTags, saving, error, onSave, onClose
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     if (!prompt.trim()) return
-    const setup = setupText
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
     onSave({
       prompt: prompt.trim(),
-      setup: setup.length > 0 ? setup : undefined,
+      workspace: workspace || undefined,
       assertions: toPayloadAssertions(assertions),
       verifyCommands: (() => {
         const steps = toPayloadVerifySteps(verifySteps)
@@ -799,23 +757,25 @@ function TestCaseModal({ title, initial, allTags, saving, error, onSave, onClose
         </label>
 
         <label>
-          Setup (optional)
-          <textarea
-            rows={3}
-            placeholder={'One shell command per line, run in order before the agent\'s turn\ne.g. mkdir -p /repo\ngit init /repo'}
-            value={setupText}
-            onChange={(e) => setSetupText(e.target.value)}
-          />
+          Test workspace (optional)
+          <select value={workspace} onChange={(e) => setWorkspace(e.target.value)}>
+            <option value="">None</option>
+            {testWorkspaces.map((w) => (
+              <option key={w.name} value={w.name}>
+                {w.name}
+              </option>
+            ))}
+          </select>
           <span className="field-hint">
-            Runs in the evaluation's Environment before the agent's turn, to prepare a realistic starting
-            scenario. Requires an Environment configured above.
+            A fresh copy of this workspace's files becomes the sandbox the agent acts in and the verify
+            commands check. Required if this test case has verify steps.
           </span>
         </label>
 
         <div className="inspector-section-label">Assertions (checked against the agent's reply)</div>
         <AssertionFields assertions={assertions} onChange={setAssertions} />
 
-        <div className="inspector-section-label">Verify steps (optional — checked against the environment afterward)</div>
+        <div className="inspector-section-label">Verify steps (optional — checked against the sandbox afterward)</div>
         <VerifyStepFields steps={verifySteps} onChange={setVerifySteps} />
 
         <label>
@@ -859,9 +819,8 @@ function GenerateTestCasesModal({ generating, error, onGenerate, onClose }: Gene
     <Modal title="Generate test cases" onClose={onClose}>
       <p className="hint">
         Give one example prompt and the assertions it should satisfy — a local model will generate
-        differently phrased prompts that test the same thing, keeping the same assertions (and any
-        setup/verify commands are left for you to add per generated test case, since a model can't be
-        trusted to write correct shell commands).
+        differently phrased prompts that test the same thing, keeping the same assertions (the test
+        workspace and any verify commands are left for you to add per generated test case).
       </p>
       <form className="stacked-form" onSubmit={handleSubmit}>
         <label>

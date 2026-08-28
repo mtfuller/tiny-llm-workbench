@@ -106,12 +106,6 @@ export interface TrainingRun {
   error?: string
 }
 
-export interface Mount {
-  hostPath: string
-  containerPath: string
-  readOnly?: boolean
-}
-
 export type ToolParameterType = 'string' | 'number' | 'boolean'
 
 export interface ToolParameter {
@@ -122,9 +116,9 @@ export interface ToolParameter {
 }
 
 // Tool is a global catalog entry (its own top-level resource, like Models/
-// Datasets) — an Environment names which catalog tools it makes available
-// (Environment.tools: string[]) rather than embedding a copy, so editing a
-// tool here changes it everywhere it's attached.
+// Datasets) — an Agent names which catalog tools it can use (Agent.tools:
+// string[]) rather than embedding a copy, so editing a tool here changes it
+// everywhere it's referenced.
 export interface Tool {
   name: string
   description?: string
@@ -134,12 +128,16 @@ export interface Tool {
   createdAt: string
 }
 
-export interface Environment {
+export type WorkspaceType = 'test' | 'real'
+
+// Workspace is just a directory plus a test/real flag. A test workspace's
+// files/ folder (under ~/.tlw) is COPIED into a fresh sandbox per run; a
+// real workspace's directory is bind-mounted so an agent's changes persist.
+// hostPath is where those files live on the user's machine.
+export interface Workspace {
   name: string
-  image: string
-  tools: string[]
-  mounts: Mount[]
-  prebuilt: boolean
+  type: WorkspaceType
+  hostPath: string
   createdAt: string
 }
 
@@ -163,7 +161,9 @@ export interface KnowledgeBase {
 export interface Instance {
   id: string
   name: string
-  environmentName: string
+  workspaceName: string
+  workspaceType?: WorkspaceType
+  workspacePath?: string
   image: string
   state: string
   createdAt: string
@@ -261,8 +261,8 @@ export interface AgentNodeData extends Record<string, unknown> {
   stateOp?: 'set' | 'append'
   stateValue?: string
 
-  // Tool nodes: toolName names a Tool declared on the agent's bound
-  // Environment (see registry.Tool); each toolArgs value may itself contain
+  // Tool nodes: toolName names a Tool from the agent's Tools set (see
+  // registry.Tool); each toolArgs value may itself contain
   // {{nodeName}}/{{nodeName.field}} template references.
   toolName?: string
   toolArgs?: Record<string, string>
@@ -277,11 +277,10 @@ export interface AgentNodeData extends Record<string, unknown> {
   sayFinal?: boolean
 
   // Agent nodes: a bounded LLM tool-calling loop. agentInstructions is the
-  // templated goal/system text; agentTools is a subset of the bound
-  // Environment's tool names the loop may call; agentKnowledgeBases names
-  // KnowledgeBases the loop may search via a built-in "knowledge_search"
-  // pseudo-tool (needs no Environment); agentMaxIterations caps the internal
-  // loop.
+  // templated goal/system text; agentTools is a subset of the agent's Tools
+  // set the loop may call; agentKnowledgeBases names KnowledgeBases the loop
+  // may search via a built-in "knowledge_search" pseudo-tool;
+  // agentMaxIterations caps the internal loop.
   agentInstructions?: string
   agentModel?: string
   agentMaxIterations?: number
@@ -292,8 +291,8 @@ export interface AgentNodeData extends Record<string, unknown> {
   // fails; on success {{thisNode.property}} is available downstream.
   agentOutputSchema?: string
 
-  // Knowledge nodes: knowledgeBaseName names a KnowledgeBase (independent of
-  // any Environment) to search; knowledgeQuery is templated query text,
+  // Knowledge nodes: knowledgeBaseName names a KnowledgeBase from the
+  // agent's set to search; knowledgeQuery is templated query text,
   // falling back to the previous node's raw output when empty, same
   // convention as promptTemplate/matchTemplate. knowledgeMaxResults caps how
   // many matching records flow downstream (0 / unset = all).
@@ -323,7 +322,11 @@ export interface AgentGraph {
 
 export interface Agent {
   name: string
-  environment?: string
+  // workspace is a TEST workspace name; tools/knowledgeBases are the pools a
+  // tool/knowledge/agent node picks from (names into the global catalogs).
+  workspace?: string
+  tools: string[]
+  knowledgeBases: string[]
   description?: string
   graph: AgentGraph
   createdAt: string
@@ -351,8 +354,12 @@ export interface AgentStepEvent {
   nodeType: string
   output: string
   // "start" = the node just began long-running work (an LLM call); output is
-  // a short status like "calling model X". Absent for a normal result event.
-  phase?: 'start'
+  // a short status like "calling model X".
+  // "tool"  = a tool node / an agent node's ReAct loop just invoked a tool;
+  //           `command` holds the exact rendered shell command that ran.
+  // Absent for a normal result event.
+  phase?: 'start' | 'tool'
+  command?: string
 }
 
 // AgentMessageEvent is a user-facing message a "say" node emitted mid-turn,
@@ -398,10 +405,10 @@ export interface Assertion {
   threshold?: number
 }
 
-// VerifyStep is a shell command run in a test case's launched Environment
-// instance after the agent's turn finishes, checked with the same
-// assertion types used against a reply — Evaluations only. The command's
-// exit code is deliberately not itself pass/fail; only its assertions are.
+// VerifyStep is a shell command run in a test case's sandbox after the
+// agent's turn finishes, checked with the same assertion types used against
+// a reply — Evaluations only. The command's exit code is deliberately not
+// itself pass/fail; only its assertions are.
 export interface VerifyStep {
   command: string
   assertions: Assertion[]
@@ -410,12 +417,12 @@ export interface VerifyStep {
 export interface TestCase {
   id: string
   prompt: string
-  // setup and verifyCommands are Evaluations-only (a Benchmark's test
-  // cases leave them unset — there's no Environment to prepare or verify):
-  // setup runs in sequence in the test case's launched instance before the
-  // agent's turn; verifyCommands run after, checking the environment's
-  // resulting state.
-  setup?: string[]
+  // workspace and verifyCommands are Evaluations-only (a Benchmark's test
+  // cases leave them unset — there's no sandbox to prepare or verify):
+  // workspace names a TEST workspace whose files are copied into a fresh
+  // sandbox for the case; verifyCommands run after the agent's turn,
+  // checking the sandbox's resulting state.
+  workspace?: string
   assertions: Assertion[]
   verifyCommands?: VerifyStep[]
   // tags are only used by Benchmarks/Evaluations, for filtering the test
@@ -449,17 +456,12 @@ export interface TestCaseResult {
   error?: string
 }
 
-// Evaluation mirrors Benchmark's draft/published-version split exactly
-// (see Benchmark below) — Environment is the one difference: a live
-// setting (like an Agent's own Environment binding), not versioned
-// content, since it's not part of "what does this test suite check." For
-// a test case's setup/verifyCommands to mean anything, the agent(s) this
-// evaluation runs against should themselves be bound to this same
-// Environment — setup/verify run in the exact instance the agent's own
-// Tool nodes act in during its turn, not a second, separate container.
+// Evaluation mirrors Benchmark's draft/published-version split exactly (see
+// Benchmark below). There is no evaluation-level environment binding — each
+// test case names its own TEST workspace, and a fresh copy of it is the
+// sandbox that case's agent turn and verifyCommands share.
 export interface Evaluation {
   name: string
-  environment?: string
   version: number
   testCases: TestCase[]
   createdAt: string
@@ -496,7 +498,6 @@ export interface EvaluationRun {
   evaluationName: string
   evaluationVersion: number
   agentNames: string[]
-  environmentName?: string
   status: EvalRunStatus
   results: EvaluationRunResult[]
   startedAt: string
@@ -756,62 +757,67 @@ export function cancelTrainingRun(id: string): Promise<void> {
   return fetch(`/api/training/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).then(noContent)
 }
 
-export function listEnvironments(): Promise<Environment[]> {
-  return fetch('/api/environments').then(json<Environment[]>)
+export function listWorkspaces(): Promise<Workspace[]> {
+  return fetch('/api/workspaces').then(json<Workspace[]>)
 }
 
-export function createEnvironment(env: { name: string; image: string; mounts: Mount[] }): Promise<Environment> {
-  return fetch('/api/environments', {
+export function createWorkspace(ws: { name: string; type: WorkspaceType; hostPath?: string }): Promise<Workspace> {
+  return fetch('/api/workspaces', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(env),
-  }).then(json<Environment>)
+    body: JSON.stringify(ws),
+  }).then(json<Workspace>)
 }
 
-export function getEnvironment(name: string): Promise<Environment> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}`).then(json<Environment>)
+export function getWorkspace(name: string): Promise<Workspace> {
+  return fetch(`/api/workspaces/${encodeURIComponent(name)}`).then(json<Workspace>)
 }
 
-export function deleteEnvironment(name: string): Promise<void> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+export function deleteWorkspace(name: string): Promise<void> {
+  return fetch(`/api/workspaces/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
 }
 
-export function updateEnvironmentConfig(name: string, image: string, mounts: Mount[]): Promise<Environment> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}/config`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image, mounts }),
-  }).then(json<Environment>)
+// --- Filesystem picker (real-workspace directory browser) ---
+
+export interface FsEntry {
+  name: string
+  path: string
+  isDir: boolean
 }
 
-// attachTool references an existing catalog tool from an environment — a
-// live reference, not a copy: editing the tool afterward (via updateTool)
-// changes it everywhere it's attached.
-export function attachTool(name: string, toolName: string): Promise<Environment> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}/tools`, {
+export interface DirectoryListing {
+  path: string
+  parent: string
+  entries: FsEntry[]
+}
+
+export function listDirectory(path?: string): Promise<DirectoryListing> {
+  const q = path ? `?path=${encodeURIComponent(path)}` : ''
+  return fetch(`/api/fs/list${q}`).then(json<DirectoryListing>)
+}
+
+// --- Tool catalog (global) ---
+
+export interface TryToolResult {
+  exec: Exec
+  instanceId: string
+  workspacePath?: string
+}
+
+// tryCatalogTool runs a catalog tool inside a test workspace's sandbox — the
+// Tools page's Playground. Pass instanceId to reuse an already-launched
+// sandbox; otherwise a fresh one is launched from workspaceName and its id
+// is returned for subsequent runs.
+export function tryCatalogTool(
+  toolName: string,
+  body: { workspaceName?: string; instanceId?: string; args: Record<string, string> },
+): Promise<TryToolResult> {
+  return fetch(`/api/tools/${encodeURIComponent(toolName)}/try`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ toolName }),
-  }).then(json<Environment>)
+    body: JSON.stringify(body),
+  }).then(json<TryToolResult>)
 }
-
-// detachTool removes a tool reference from an environment without touching
-// the catalog entry itself.
-export function detachTool(name: string, toolName: string): Promise<void> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${encodeURIComponent(toolName)}`, { method: 'DELETE' }).then(
-    noContent,
-  )
-}
-
-export function tryTool(name: string, toolName: string, instanceId: string, args: Record<string, string>): Promise<Exec> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}/tools/${encodeURIComponent(toolName)}/try`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ instanceId, args }),
-  }).then(json<Exec>)
-}
-
-// --- Tool catalog (global, independent of any Environment) ---
 
 export function listTools(): Promise<Tool[]> {
   return fetch('/api/tools').then(json<Tool[]>)
@@ -893,8 +899,8 @@ export function deleteKnowledgeRecord(name: string, index: number): Promise<void
   return fetch(`/api/knowledge/${encodeURIComponent(name)}/records/${index}`, { method: 'DELETE' }).then(noContent)
 }
 
-export function launchEnvironment(name: string, instanceName?: string): Promise<Instance> {
-  return fetch(`/api/environments/${encodeURIComponent(name)}/launch`, {
+export function launchWorkspace(name: string, instanceName?: string): Promise<Instance> {
+  return fetch(`/api/workspaces/${encodeURIComponent(name)}/launch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ instanceName }),
@@ -902,11 +908,11 @@ export function launchEnvironment(name: string, instanceName?: string): Promise<
 }
 
 export function listInstances(): Promise<Instance[]> {
-  return fetch('/api/environments/instances').then(json<Instance[]>)
+  return fetch('/api/workspaces/instances').then(json<Instance[]>)
 }
 
 export async function stopInstance(id: string): Promise<void> {
-  const res = await fetch(`/api/environments/instances/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+  const res = await fetch(`/api/workspaces/instances/${encodeURIComponent(id)}/stop`, { method: 'POST' })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
     throw new Error(body.error ?? `request failed with status ${res.status}`)
@@ -914,7 +920,7 @@ export async function stopInstance(id: string): Promise<void> {
 }
 
 export function startExec(instanceId: string, command: string): Promise<Exec> {
-  return fetch(`/api/environments/instances/${encodeURIComponent(instanceId)}/exec`, {
+  return fetch(`/api/workspaces/instances/${encodeURIComponent(instanceId)}/exec`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ command }),
@@ -922,7 +928,7 @@ export function startExec(instanceId: string, command: string): Promise<Exec> {
 }
 
 export function getExec(instanceId: string, execId: string): Promise<Exec> {
-  return fetch(`/api/environments/instances/${encodeURIComponent(instanceId)}/execs/${encodeURIComponent(execId)}`).then(
+  return fetch(`/api/workspaces/instances/${encodeURIComponent(instanceId)}/execs/${encodeURIComponent(execId)}`).then(
     json<Exec>,
   )
 }
@@ -931,11 +937,18 @@ export function listAgents(): Promise<Agent[]> {
   return fetch('/api/agents').then(json<Agent[]>)
 }
 
-export function saveAgent(name: string, graph: AgentGraph, environment?: string, description?: string): Promise<Agent> {
+export interface AgentAccess {
+  workspace?: string
+  tools: string[]
+  knowledgeBases: string[]
+  description?: string
+}
+
+export function saveAgent(name: string, graph: AgentGraph, access: AgentAccess): Promise<Agent> {
   return fetch('/api/agents', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, graph, environment, description }),
+    body: JSON.stringify({ name, graph, ...access }),
   }).then(json<Agent>)
 }
 
@@ -947,8 +960,14 @@ export function deleteAgent(name: string): Promise<void> {
   return fetch(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
 }
 
-export function startAgentRun(name: string): Promise<AgentRun> {
-  return fetch(`/api/agents/${encodeURIComponent(name)}/runs`, { method: 'POST' }).then(json<AgentRun>)
+// startAgentRun begins a chat session. workspace, when given, overrides the
+// agent's own bound (test) workspace for this run.
+export function startAgentRun(name: string, workspace?: string): Promise<AgentRun> {
+  return fetch(`/api/agents/${encodeURIComponent(name)}/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace }),
+  }).then(json<AgentRun>)
 }
 
 export function sendAgentMessage(runId: string, message: string): Promise<ChatMessage> {
@@ -967,14 +986,18 @@ export function getAgentRun(id: string): Promise<AgentRun> {
   return fetch(`/api/agents/runs/${encodeURIComponent(id)}`).then(json<AgentRun>)
 }
 
-// startAgentDebugRun begins a paused debug session. graph/environment come
-// straight from the canvas's current (possibly unsaved) state rather than
-// the agent's saved definition, so debugging never requires saving first.
-export function startAgentDebugRun(name: string, graph: AgentGraph, environment?: string): Promise<DebugState> {
+// startAgentDebugRun begins a paused debug session. graph/workspace/tools
+// come straight from the canvas's current (possibly unsaved) state rather
+// than the agent's saved definition, so debugging never requires saving.
+export function startAgentDebugRun(
+  name: string,
+  graph: AgentGraph,
+  opts?: { workspace?: string; tools?: string[]; knowledgeBases?: string[] },
+): Promise<DebugState> {
   return fetch(`/api/agents/${encodeURIComponent(name)}/debug`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ graph, environment }),
+    body: JSON.stringify({ graph, ...opts }),
   }).then(json<DebugState>)
 }
 
@@ -1014,7 +1037,7 @@ export function listEvaluations(): Promise<Evaluation[]> {
 // saveEvaluation creates a new evaluation with no test cases at all —
 // they're added afterward from its detail page, the same way a Benchmark
 // starts empty.
-export function saveEvaluation(evaluation: { name: string; environment?: string }): Promise<Evaluation> {
+export function saveEvaluation(evaluation: { name: string }): Promise<Evaluation> {
   return fetch('/api/evaluations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1028,16 +1051,6 @@ export function getEvaluation(name: string): Promise<Evaluation> {
 
 export function deleteEvaluation(name: string): Promise<void> {
   return fetch(`/api/evaluations/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
-}
-
-// updateEvaluationConfig updates only the Environment binding — a live
-// setting, not versioned content, so this never touches test cases.
-export function updateEvaluationConfig(name: string, environment: string): Promise<Evaluation> {
-  return fetch(`/api/evaluations/${encodeURIComponent(name)}/config`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ environment }),
-  }).then(json<Evaluation>)
 }
 
 export function startEvaluationRun(name: string, version: number, agentNames: string[]): Promise<EvaluationRun> {
@@ -1185,4 +1198,70 @@ export interface SystemInfo {
 
 export function getSystemInfo(): Promise<SystemInfo> {
   return fetch('/api/system').then(json<SystemInfo>)
+}
+
+// --- Deployments (agent + real workspace, live chat for real work) ---
+
+export interface Deployment {
+  name: string
+  agentName: string
+  workspaceName: string
+  createdAt: string
+}
+
+// DeploymentSession is a running deployment: a launched sandbox (with the
+// real workspace bind-mounted) plus an agent chat run against it.
+// In-memory only — lost on a `tlw serve` restart.
+export interface DeploymentSession {
+  id: string
+  deploymentName: string
+  agentName: string
+  workspaceName: string
+  instanceId: string
+  workspacePath: string
+  // runId is the underlying agent run — filter the agent.step /
+  // agent.message SSE stream by it to show live progress.
+  runId: string
+  messages: ChatMessage[]
+  startedAt: string
+}
+
+export function listDeployments(): Promise<Deployment[]> {
+  return fetch('/api/deployments').then(json<Deployment[]>)
+}
+
+export function createDeployment(d: { name: string; agentName: string; workspaceName: string }): Promise<Deployment> {
+  return fetch('/api/deployments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(d),
+  }).then(json<Deployment>)
+}
+
+export function getDeployment(name: string): Promise<Deployment> {
+  return fetch(`/api/deployments/${encodeURIComponent(name)}`).then(json<Deployment>)
+}
+
+export function deleteDeployment(name: string): Promise<void> {
+  return fetch(`/api/deployments/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(noContent)
+}
+
+export function startDeployment(name: string): Promise<DeploymentSession> {
+  return fetch(`/api/deployments/${encodeURIComponent(name)}/start`, { method: 'POST' }).then(json<DeploymentSession>)
+}
+
+export function sendDeploymentMessage(sessionId: string, message: string): Promise<ChatMessage> {
+  return fetch(`/api/deployments/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  }).then(json<ChatMessage>)
+}
+
+export function getDeploymentSession(sessionId: string): Promise<DeploymentSession> {
+  return fetch(`/api/deployments/sessions/${encodeURIComponent(sessionId)}`).then(json<DeploymentSession>)
+}
+
+export function stopDeploymentSession(sessionId: string): Promise<void> {
+  return fetch(`/api/deployments/sessions/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' }).then(() => undefined)
 }

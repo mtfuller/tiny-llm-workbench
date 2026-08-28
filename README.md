@@ -198,6 +198,19 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         container: an agent's Tool node wrote a value into a file inside a container a test case's setup
         step had just prepared, and the test case's verify command read that exact value back out of the
         same container, with its assertion correctly passing.
+  - [x] **Workspaces / agent access model / Deployments.** "Environments" became **Workspaces**: a
+        workspace is just a directory plus a `test`/`real` flag (no image, no attached tools). A *test*
+        workspace lives under `~/.tlw` and is **copied** into a fresh sandbox per agent run / debug
+        session / evaluation test case, so edits never persist — for experimenting and evaluations. A
+        *real* workspace points at a folder on your machine (chosen with an in-app directory picker) and
+        is bind-mounted so an agent's changes persist. The sandbox image is a single fixed default. An
+        Agent now carries its own access set — one test workspace + a set of tools + a set of knowledge
+        bases (the pools its tool/knowledge/agent nodes pick from) — configured in an "Agent settings"
+        modal. An evaluation test case selects a test workspace instead of a setup script; each run gets
+        its own copy. New **Deployments** page (under Automation): bind an agent to a *real* workspace,
+        start it, and chat with the agent to do actual, persisting work. The Environments-page Playground
+        moved to the **Tools** page: pick a tool + a test workspace and run it in a sandbox to see the
+        effects.
 
 Check off items as they land — this list is the source of truth for "what's actually built" and future
 agent sessions rely on it being current. See [CLAUDE.md](CLAUDE.md) for how it's kept in sync.

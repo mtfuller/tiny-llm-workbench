@@ -8,6 +8,7 @@ import {
   Database,
   PanelLeftClose,
   PanelLeftOpen,
+  Rocket,
   Settings,
   Trophy,
   Wrench,
@@ -42,9 +43,9 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    label: 'Environments',
+    label: 'Environment',
     items: [
-      { to: '/environments', label: 'Environments', icon: Container },
+      { to: '/workspaces', label: 'Workspaces', icon: Container },
       { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
       { to: '/tools', label: 'Tools', icon: Wrench },
     ],
@@ -54,6 +55,7 @@ const navSections: NavSection[] = [
     items: [
       { to: '/agents', label: 'Agents', icon: Workflow },
       { to: '/evaluations', label: 'Evaluations', icon: ClipboardCheck },
+      { to: '/deployments', label: 'Deployments', icon: Rocket },
     ],
   },
 ]

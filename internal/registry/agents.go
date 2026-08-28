@@ -30,10 +30,10 @@ type Position struct {
 // exposes {{Name.iteration}} (its 1-based visit count this turn). A node
 // with no Name isn't referenceable at all, just unused metadata.
 //
-// Tool nodes name a real Tool (see environments.go) declared on the agent's
-// bound Environment, rather than embedding a raw shell command — the same
-// structured-parameter-list schema the Environments workspace's Playground
-// tab already uses to run a tool. Every value in ToolArgs (and
+// Tool nodes name a real Tool (see tools.go) from the agent's Tools set,
+// rather than embedding a raw shell command — the same
+// structured-parameter-list schema the Tools page's Playground already uses
+// to run a tool. Every value in ToolArgs (and
 // PromptTemplate, MatchTemplate, StateValue, AgentInstructions) may itself
 // contain {{...}} template references, resolved against every node that
 // already ran earlier in the same turn — not just the immediately
@@ -84,7 +84,7 @@ type NodeData struct {
 	StateOp    string `json:"stateOp,omitempty"`
 	StateValue string `json:"stateValue,omitempty"`
 
-	ToolName string            `json:"toolName,omitempty"` // tool nodes: name of a Tool on the agent's Environment
+	ToolName string            `json:"toolName,omitempty"` // tool nodes: name of a Tool from the agent's Tools set
 	ToolArgs map[string]string `json:"toolArgs,omitempty"` // tool nodes: templated value per parameter name
 
 	// say nodes: emit a user-facing message mid-turn. SayTemplate is the
@@ -99,8 +99,8 @@ type NodeData struct {
 	SayFinal    bool   `json:"sayFinal,omitempty"`
 
 	// agent nodes: a bounded LLM tool-calling loop — the model is asked to
-	// emit ACTION/ARGS (to call one of AgentTools, a subset of the bound
-	// Environment's tools; or the built-in "knowledge_search" when
+	// emit ACTION/ARGS (to call one of AgentTools, a subset of the agent's
+	// Tools set; or the built-in "knowledge_search" when
 	// AgentKnowledgeBases is non-empty) or FINAL (to answer).
 	// AgentInstructions is the templated goal/system text; AgentMaxIterations
 	// caps the internal loop (engine default when <= 0). AgentOutputSchema,
@@ -172,18 +172,23 @@ type Graph struct {
 	Edges []Edge `json:"edges"`
 }
 
-// Agent is a registry-tracked agent workflow definition. Environment is
-// optional — it's the Environment (see environments.go) a run launches an
-// instance of for the run's duration, giving the graph's Tool nodes
-// something to execute commands in. An agent with no Tool nodes doesn't
-// need one. Description is free-text, shown on the list/detail pages —
-// purely informational, no behavior depends on it.
+// Agent is a registry-tracked agent workflow definition plus the access it
+// has: one Workspace (a TEST workspace — see workspaces.go — copied into a
+// fresh sandbox per run, giving the graph's Tool/Agent nodes a filesystem to
+// act in), a set of Tools (the pool a Tool node or Agent node picks from —
+// names into the global catalog, see tools.go), and a set of KnowledgeBases
+// (the pool a Knowledge node or Agent node picks from). Workspace is
+// optional (an agent with no Tool/Agent nodes needs none); Tools and
+// KnowledgeBases default to empty. Description is free-text, shown on the
+// list/detail pages — purely informational.
 type Agent struct {
-	Name        string    `json:"name"`
-	Environment string    `json:"environment,omitempty"`
-	Description string    `json:"description,omitempty"`
-	Graph       Graph     `json:"graph"`
-	CreatedAt   time.Time `json:"createdAt"`
+	Name           string    `json:"name"`
+	Workspace      string    `json:"workspace,omitempty"`
+	Tools          []string  `json:"tools"`
+	KnowledgeBases []string  `json:"knowledgeBases"`
+	Description    string    `json:"description,omitempty"`
+	Graph          Graph     `json:"graph"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 func (r *Registry) agentDir(name string) string {

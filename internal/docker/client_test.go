@@ -69,8 +69,8 @@ func TestLaunchExecStopLifecycle(t *testing.T) {
 	for _, m := range managed {
 		if m.ID == containerID {
 			found = true
-			if m.EnvironmentName != "test-env" {
-				t.Errorf("ListManaged() entry EnvironmentName = %q, want %q", m.EnvironmentName, "test-env")
+			if m.WorkspaceName != "test-env" {
+				t.Errorf("ListManaged() entry WorkspaceName = %q, want %q", m.WorkspaceName, "test-env")
 			}
 			if m.State != "running" {
 				t.Errorf("ListManaged() entry State = %q, want %q", m.State, "running")

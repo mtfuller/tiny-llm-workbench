@@ -1,12 +1,13 @@
 // Package evaluations runs an Evaluation's published test cases against a
 // set of agents: for each agent, each test case runs as a fresh chat turn
-// inside its own freshly-launched Environment instance (when the evaluation
-// names one) — Setup commands prepare the scenario before the turn, the
-// agent's own Tool nodes act in that same instance during the turn, and
-// VerifyCommands check the instance's resulting state afterward, alongside
-// the usual assertions against the agent's reply. This is the deliberately
-// richer counterpart to internal/benchmarks, which sends a bare prompt
-// straight to a model with no agent, environment, or scenario lifecycle.
+// inside its own freshly-launched sandbox — a fresh copy of the test case's
+// TEST workspace (TestCase.Workspace), so the starting scenario is real
+// files. The agent's own Tool/Agent nodes act in that same sandbox during
+// the turn, and VerifyCommands check its resulting state afterward,
+// alongside the usual assertions against the agent's reply. This is the
+// deliberately richer counterpart to internal/benchmarks, which sends a bare
+// prompt straight to a model with no agent, workspace, or scenario
+// lifecycle.
 package evaluations
 
 import (
@@ -58,8 +59,8 @@ type VerifyStepResult struct {
 
 // TestCaseResult is one test case's outcome for one agent. InstanceID is
 // the (test-case-scoped, freshly launched and already-stopped-by-the-time
-// this is returned) Environment instance Setup/the agent's turn/Verify all
-// shared, present only if the evaluation names an Environment.
+// this is returned) sandbox instance the agent's turn and Verify commands
+// shared, present only if the test case names a workspace.
 type TestCaseResult struct {
 	TestCaseID    string              `json:"testCaseId"`
 	Prompt        string              `json:"prompt"`
@@ -107,7 +108,6 @@ type Run struct {
 	EvaluationName    string      `json:"evaluationName"`
 	EvaluationVersion int         `json:"evaluationVersion"`
 	AgentNames        []string    `json:"agentNames"`
-	EnvironmentName   string      `json:"environmentName,omitempty"`
 	Status            Status      `json:"status"`
 	Results           []RunResult `json:"results"`
 	StartedAt         time.Time   `json:"startedAt"`
@@ -117,8 +117,8 @@ type Run struct {
 
 // evaluationReader is the subset of registry.Registry Manager needs — a run
 // always targets one immutable, published EvaluationVersion (never the
-// evaluation's live draft test cases), but Environment is read from the
-// live Evaluation since it's a setting, not versioned content.
+// evaluation's live draft test cases). GetEvaluation is kept only to resolve
+// the run to a real evaluation up front.
 type evaluationReader interface {
 	GetEvaluation(name string) (registry.Evaluation, error)
 	GetEvaluationVersion(name string, version int) (registry.EvaluationVersion, error)
@@ -128,17 +128,17 @@ type evaluationReader interface {
 // case as a fresh chat turn, optionally inside an instance Manager itself
 // already launched (see runTestCase).
 type agentRunner interface {
-	StartRun(agentName string) (*agents.Run, error)
+	StartRun(agentName, workspaceOverride string) (*agents.Run, error)
 	StartRunInInstance(agentName, instanceID string) (*agents.Run, error)
 	SendMessage(runID, message string) (agents.ChatMessage, error)
 	StopRun(runID string) error
 }
 
-// environmentLauncher is the subset of environments.Manager Manager needs
-// to launch/stop a test case's own Environment instance and run its
-// Setup/VerifyCommands in it.
-type environmentLauncher interface {
-	Launch(ctx context.Context, environmentName, instanceName string) (environments.Instance, error)
+// workspaceLauncher is the subset of environments.Manager Manager needs to
+// launch/stop a test case's own sandbox (a fresh copy of its TEST
+// workspace) and run its VerifyCommands in it.
+type workspaceLauncher interface {
+	Launch(ctx context.Context, workspaceName, instanceName string) (environments.Instance, error)
 	Stop(ctx context.Context, instanceID string) error
 	RunToolSync(ctx context.Context, instanceID, command string) (string, error)
 }
@@ -149,7 +149,7 @@ type Manager struct {
 	ctx         context.Context
 	evaluations evaluationReader
 	agentRunner agentRunner
-	envs        environmentLauncher
+	envs        workspaceLauncher
 	bus         *eventbus.Bus
 	resultsDir  string
 
@@ -167,7 +167,7 @@ type Manager struct {
 // after StartRun's caller gets its response. resultsDir is where each
 // evaluation's durable results are persisted, one JSON file per evaluation
 // name.
-func NewManager(ctx context.Context, evaluationsReader evaluationReader, agentRunner agentRunner, envs environmentLauncher, bus *eventbus.Bus, resultsDir string) *Manager {
+func NewManager(ctx context.Context, evaluationsReader evaluationReader, agentRunner agentRunner, envs workspaceLauncher, bus *eventbus.Bus, resultsDir string) *Manager {
 	return &Manager{
 		ctx:         ctx,
 		evaluations: evaluationsReader,
@@ -189,8 +189,7 @@ func (m *Manager) StartRun(evaluationName string, version int, agentNames []stri
 		return nil, errors.New("at least one agent is required")
 	}
 
-	eval, err := m.evaluations.GetEvaluation(evaluationName)
-	if err != nil {
+	if _, err := m.evaluations.GetEvaluation(evaluationName); err != nil {
 		return nil, fmt.Errorf("look up evaluation %q: %w", evaluationName, err)
 	}
 
@@ -207,7 +206,6 @@ func (m *Manager) StartRun(evaluationName string, version int, agentNames []stri
 		EvaluationName:    evaluationName,
 		EvaluationVersion: ver.Version,
 		AgentNames:        agentNames,
-		EnvironmentName:   eval.Environment,
 		Status:            StatusRunning,
 		Results:           []RunResult{},
 		StartedAt:         time.Now().UTC(),
@@ -219,7 +217,7 @@ func (m *Manager) StartRun(evaluationName string, version int, agentNames []stri
 
 	m.publishStatus(run)
 
-	go m.run(run, eval, ver)
+	go m.run(run, ver)
 
 	return run, nil
 }
@@ -257,7 +255,7 @@ func (m *Manager) ListResults(evaluationName string) ([]RunResult, error) {
 	return m.loadResults(evaluationName)
 }
 
-func (m *Manager) run(run *Run, eval registry.Evaluation, ver registry.EvaluationVersion) {
+func (m *Manager) run(run *Run, ver registry.EvaluationVersion) {
 	for _, agentName := range run.AgentNames {
 		result := RunResult{
 			EvaluationVersion: ver.Version,
@@ -267,7 +265,7 @@ func (m *Manager) run(run *Run, eval registry.Evaluation, ver registry.Evaluatio
 		}
 
 		for _, tc := range ver.TestCases {
-			tcResult := m.runTestCase(agentName, eval.Environment, tc)
+			tcResult := m.runTestCase(agentName, tc)
 			result.Results = append(result.Results, tcResult)
 			result.Total++
 			if tcResult.Passed {
@@ -298,30 +296,28 @@ func (m *Manager) run(run *Run, eval registry.Evaluation, ver registry.Evaluatio
 	m.publishStatus(run)
 }
 
-// runTestCase runs one test case against one agent. If the evaluation
-// names an Environment, a fresh instance is launched just for this
-// (agent, test case) pair — isolating one scenario's file/state changes
-// from every other test case and agent — Setup commands run in it before
-// the agent's turn, the agent's own StartRunInInstance turn acts in that
-// exact same instance (so its Tool nodes see whatever Setup prepared), and
-// VerifyCommands run in it afterward, before it's torn down. A test case
-// that declares Setup/VerifyCommands but whose evaluation has no
-// Environment configured fails immediately with a clear error rather than
-// silently skipping them.
-func (m *Manager) runTestCase(agentName, environmentName string, tc registry.TestCase) TestCaseResult {
+// runTestCase runs one test case against one agent. If the test case names a
+// TEST workspace, a fresh sandbox (a fresh copy of that workspace's files)
+// is launched just for this (agent, test case) pair — isolating one
+// scenario's file changes from every other test case and agent. The agent's
+// own StartRunInInstance turn acts in that exact same sandbox (so its
+// Tool/Agent nodes see the workspace's starting files), and VerifyCommands
+// run in it afterward, before it's torn down. A test case that declares
+// VerifyCommands but no workspace fails immediately with a clear error
+// rather than silently skipping them.
+func (m *Manager) runTestCase(agentName string, tc registry.TestCase) TestCaseResult {
 	result := TestCaseResult{TestCaseID: tc.ID, Prompt: tc.Prompt, Assertions: []assertions.Result{}, VerifyResults: []VerifyStepResult{}}
 
-	needsEnvironment := len(tc.Setup) > 0 || len(tc.VerifyCommands) > 0
-	if needsEnvironment && environmentName == "" {
-		result.Error = "test case declares setup/verification commands but this evaluation has no Environment configured"
+	if len(tc.VerifyCommands) > 0 && tc.Workspace == "" {
+		result.Error = "test case declares verification commands but selects no workspace"
 		return result
 	}
 
 	var instanceID string
-	if environmentName != "" {
-		instance, err := m.envs.Launch(m.ctx, environmentName, fmt.Sprintf("eval-%s", newRunID()))
+	if tc.Workspace != "" {
+		instance, err := m.envs.Launch(m.ctx, tc.Workspace, fmt.Sprintf("eval-%s", newRunID()))
 		if err != nil {
-			result.Error = fmt.Sprintf("launch environment %q: %v", environmentName, err)
+			result.Error = fmt.Sprintf("launch workspace %q: %v", tc.Workspace, err)
 			return result
 		}
 		instanceID = instance.ID
@@ -334,19 +330,12 @@ func (m *Manager) runTestCase(agentName, environmentName string, tc registry.Tes
 		}()
 	}
 
-	for _, cmd := range tc.Setup {
-		if _, err := m.envs.RunToolSync(m.ctx, instanceID, cmd); err != nil {
-			result.Error = fmt.Sprintf("setup command %q failed: %v", cmd, err)
-			return result
-		}
-	}
-
 	var agentRun *agents.Run
 	var err error
 	if instanceID != "" {
 		agentRun, err = m.agentRunner.StartRunInInstance(agentName, instanceID)
 	} else {
-		agentRun, err = m.agentRunner.StartRun(agentName)
+		agentRun, err = m.agentRunner.StartRun(agentName, "")
 	}
 	if err != nil {
 		result.Error = fmt.Sprintf("start agent run: %v", err)

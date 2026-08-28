@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
@@ -228,5 +229,67 @@ func TestDeleteToolNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("DELETE /api/tools/missing status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestTryCatalogToolLaunchesTestWorkspaceSandbox(t *testing.T) {
+	deps := testDeps()
+	deps.Tools = &fakeToolStore{get: registry.Tool{Name: "read_file", Command: "cat {{path}}"}}
+	deps.Workspaces = &fakeWorkspaceStore{get: registry.Workspace{Name: "scratch", Type: registry.WorkspaceTest, HostPath: "/x/files"}}
+	mgr := &fakeWorkspaceManager{
+		launchResult:  environments.Instance{ID: "c1", WorkspacePath: "/runs/c1"},
+		tryToolResult: &environments.Exec{ID: "exec-1", Status: environments.ExecRunning},
+	}
+	deps.Instances = mgr
+	handler, _ := New(deps)
+
+	body, _ := json.Marshal(tryCatalogToolRequest{WorkspaceName: "scratch", Args: map[string]string{"path": "/workspace/notes.txt"}})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tools/read_file/try", bytes.NewReader(body)))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/tools/read_file/try status = %d, want %d, body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	var got tryCatalogToolResponse
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.InstanceID != "c1" || got.WorkspacePath != "/runs/c1" {
+		t.Errorf("response = %+v, want the launched sandbox id + staged path", got)
+	}
+	if len(mgr.launched) != 1 || mgr.launched[0] != "scratch" || len(mgr.tryToolCalls) != 1 {
+		t.Errorf("mgr launched=%v tryTool=%v, want one of each", mgr.launched, mgr.tryToolCalls)
+	}
+}
+
+func TestTryCatalogToolReusesGivenInstance(t *testing.T) {
+	deps := testDeps()
+	deps.Tools = &fakeToolStore{get: registry.Tool{Name: "read_file", Command: "cat {{path}}"}}
+	mgr := &fakeWorkspaceManager{tryToolResult: &environments.Exec{ID: "exec-2", Status: environments.ExecRunning}}
+	deps.Instances = mgr
+	handler, _ := New(deps)
+
+	body, _ := json.Marshal(tryCatalogToolRequest{InstanceID: "c1", Args: map[string]string{"path": "/workspace/notes.txt"}})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tools/read_file/try", bytes.NewReader(body)))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST .../try status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if len(mgr.launched) != 0 {
+		t.Errorf("mgr.launched = %v, want none — an instanceId was supplied", mgr.launched)
+	}
+}
+
+func TestTryCatalogToolRejectsRealWorkspace(t *testing.T) {
+	deps := testDeps()
+	deps.Tools = &fakeToolStore{get: registry.Tool{Name: "read_file", Command: "cat {{path}}"}}
+	deps.Workspaces = &fakeWorkspaceStore{get: registry.Workspace{Name: "proj", Type: registry.WorkspaceReal, HostPath: "/home/me/proj"}}
+	deps.Instances = &fakeWorkspaceManager{}
+	handler, _ := New(deps)
+
+	body, _ := json.Marshal(tryCatalogToolRequest{WorkspaceName: "proj"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tools/read_file/try", bytes.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../try (real workspace) status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }

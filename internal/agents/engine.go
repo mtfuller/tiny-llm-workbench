@@ -2,7 +2,7 @@
 // turns: starting at the graph's input node, calling a local LLM for each
 // prompt node, branching at condition nodes (two-way) and switch nodes
 // (N-way) on a deterministic match, running a
-// named Tool from the agent's bound Environment for each tool node,
+// named Tool from the agent's Tools set for each tool node,
 // deterministically keyword-searching a named KnowledgeBase for each
 // knowledge node (independent of any Environment — see internal/knowledge),
 // emitting a user-facing progress or final message for each "say" node, and
@@ -82,17 +82,24 @@ type ChatMessage struct {
 }
 
 // StepEvent reports something a node did while executing a turn, for the Run
-// view's live event log and the step-by-step debugger. Phase distinguishes a
-// node *starting* long-running work ("start" — Output is a short status like
-// "calling model X", emitted so the debugger isn't a black box while a
-// prompt/agent node waits on the model) from the normal case (Phase "",
-// Output is what the node itself produced). A "start" event is stream-only —
-// it never becomes the debugger's LastStep.
+// view's live event log and the step-by-step debugger. Phase distinguishes:
+//   - "start"  — a node is beginning long-running work (Output is a short
+//     status like "calling model X"), so the debugger isn't a black box
+//     while a prompt/agent node waits on the model;
+//   - "tool"   — a tool node / an agent node's ReAct loop just invoked a
+//     tool; Command holds the exact rendered shell command that ran (or the
+//     built-in knowledge_search call), so the activity feed shows the raw
+//     tool call, not just its summarised result;
+//   - ""       — the normal case: Output is what the node itself produced.
+//
+// "start" and "tool" events are stream-only — they never become the
+// debugger's LastStep.
 type StepEvent struct {
 	NodeID   string `json:"nodeId"`
 	NodeType string `json:"nodeType"`
 	Output   string `json:"output"`
-	Phase    string `json:"phase,omitempty"` // "" (result) or "start"
+	Command  string `json:"command,omitempty"` // set on "tool" phase events
+	Phase    string `json:"phase,omitempty"`   // "" (result), "start", or "tool"
 }
 
 // TurnMessage is a user-facing message a "say" node emits mid-turn: a
@@ -143,7 +150,7 @@ type llmClient interface {
 }
 
 // toolRunner is the subset of environments.Manager the engine needs to
-// execute a tool node's command.
+// execute a tool node's command inside the run's workspace sandbox.
 type toolRunner interface {
 	RunToolSync(ctx context.Context, instanceID, command string) (string, error)
 }
@@ -291,7 +298,7 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 
 		inner.emitStep(StepEvent{NodeID: current.ID, NodeType: current.Type, Output: output})
 
-		edge := findEdge(edges, current.ID, handle)
+		edge := nextEdge(edges, current.ID, current.Type, handle)
 		if edge == nil {
 			// No outgoing edge for this node's handle — the turn ends here.
 			if finalOverride != nil {
@@ -521,6 +528,9 @@ func (e *Engine) runNode(ctx context.Context, node registry.Node, input, instanc
 		if err != nil {
 			return "", "", fmt.Errorf("tool node %q: %w", node.ID, err)
 		}
+		// Stream the exact rendered command so the debug activity feed shows
+		// the raw tool call, not just its result.
+		hooks.emitStep(StepEvent{NodeID: node.ID, NodeType: "tool", Phase: "tool", Command: command})
 		result, err := e.tools.RunToolSync(ctx, instanceID, command)
 		if err != nil {
 			return "", "", fmt.Errorf("tool node %q: %w", node.ID, err)
@@ -569,6 +579,39 @@ func findEdge(edges []registry.Edge, nodeID, handle string) *registry.Edge {
 		}
 	}
 	return nil
+}
+
+// branchingNodeTypes are the node types whose outgoing handle is a genuine
+// choice — a handle with no matching edge there means "that branch simply
+// isn't wired", a valid way for a turn to end.
+var branchingNodeTypes = map[string]bool{"condition": true, "switch": true, "loop_start": true}
+
+// nextEdge picks the edge the walk should follow out of a node that produced
+// `handle`. It prefers an exact handle match. For a *non-branching* node
+// (anything but condition/switch/loop_start), if the exact match fails but
+// the node has exactly one outgoing edge, it follows that edge anyway — so a
+// stray or legacy sourceHandle on an otherwise-linear connection (e.g. left
+// over from a since-removed output schema) doesn't silently dead-end the turn
+// and echo the node's own input back. Returns nil only when the node truly
+// has no way forward. Shared by Run and the step-by-step debugger.
+func nextEdge(edges []registry.Edge, nodeID, nodeType, handle string) *registry.Edge {
+	if e := findEdge(edges, nodeID, handle); e != nil {
+		return e
+	}
+	if branchingNodeTypes[nodeType] {
+		return nil
+	}
+	var only *registry.Edge
+	for i := range edges {
+		if edges[i].Source != nodeID {
+			continue
+		}
+		if only != nil {
+			return nil // more than one outgoing edge — can't guess which
+		}
+		only = &edges[i]
+	}
+	return only
 }
 
 // findTool returns the tool with the given name, if any.
@@ -715,6 +758,7 @@ func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, in
 				recs = append(recs, knowledge.Query(kb, query)...)
 			}
 			obs := knowledge.FormatResults(recs)
+			emitToolCall(hooks, node.ID, fmt.Sprintf("knowledge_search %s", strings.TrimSpace(rawArgs)))
 			transcript.WriteString(fmt.Sprintf("ACTION: %s\nARGS: %s\nOBSERVATION: %s\n\n", action, rawArgs, truncate(obs, 500)))
 			emitAgentStep(hooks, node.ID, i+1, action, obs)
 			continue
@@ -735,10 +779,15 @@ func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, in
 		obs := ""
 		if command, err := environments.RenderToolCommand(tool, args); err != nil {
 			obs = "error: " + err.Error()
-		} else if out, err := e.tools.RunToolSync(ctx, instanceID, command); err != nil {
-			obs = "error: " + err.Error()
 		} else {
-			obs = strings.TrimSpace(out)
+			// Stream the exact rendered command every time the model calls a
+			// tool, so the debug activity feed shows the raw tool call.
+			emitToolCall(hooks, node.ID, command)
+			if out, err := e.tools.RunToolSync(ctx, instanceID, command); err != nil {
+				obs = "error: " + err.Error()
+			} else {
+				obs = strings.TrimSpace(out)
+			}
 		}
 
 		transcript.WriteString(fmt.Sprintf("ACTION: %s\nARGS: %s\nOBSERVATION: %s\n\n", action, rawArgs, truncate(obs, 500)))
@@ -754,6 +803,14 @@ const knowledgeSearchTool = "knowledge_search"
 
 func emitAgentStep(hooks *RunHooks, nodeID string, iter int, action, obs string) {
 	hooks.emitStep(StepEvent{NodeID: nodeID, NodeType: "agent", Output: fmt.Sprintf("iteration %d: %s -> %s", iter, action, truncate(obs, 200))})
+}
+
+// emitToolCall streams a stream-only "tool" phase event carrying the exact
+// tool invocation (a rendered shell command, or the built-in
+// knowledge_search call) so the debug activity feed shows the raw tool call
+// separately from its summarised result.
+func emitToolCall(hooks *RunHooks, nodeID, command string) {
+	hooks.emitStep(StepEvent{NodeID: nodeID, NodeType: "agent", Phase: "tool", Command: command})
 }
 
 // emitNodeStart streams a "start" phase event just before a node begins

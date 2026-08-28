@@ -1044,6 +1044,82 @@ choice:
     duplication, and templates resolved. Guards: `TestRunSayNode{EmitsProgressMessage,
     FinalOverridesTerminalOutput,EmptyTemplateFallsBackToInput}`, `TestSendMessageStreamsSayMessages`,
     `TestStepDebugRunSayFinalIsTheReply`.
+- **Workspaces / agent access model / Deployments (2026-08-28).** "Environments" was reframed as
+  **Workspaces** and the agent binding model changed. Four forks were surfaced via `AskUserQuestion`;
+  the user's answers, verbatim where they redirected: **sandbox image** — *"Single fixed default"* (no
+  per-workspace image); **node pickers** — *"Keep as pool pickers"* (a tool/knowledge/agent node still
+  picks explicitly, now from the agent's own tool/KB sets rather than a bound environment's); **deployment
+  persistence** — *"Definition only"* (chat transcript is in-memory like an agent run); **playground** —
+  *"Can we just move the playground construct to the Tools page? … select a tool and put it in a
+  playground using a test workspace and have a way to see the effects."*
+  - `registry.Environment` → **`registry.Workspace`** `{Name, Type: "test"|"real", HostPath, CreatedAt}`.
+    No image / tools / mounts. A **test** workspace's `HostPath` is forced to
+    `<root>/workspaces/<name>/files` (created on save, edited directly in an editor); a **real**
+    workspace's `HostPath` is a caller-supplied absolute dir (handler `os.Stat`s it). `registry.Mount`,
+    `UpdateConfig`, `AttachTool`/`DetachTool`, `EnsurePrebuiltEnvironments` / `PrebuiltEnvironments` all
+    deleted — **prebuilt environments are gone** (prebuilt *Tools* stay). Clean cutover, no migration.
+  - `internal/environments` **keeps its package name** (it still orchestrates the Docker sandbox
+    containers a workspace's files mount into) but now consumes `registry.Workspace`. `Manager.Launch`:
+    for a `test` workspace it `copyDir`s `files/` into a fresh `<root>/workspace-runs/<instance>/` and
+    bind-mounts *that* at `/workspace` (edits never touch the source — the whole point); for a `real`
+    workspace it bind-mounts `HostPath` directly. New `copyDir` helper (`internal/environments/
+    copydir.go`). `docker.DefaultSandboxImage = "debian:bookworm-slim"`, `docker.ContainerWorkdir =
+    "/workspace"` (also the container's `WorkingDir`); `EnvironmentLabel` → `WorkspaceLabel =
+    "tlw.workspace"`; the exec SSE event constants are now `workspace.exec.*`. `NewManager` gained a
+    `runsDir` param.
+  - **`registry.Agent`** gained `Workspace string` (a *test* workspace — replaces `Environment`),
+    `Tools []string`, `KnowledgeBases []string` — the pools a tool/knowledge/agent node picks from.
+    `agents.Manager` dropped its `environmentReader` dep; `resolveTools(toolNames []string)` looks names
+    up in the tool catalog directly (skips missing). `StartRun(agentName, workspaceOverride string)` —
+    the chat/debug UI can run against a *different* test workspace per run. `StartDebugRun(agentName,
+    graph, workspace string, tools []string)` — all from the (possibly unsaved) canvas. The **engine is
+    unchanged** — it already took `tools []registry.Tool` + `instanceID` as opaque params; the KB pool
+    is enforced only in the frontend (`agentValidation.ts` + the node pickers), not the engine, so the
+    ~70 `Engine.Run`/`runNode` test call sites needed no signature change.
+  - **Evaluation test cases**: `TestCase.Setup []string` → `TestCase.Workspace string`.
+    `Evaluation.Environment` + `UpdateEnvironment` + `PUT /api/evaluations/{name}/config` **removed** —
+    each test case names its own workspace, and `evaluations.Manager.runTestCase` launches a fresh copy
+    of it (no Setup loop). A test case with `VerifyCommands` but no `Workspace` fails with a clear error.
+  - **New `internal/deployments`** (thin manager over `workspaces.Manager` + `agents.Manager`) +
+    `registry.Deployment {Name, AgentName, WorkspaceName}` at `<root>/deployments/<name>/definition.json`.
+    `Start(name)` → `GetWorkspace` (must be `real`) → `Launch` → `agents.StartRunInInstance` → in-memory
+    `Session` (`RunID` exported so the frontend filters `agent.step`/`agent.message` by it). Routes under
+    `/api/deployments` incl. `/api/deployments/sessions/{id}`.
+  - **Tools playground** (`POST /api/tools/{name}/try`, body `{workspaceName?, instanceId?, args}`):
+    launches a sandbox from a *test* workspace (400 for a real one), runs the rendered tool command via
+    the existing `TryTool` (streamed over `workspace.exec.*`), returns `{exec, instanceId,
+    workspacePath}`. Instance left running for re-runs. New `GET /api/fs/list?path=` (directories only,
+    defaults to `$HOME`) powers a `DirectoryPicker` for a real workspace's folder — the project's first
+    host-filesystem-enumerating endpoint, in scope only because that picker needs it.
+  - Frontend: `Environments`/`EnvironmentDetail` → `Workspaces`/`WorkspaceDetail` (detail page is now
+    just an info panel). New `Deployments`/`DeploymentDetail` pages under "Automation"; the nav *section
+    heading* is now singular "Environment" (Workspaces / Knowledge / Tools). `MultiPickList` hoisted out
+    of `AgentEditor`; `AgentSettingsModal` edits workspace + tool set + KB set + description.
+  - **Verified live end-to-end** (real Docker + real MLX): Tools playground reads a staged test-workspace
+    copy (source untouched); an `input → tool → say` agent run reads the staged file; a Deployment writes
+    to a real workspace dir and the file persists after the session stops; an evaluation test case with a
+    workspace + verify command shares one sandbox between the agent turn and the verify step (all
+    assertions pass, result persisted); a prompt node still resolves a real model.
+  - **Bug found & fixed while testing the agent node live (2026-08-28):** `Engine.Run` / the debugger's
+    `applyStepResult` followed an outgoing edge only on an *exact* `SourceHandle` match, so a stray/legacy
+    `sourceHandle` on an otherwise-linear connection (e.g. `"fail"` left on an `input → agent` edge from a
+    since-removed output schema, or a mis-drawn connection) made the walk silently dead-end at that node
+    and return the node's *own input* — the "the agent node just echoes my input" symptom. Fix: new
+    `nextEdge(edges, nodeID, nodeType, handle)` — exact match first, then for a *non-branching* node
+    (anything but condition/switch/loop_start) fall through to that node's single outgoing edge; used by
+    both `Run` and `applyStepResult`. Plus `buildGraphPayload` now strips `sourceHandle` from every edge
+    whose source isn't a genuine brancher (condition/switch/loop_start/schema'd prompt/agent). Guards:
+    `TestRunToleratesStraySourceHandleOnLinearEdge`, `TestRunConditionUnwiredBranchStillEndsTurn`,
+    `TestStepDebugRunToleratesStraySourceHandle`.
+  - **Debug UX pass (2026-08-28):** the left debug panel was cramped, so the live **Activity feed +
+    "last step" output moved to the right sidebar** behind a new `Inspector | Activity` tab bar (starts a
+    debug session on the Activity tab; clicking a canvas node flips to Inspector). Long feed entries and
+    step output truncate to ~200/400 chars with a "Show more" toggle (new generic `web/src/Expandable.tsx`).
+    New `StepEvent.Command` + `Phase: "tool"` (stream-only, like `"start"`): a tool node and an agent
+    node's ReAct loop now emit the **exact rendered shell command** every time they invoke a tool, shown
+    in the feed as a monospace `tool call` line. Guards: `TestRunAgentNodeCallsToolThenFinal` (extended),
+    `TestRunToolNodeEmitsRawCommand`. Verified live: the Activity panel shows `tool call  cat 'TODO.md'`
+    then its result, both truncating with Show more.
 - **Evaluation runner**: how assertions are expressed and checked against agent output, and how
   environment starting state is set up per-test (Phase 4).
   **Decided:** assertions are deterministic rules — `contains` / `not_contains` / `regex` — checked
@@ -1368,14 +1444,18 @@ choice:
   `web/src/TagFilterDropdown.tsx` so `BenchmarkDetail.tsx` could use the identical tag-filter popover
   rather than a second copy — this was a pure extraction, no behavior change to Datasets.
 
-  **Not fixed here (flagged separately):** both the new `GenerateTestCasesModal` and the pre-existing
-  Dataset `GenerateVariationsModal` populate their model suggestion dropdown from registry models'
-  `.name`, but `mlxrunner.Runner` needs a trained model's `.path` (no name→path resolution exists inside
-  it) — typing a registry model's display name into either modal makes `mlx_lm.server` hang (observed
-  live: ~0% CPU, no progress, had to be killed manually) rather than failing fast, because it treats the
-  name as an unresolvable Hugging Face repo id. This is a pre-existing gap in the already-shipped Dataset
-  feature that the new Benchmarks feature simply inherited by mirroring it — worth fixing in both places
-  together, not in scope for this change.
+  **Fixed 2026-08-28 (was: "Generate hangs when you pick a model by name"):** `datasetgen.Generator`
+  and `testcasegen.Generator` (dataset-variation + benchmark/evaluation test-case generators) now take a
+  `modelResolver` (satisfied by `*registry.Registry`) and call `ResolveModelRef` on the picked model
+  before `mlxrunner.Runner.Generate` — so `Llama-3.2-1B-Instruct-4bit` becomes
+  `mlx-community/Llama-3.2-1B-Instruct-4bit` instead of 401'ing the Hub and hanging until the 5-minute
+  client timeout. Both also `checkResolvedModel` up front: a value that's neither an `org/name` repo id
+  nor a local path fails *instantly* with "pick one from the list". `datasetgen.New`/`testcasegen.New`
+  gained the resolver param (`cmd/serve.go` passes `reg`). The Models-page chat / token-probabilities
+  handlers never had this gap — they `GetModel(name)` and pass `model.Path`. Guards:
+  `TestVariationsResolvesModelName`, `TestVariationsRejectsUnresolvableBareName` in both packages.
+  Verified live: name-picked generation responds in ~1s (a remaining `invalid JSON array` there is the
+  0.5–1B model's known weak output, a separate limitation).
 
 Once the user decides one of these, record it here (a short "Decided:" note under the relevant bullet)
 so it doesn't get re-litigated by a later session.

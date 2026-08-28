@@ -1,288 +1,158 @@
 package registry
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
-func TestSaveAndGetEnvironment(t *testing.T) {
+func TestSaveAndGetTestWorkspace(t *testing.T) {
 	reg := New(t.TempDir())
 
-	want := Environment{
-		Name:   "my-env",
-		Image:  "alpine:3.20",
-		Tools:  []string{"shell"},
-		Mounts: []Mount{{HostPath: "/host", ContainerPath: "/container"}},
-	}
-	if err := reg.SaveEnvironment(want); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
+	if err := reg.SaveWorkspace(Workspace{Name: "scratch", Type: WorkspaceTest}); err != nil {
+		t.Fatalf("SaveWorkspace() error = %v", err)
 	}
 
-	got, err := reg.GetEnvironment("my-env")
+	got, err := reg.GetWorkspace("scratch")
 	if err != nil {
-		t.Fatalf("GetEnvironment() error = %v", err)
+		t.Fatalf("GetWorkspace() error = %v", err)
 	}
-	if got.Name != want.Name || got.Image != want.Image || len(got.Mounts) != 1 || got.Mounts[0] != want.Mounts[0] {
-		t.Errorf("GetEnvironment() = %+v, want %+v", got, want)
+	if got.Name != "scratch" || got.Type != WorkspaceTest {
+		t.Errorf("GetWorkspace() = %+v, want name=scratch type=test", got)
 	}
-	if len(got.Tools) != 1 || got.Tools[0] != "shell" {
-		t.Errorf("GetEnvironment().Tools = %+v, want [shell]", got.Tools)
+	// A test workspace's HostPath is always forced to its files/ dir, which
+	// is created on save.
+	wantPath := reg.WorkspaceFilesDir("scratch")
+	if got.HostPath != wantPath {
+		t.Errorf("GetWorkspace().HostPath = %q, want %q", got.HostPath, wantPath)
+	}
+	if info, err := os.Stat(wantPath); err != nil || !info.IsDir() {
+		t.Errorf("expected editable files dir at %q, stat err = %v", wantPath, err)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("GetWorkspace().CreatedAt is zero, want it stamped on first save")
 	}
 }
 
-func TestGetEnvironmentUnknown(t *testing.T) {
+func TestSaveRealWorkspaceKeepsHostPath(t *testing.T) {
 	reg := New(t.TempDir())
+	realDir := t.TempDir()
 
-	if _, err := reg.GetEnvironment("does-not-exist"); err == nil {
-		t.Error("GetEnvironment() error = nil, want an error for an unknown environment")
+	if err := reg.SaveWorkspace(Workspace{Name: "my-project", Type: WorkspaceReal, HostPath: realDir}); err != nil {
+		t.Fatalf("SaveWorkspace() error = %v", err)
 	}
-}
 
-func TestListEnvironmentsEmptyRegistry(t *testing.T) {
-	reg := New(t.TempDir())
-
-	envs, err := reg.ListEnvironments()
+	got, err := reg.GetWorkspace("my-project")
 	if err != nil {
-		t.Fatalf("ListEnvironments() error = %v", err)
+		t.Fatalf("GetWorkspace() error = %v", err)
 	}
-	if len(envs) != 0 {
-		t.Errorf("ListEnvironments() = %v, want empty", envs)
+	if got.HostPath != realDir {
+		t.Errorf("GetWorkspace().HostPath = %q, want the caller-supplied %q", got.HostPath, realDir)
+	}
+	if _, err := os.Stat(reg.WorkspaceFilesDir("my-project")); !os.IsNotExist(err) {
+		t.Errorf("real workspace should not create a files/ dir, stat err = %v", err)
 	}
 }
 
-func TestListEnvironmentsSortedByName(t *testing.T) {
+func TestSaveWorkspacePreservesCreatedAt(t *testing.T) {
 	reg := New(t.TempDir())
 
-	for _, name := range []string{"zeta", "alpha"} {
-		if err := reg.SaveEnvironment(Environment{Name: name, Image: "alpine:3.20"}); err != nil {
-			t.Fatalf("SaveEnvironment(%q) error = %v", name, err)
+	if err := reg.SaveWorkspace(Workspace{Name: "w", Type: WorkspaceTest}); err != nil {
+		t.Fatalf("SaveWorkspace() error = %v", err)
+	}
+	first, _ := reg.GetWorkspace("w")
+
+	if err := reg.SaveWorkspace(Workspace{Name: "w", Type: WorkspaceTest}); err != nil {
+		t.Fatalf("SaveWorkspace() re-save error = %v", err)
+	}
+	second, _ := reg.GetWorkspace("w")
+
+	if !second.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("CreatedAt changed on re-save: %v -> %v", first.CreatedAt, second.CreatedAt)
+	}
+}
+
+func TestGetWorkspaceUnknown(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.GetWorkspace("does-not-exist"); err == nil {
+		t.Error("GetWorkspace() error = nil, want an error for an unknown workspace")
+	}
+}
+
+func TestListWorkspacesEmptyRegistry(t *testing.T) {
+	reg := New(t.TempDir())
+
+	ws, err := reg.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces() error = %v", err)
+	}
+	if len(ws) != 0 {
+		t.Errorf("ListWorkspaces() = %v, want empty", ws)
+	}
+}
+
+func TestListWorkspacesSorted(t *testing.T) {
+	reg := New(t.TempDir())
+	for _, n := range []string{"charlie", "alpha", "bravo"} {
+		if err := reg.SaveWorkspace(Workspace{Name: n, Type: WorkspaceTest}); err != nil {
+			t.Fatalf("SaveWorkspace(%q) error = %v", n, err)
 		}
 	}
 
-	envs, err := reg.ListEnvironments()
+	ws, err := reg.ListWorkspaces()
 	if err != nil {
-		t.Fatalf("ListEnvironments() error = %v", err)
+		t.Fatalf("ListWorkspaces() error = %v", err)
 	}
-	if len(envs) != 2 || envs[0].Name != "alpha" || envs[1].Name != "zeta" {
-		t.Errorf("ListEnvironments() = %+v, want [alpha, zeta]", envs)
-	}
-}
-
-func TestEnsurePrebuiltEnvironmentsSeedsOnce(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.EnsurePrebuiltEnvironments(); err != nil {
-		t.Fatalf("EnsurePrebuiltEnvironments() error = %v", err)
-	}
-
-	envs, err := reg.ListEnvironments()
-	if err != nil {
-		t.Fatalf("ListEnvironments() error = %v", err)
-	}
-	if len(envs) != len(PrebuiltEnvironments()) {
-		t.Fatalf("ListEnvironments() = %d entries, want %d prebuilt environments", len(envs), len(PrebuiltEnvironments()))
-	}
-
-	// Customize one, then ensure again — it must not be overwritten.
-	customized := envs[0]
-	customized.Image = "customized:latest"
-	if err := reg.SaveEnvironment(customized); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-
-	if err := reg.EnsurePrebuiltEnvironments(); err != nil {
-		t.Fatalf("EnsurePrebuiltEnvironments() (second call) error = %v", err)
-	}
-
-	got, err := reg.GetEnvironment(customized.Name)
-	if err != nil {
-		t.Fatalf("GetEnvironment() error = %v", err)
-	}
-	if got.Image != "customized:latest" {
-		t.Errorf("GetEnvironment().Image = %q, want the customization to survive re-seeding", got.Image)
-	}
-}
-
-func TestPrebuiltEnvironmentsReferenceRealToolNames(t *testing.T) {
-	toolNames := make(map[string]bool)
-	for _, tool := range PrebuiltTools() {
-		toolNames[tool.Name] = true
-	}
-
-	for _, env := range PrebuiltEnvironments() {
-		if len(env.Tools) == 0 {
-			t.Errorf("PrebuiltEnvironments() %q has no tools, want at least one", env.Name)
-		}
-		for _, toolName := range env.Tools {
-			if !toolNames[toolName] {
-				t.Errorf("PrebuiltEnvironments() %q references tool %q, which isn't in PrebuiltTools()", env.Name, toolName)
-			}
+	got := []string{ws[0].Name, ws[1].Name, ws[2].Name}
+	want := []string{"alpha", "bravo", "charlie"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ListWorkspaces() names = %v, want %v", got, want)
 		}
 	}
 }
 
-func TestDeleteEnvironment(t *testing.T) {
+func TestDeleteTestWorkspaceRemovesFiles(t *testing.T) {
 	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "throwaway", Image: "alpine:3.20"}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
+	if err := reg.SaveWorkspace(Workspace{Name: "w", Type: WorkspaceTest}); err != nil {
+		t.Fatalf("SaveWorkspace() error = %v", err)
+	}
+	seed := filepath.Join(reg.WorkspaceFilesDir("w"), "notes.txt")
+	if err := os.WriteFile(seed, []byte("hi"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
 	}
 
-	if err := reg.DeleteEnvironment("throwaway"); err != nil {
-		t.Fatalf("DeleteEnvironment() error = %v", err)
+	if err := reg.DeleteWorkspace("w"); err != nil {
+		t.Fatalf("DeleteWorkspace() error = %v", err)
 	}
-
-	if _, err := reg.GetEnvironment("throwaway"); err == nil {
-		t.Error("GetEnvironment() error = nil, want an error after delete")
+	if _, err := reg.GetWorkspace("w"); err == nil {
+		t.Error("GetWorkspace() after delete = nil error, want not-found")
 	}
 }
 
-func TestDeleteEnvironmentNotFound(t *testing.T) {
+func TestDeleteRealWorkspaceLeavesTargetDir(t *testing.T) {
 	reg := New(t.TempDir())
+	realDir := t.TempDir()
+	keep := filepath.Join(realDir, "keep.txt")
+	if err := os.WriteFile(keep, []byte("data"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if err := reg.SaveWorkspace(Workspace{Name: "p", Type: WorkspaceReal, HostPath: realDir}); err != nil {
+		t.Fatalf("SaveWorkspace() error = %v", err)
+	}
 
-	if err := reg.DeleteEnvironment("does-not-exist"); err == nil {
-		t.Error("DeleteEnvironment() error = nil, want an error for an unknown environment")
+	if err := reg.DeleteWorkspace("p"); err != nil {
+		t.Fatalf("DeleteWorkspace() error = %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("deleting a real workspace must not touch its target dir, but %q is gone: %v", keep, err)
 	}
 }
 
-func TestUpdateConfig(t *testing.T) {
+func TestDeleteWorkspaceUnknown(t *testing.T) {
 	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-
-	newMounts := []Mount{{HostPath: "/host", ContainerPath: "/container", ReadOnly: true}}
-	if err := reg.UpdateConfig("my-env", "alpine:3.21", newMounts); err != nil {
-		t.Fatalf("UpdateConfig() error = %v", err)
-	}
-
-	got, err := reg.GetEnvironment("my-env")
-	if err != nil {
-		t.Fatalf("GetEnvironment() error = %v", err)
-	}
-	if got.Image != "alpine:3.21" {
-		t.Errorf("GetEnvironment().Image = %q, want alpine:3.21", got.Image)
-	}
-	if len(got.Mounts) != 1 || !got.Mounts[0].ReadOnly {
-		t.Errorf("GetEnvironment().Mounts = %+v, want a single read-only mount", got.Mounts)
-	}
-}
-
-func TestUpdateConfigUnknownEnvironment(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.UpdateConfig("does-not-exist", "alpine:3.20", nil); err == nil {
-		t.Error("UpdateConfig() error = nil, want an error for an unknown environment")
-	}
-}
-
-func TestAttachTool(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-	if err := reg.SaveTool(Tool{Name: "read_file", Command: "cat {{path}}"}); err != nil {
-		t.Fatalf("SaveTool() error = %v", err)
-	}
-
-	if err := reg.AttachTool("my-env", "read_file"); err != nil {
-		t.Fatalf("AttachTool() error = %v", err)
-	}
-
-	got, err := reg.GetEnvironment("my-env")
-	if err != nil {
-		t.Fatalf("GetEnvironment() error = %v", err)
-	}
-	if len(got.Tools) != 1 || got.Tools[0] != "read_file" {
-		t.Errorf("GetEnvironment().Tools = %+v, want [read_file]", got.Tools)
-	}
-}
-
-func TestAttachToolUnknownTool(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-
-	if err := reg.AttachTool("my-env", "does-not-exist"); err == nil {
-		t.Error("AttachTool() error = nil, want an error when the tool isn't in the catalog")
-	}
-}
-
-func TestAttachToolIsIdempotent(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-	if err := reg.SaveTool(Tool{Name: "read_file", Command: "cat {{path}}"}); err != nil {
-		t.Fatalf("SaveTool() error = %v", err)
-	}
-
-	for i := 0; i < 2; i++ {
-		if err := reg.AttachTool("my-env", "read_file"); err != nil {
-			t.Fatalf("AttachTool() call %d error = %v", i, err)
-		}
-	}
-
-	got, err := reg.GetEnvironment("my-env")
-	if err != nil {
-		t.Fatalf("GetEnvironment() error = %v", err)
-	}
-	if len(got.Tools) != 1 {
-		t.Errorf("GetEnvironment().Tools = %+v, want attaching twice to still leave just one entry", got.Tools)
-	}
-}
-
-func TestDetachTool(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20", Tools: []string{"read_file", "write_file"}}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-
-	if err := reg.DetachTool("my-env", "read_file"); err != nil {
-		t.Fatalf("DetachTool() error = %v", err)
-	}
-
-	got, err := reg.GetEnvironment("my-env")
-	if err != nil {
-		t.Fatalf("GetEnvironment() error = %v", err)
-	}
-	if len(got.Tools) != 1 || got.Tools[0] != "write_file" {
-		t.Errorf("GetEnvironment().Tools = %+v, want only write_file to remain", got.Tools)
-	}
-}
-
-func TestDetachToolNotAttached(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20"}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-
-	if err := reg.DetachTool("my-env", "read_file"); err == nil {
-		t.Error("DetachTool() error = nil, want an error when the tool isn't attached")
-	}
-}
-
-func TestDetachToolLeavesCatalogEntryAlone(t *testing.T) {
-	reg := New(t.TempDir())
-
-	if err := reg.SaveEnvironment(Environment{Name: "my-env", Image: "alpine:3.20", Tools: []string{"read_file"}}); err != nil {
-		t.Fatalf("SaveEnvironment() error = %v", err)
-	}
-	if err := reg.SaveTool(Tool{Name: "read_file", Command: "cat {{path}}"}); err != nil {
-		t.Fatalf("SaveTool() error = %v", err)
-	}
-
-	if err := reg.DetachTool("my-env", "read_file"); err != nil {
-		t.Fatalf("DetachTool() error = %v", err)
-	}
-
-	if _, err := reg.GetTool("read_file"); err != nil {
-		t.Errorf("GetTool() error = %v, want the catalog entry to survive detaching it from an environment", err)
+	if err := reg.DeleteWorkspace("nope"); err == nil {
+		t.Error("DeleteWorkspace() error = nil, want an error for an unknown workspace")
 	}
 }

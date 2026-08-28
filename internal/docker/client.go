@@ -1,5 +1,6 @@
 // Package docker wraps the Docker Engine API (via the official Docker SDK
-// for Go) for launching, stopping, and exec'ing into Environment containers.
+// for Go) for launching, stopping, and exec'ing into the sandbox containers
+// a registry.Workspace's files are mounted into.
 package docker
 
 import (
@@ -24,9 +25,21 @@ import (
 // separate bookkeeping — the container itself is the source of truth.
 const ManagedLabel = "tlw.managed"
 
-// EnvironmentLabel records which registry.Environment definition a
-// container was launched from.
-const EnvironmentLabel = "tlw.environment"
+// WorkspaceLabel records which registry.Workspace a sandbox container was
+// launched from.
+const WorkspaceLabel = "tlw.workspace"
+
+// DefaultSandboxImage is the single image every workspace sandbox runs. A
+// workspace is just a directory now — it carries no image of its own — so
+// this is the one place the runtime is chosen. debian:bookworm-slim has a
+// POSIX shell, coreutils, and curl-installable tooling, which is enough for
+// the deterministic shell-command tools TLW runs.
+const DefaultSandboxImage = "debian:bookworm-slim"
+
+// ContainerWorkdir is where a workspace's directory is mounted inside the
+// sandbox, and the container's working directory, so tools can use relative
+// paths.
+const ContainerWorkdir = "/workspace"
 
 // execStopTimeoutSeconds bounds how long Stop waits for a graceful
 // container shutdown before the container is force-removed anyway.
@@ -115,10 +128,10 @@ func (c *Client) pullIfMissing(ctx context.Context, image string) error {
 
 // Launch creates and starts a new container from image, labeled so it's
 // recognized by ListManaged, and returns its container ID (used as the
-// Environment instance's ID). image is pulled first if not already present
+// workspace instance's ID). image is pulled first if not already present
 // locally — unlike the `docker` CLI, the raw container-create API doesn't
 // do this automatically.
-func (c *Client) Launch(ctx context.Context, name, environmentName, image string, mounts []Mount) (string, error) {
+func (c *Client) Launch(ctx context.Context, name, workspaceName, image string, mounts []Mount) (string, error) {
 	if err := c.pullIfMissing(ctx, image); err != nil {
 		return "", err
 	}
@@ -134,15 +147,15 @@ func (c *Client) Launch(ctx context.Context, name, environmentName, image string
 	}
 
 	resp, err := c.cli.ContainerCreate(ctx, &container.Config{
-		Image: image,
-		Tty:   false,
+		Image:      image,
+		Tty:        false,
+		WorkingDir: ContainerWorkdir,
 		// Keeps the container alive with no foreground process of its own
-		// so it's ready to exec into; every image we launch (alpine,
-		// debian-slim, python-slim, curlimages/curl) provides `sleep`.
+		// so it's ready to exec into; debian-slim provides `sleep`.
 		Cmd: []string{"sleep", "infinity"},
 		Labels: map[string]string{
-			ManagedLabel:     "true",
-			EnvironmentLabel: environmentName,
+			ManagedLabel:   "true",
+			WorkspaceLabel: workspaceName,
 		},
 	}, &container.HostConfig{
 		Mounts: mountSpecs,
@@ -172,12 +185,12 @@ func (c *Client) Stop(ctx context.Context, containerID string) error {
 
 // ContainerInfo is a tlw-managed container's current state.
 type ContainerInfo struct {
-	ID              string
-	Name            string
-	Image           string
-	State           string // "running", "exited", ...
-	EnvironmentName string
-	CreatedAt       time.Time
+	ID            string
+	Name          string
+	Image         string
+	State         string // "running", "exited", ...
+	WorkspaceName string
+	CreatedAt     time.Time
 }
 
 // ListManaged returns every container tlw has launched (running or not),
@@ -196,12 +209,12 @@ func (c *Client) ListManaged(ctx context.Context) ([]ContainerInfo, error) {
 			name = strings.TrimPrefix(ctr.Names[0], "/")
 		}
 		infos = append(infos, ContainerInfo{
-			ID:              ctr.ID,
-			Name:            name,
-			Image:           ctr.Image,
-			State:           ctr.State,
-			EnvironmentName: ctr.Labels[EnvironmentLabel],
-			CreatedAt:       time.Unix(ctr.Created, 0).UTC(),
+			ID:            ctr.ID,
+			Name:          name,
+			Image:         ctr.Image,
+			State:         ctr.State,
+			WorkspaceName: ctr.Labels[WorkspaceLabel],
+			CreatedAt:     time.Unix(ctr.Created, 0).UTC(),
 		})
 	}
 

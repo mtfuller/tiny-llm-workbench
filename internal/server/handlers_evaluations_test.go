@@ -109,7 +109,7 @@ func TestSaveEvaluation(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	body, _ := json.Marshal(saveEvaluationRequest{Name: "greeting-eval", Environment: "WebSearch"})
+	body, _ := json.Marshal(saveEvaluationRequest{Name: "greeting-eval"})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/evaluations", bytes.NewReader(body))
 	handler.ServeHTTP(rec, req)
@@ -117,8 +117,8 @@ func TestSaveEvaluation(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /api/evaluations status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if len(store.saved) != 1 || store.saved[0].Name != "greeting-eval" || store.saved[0].Environment != "WebSearch" {
-		t.Errorf("store.saved = %+v, want [greeting-eval/WebSearch]", store.saved)
+	if len(store.saved) != 1 || store.saved[0].Name != "greeting-eval" {
+		t.Errorf("store.saved = %+v, want [greeting-eval]", store.saved)
 	}
 }
 
@@ -213,48 +213,6 @@ func TestDeleteEvaluationNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("DELETE /api/evaluations/missing status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
-}
-
-func TestUpdateEvaluationConfig(t *testing.T) {
-	deps := testDeps()
-	store := &fakeEvaluationStore{get: registry.Evaluation{Name: "greeting-eval"}}
-	deps.Evaluations = store
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(updateEvaluationConfigRequest{Environment: "SoftwareDev"})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/evaluations/greeting-eval/config", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("PUT .../config status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if len(store.updatedEnvEvals) != 1 || store.updatedEnv != "SoftwareDev" {
-		t.Errorf("store.updatedEnvEvals/updatedEnv = %v/%q, want [greeting-eval]/SoftwareDev", store.updatedEnvEvals, store.updatedEnv)
-	}
-}
-
-func TestUpdateEvaluationConfigError(t *testing.T) {
-	deps := testDeps()
-	deps.Evaluations = &fakeEvaluationStore{updateEnvErr: errors.New("evaluation not found")}
-
-	handler, err := New(deps)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	body, _ := json.Marshal(updateEvaluationConfigRequest{Environment: "SoftwareDev"})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/evaluations/missing/config", bytes.NewReader(body))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("PUT .../config (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 

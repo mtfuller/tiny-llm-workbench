@@ -127,7 +127,7 @@ func updateToolHandler(store toolStore) http.HandlerFunc {
 }
 
 // deleteToolHandler removes a tool from the catalog. It doesn't cascade to
-// any Environment that references it — see registry.DeleteTool.
+// any agent that references it in its Tools set.
 func deleteToolHandler(store toolStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := store.DeleteTool(r.PathValue("name")); err != nil {
@@ -135,5 +135,78 @@ func deleteToolHandler(store toolStore) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// tryCatalogToolRequest is the POST /api/tools/{name}/try request body. If
+// InstanceID is empty a fresh sandbox is launched from WorkspaceName (which
+// must be a TEST workspace) and its id is returned for reuse on subsequent
+// runs; the sandbox is left running so the user can re-run and inspect the
+// effects, and stopped via the usual instance-stop route.
+type tryCatalogToolRequest struct {
+	WorkspaceName string            `json:"workspaceName"`
+	InstanceID    string            `json:"instanceId"`
+	Args          map[string]string `json:"args"`
+}
+
+// tryCatalogToolResponse pairs the started exec with the sandbox it runs in
+// and that sandbox's host-side path (so the user can open it in an editor).
+type tryCatalogToolResponse struct {
+	Exec          any    `json:"exec"`
+	InstanceID    string `json:"instanceId"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
+}
+
+// tryCatalogToolHandler renders a catalog tool's command and runs it inside
+// a test workspace's sandbox — the Tools page's Playground. Output streams
+// live over /api/events like a plain ad hoc exec.
+func tryCatalogToolHandler(tools toolStore, workspaces workspaceStore, mgr workspaceManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		toolName := r.PathValue("name")
+
+		var req tryCatalogToolRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+
+		tool, err := tools.GetTool(toolName)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+
+		instanceID := req.InstanceID
+		workspacePath := ""
+		if instanceID == "" {
+			if req.WorkspaceName == "" {
+				writeError(w, http.StatusBadRequest, errors.New("workspaceName is required to launch a sandbox"))
+				return
+			}
+			ws, err := workspaces.GetWorkspace(req.WorkspaceName)
+			if err != nil {
+				writeError(w, http.StatusNotFound, err)
+				return
+			}
+			if ws.Type != registry.WorkspaceTest {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("workspace %q is not a test workspace", req.WorkspaceName))
+				return
+			}
+			instance, err := mgr.Launch(r.Context(), req.WorkspaceName, "")
+			if err != nil {
+				writeError(w, http.StatusBadGateway, err)
+				return
+			}
+			instanceID = instance.ID
+			workspacePath = instance.WorkspacePath
+		}
+
+		exec, err := mgr.TryTool(instanceID, tool, req.Args)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		writeJSON(w, http.StatusAccepted, tryCatalogToolResponse{Exec: exec, InstanceID: instanceID, WorkspacePath: workspacePath})
 	}
 }

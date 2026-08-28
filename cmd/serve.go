@@ -17,6 +17,7 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/benchmarks"
 	"github.com/mtfuller/tiny-llm-workbench/internal/color"
 	"github.com/mtfuller/tiny-llm-workbench/internal/datasetgen"
+	"github.com/mtfuller/tiny-llm-workbench/internal/deployments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/docker"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
@@ -57,8 +58,8 @@ URL in a browser. Stop it with Ctrl+C.`,
 		// subprocess is started lazily and reused across many requests, and
 		// must outlive whichever request happened to trigger starting it.
 		runner := mlxrunner.New(ctx)
-		generator := datasetgen.New(runner)
-		testCaseGenerator := testcasegen.New(runner)
+		generator := datasetgen.New(runner, reg)
+		testCaseGenerator := testcasegen.New(runner, reg)
 		hfClient := huggingface.New()
 
 		// trainingMgr's context (ctx, not the per-request context an HTTP
@@ -74,45 +75,46 @@ URL in a browser. Stop it with Ctrl+C.`,
 		if err := reg.EnsurePrebuiltTools(); err != nil {
 			logger.Warn("Failed to seed prebuilt tools: %v", err)
 		}
-		if err := reg.EnsurePrebuiltEnvironments(); err != nil {
-			logger.Warn("Failed to seed prebuilt environments: %v", err)
-		}
 
 		dockerClient, err := docker.New()
 		if err != nil {
 			return fmt.Errorf("build docker client: %w", err)
 		}
 		if pingErr := dockerClient.Ping(ctx); pingErr != nil {
-			logger.Warn("%v — Environments will fail to launch until it is", pingErr)
+			logger.Warn("%v — workspace sandboxes will fail to launch until it is", pingErr)
 		}
-		environmentsMgr := environments.NewManager(ctx, dockerClient, reg, bus)
+		environmentsMgr := environments.NewManager(ctx, dockerClient, reg, bus, filepath.Join(reg.Root(), "workspace-runs"))
 
-		agentsMgr := agents.NewManager(ctx, reg, runner, environmentsMgr, reg, reg, reg, bus)
+		agentsMgr := agents.NewManager(ctx, reg, runner, environmentsMgr, reg, reg, bus)
 
 		evaluationsMgr := evaluations.NewManager(ctx, reg, agentsMgr, environmentsMgr, bus, filepath.Join(reg.Root(), "evaluation-results"))
 
 		benchmarksMgr := benchmarks.NewManager(ctx, reg, reg, runner, bus, filepath.Join(reg.Root(), "benchmark-results"))
 
+		deploymentsMgr := deployments.NewManager(ctx, reg, reg, environmentsMgr, agentsMgr)
+
 		handler, err := server.New(server.Deps{
-			Bus:          bus,
-			Models:       reg,
-			ModelRunner:  runner,
-			HuggingFace:  hfClient,
-			Datasets:     reg,
-			Generator:    generator,
-			Training:     trainingMgr,
-			Environments: reg,
-			Instances:    environmentsMgr,
-			Tools:        reg,
-			Knowledge:    reg,
-			Agents:       reg,
-			AgentRuns:    agentsMgr,
-			Evaluations:  reg,
-			EvalRuns:     evaluationsMgr,
-			Benchmarks:   reg,
-			BenchRuns:    benchmarksMgr,
-			TestCaseGen:  testCaseGenerator,
-			RegistryRoot: reg.Root(),
+			Bus:                bus,
+			Models:             reg,
+			ModelRunner:        runner,
+			HuggingFace:        hfClient,
+			Datasets:           reg,
+			Generator:          generator,
+			Training:           trainingMgr,
+			Workspaces:         reg,
+			Instances:          environmentsMgr,
+			Tools:              reg,
+			Knowledge:          reg,
+			Agents:             reg,
+			AgentRuns:          agentsMgr,
+			Evaluations:        reg,
+			EvalRuns:           evaluationsMgr,
+			Benchmarks:         reg,
+			BenchRuns:          benchmarksMgr,
+			Deployments:        reg,
+			DeploymentSessions: deploymentsMgr,
+			TestCaseGen:        testCaseGenerator,
+			RegistryRoot:       reg.Root(),
 		})
 		if err != nil {
 			return fmt.Errorf("build server: %w", err)

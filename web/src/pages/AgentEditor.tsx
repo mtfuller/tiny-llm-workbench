@@ -50,10 +50,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, 
 import { Link, useParams } from 'react-router-dom'
 import {
   getAgent,
-  listEnvironments,
   listKnowledgeBases,
   listModels,
   listTools,
+  listWorkspaces,
   retryAgentDebugRun,
   saveAgent,
   sendAgentMessage,
@@ -69,17 +69,19 @@ import {
   type AgentStepEvent,
   type ChatMessage,
   type DebugState,
-  type Environment,
   type KnowledgeBase,
   type Model,
   type NodeType,
   type Tool,
+  type Workspace,
 } from '../api'
 import { nodeTypes } from '../agentNodes'
 import { validateGraph } from '../agentValidation'
 import { useEventStream } from '../eventStream'
+import Expandable from '../Expandable'
 import IconButton from '../IconButton'
 import LineNumberedTextarea from '../LineNumberedTextarea'
+import MultiPickList from '../MultiPickList'
 import SchemaBuilder from '../SchemaBuilder'
 import Modal from '../Modal'
 import ModelCombobox from '../ModelCombobox'
@@ -175,10 +177,13 @@ function AgentEditorWorkspace() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [models, setModels] = useState<Model[]>([])
-  const [environments, setEnvironments] = useState<Environment[]>([])
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [toolCatalog, setToolCatalog] = useState<Tool[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
-  const [environment, setEnvironment] = useState('')
+  // The agent's access: a bound TEST workspace + the tool/KB pools nodes pick from.
+  const [workspace, setWorkspace] = useState('')
+  const [agentTools, setAgentTools] = useState<string[]>([])
+  const [agentKnowledgeBases, setAgentKnowledgeBases] = useState<string[]>([])
   const [description, setDescription] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -187,11 +192,17 @@ function AgentEditorWorkspace() {
   const [paletteOpen, setPaletteOpen] = useState(true)
   const [leftTab, setLeftTab] = useState<'nodes' | 'debug'>('nodes')
   const [inspectorOpen, setInspectorOpen] = useState(true)
+  // The right sidebar shows the node inspector, or — during a debug session —
+  // the live activity feed. A tab bar switches between them.
+  const [inspectorTab, setInspectorTab] = useState<'inspector' | 'activity'>('inspector')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [issuesOpen, setIssuesOpen] = useState(true)
 
   const [chatOpen, setChatOpen] = useState(false)
   const [runId, setRunId] = useState<string | null>(null)
+  // Optional per-run TEST workspace override for chat/debug — '' means "use
+  // the agent's bound workspace".
+  const [runWorkspace, setRunWorkspace] = useState('')
   const [messages, setMessages] = useState<ChatEntry[]>([])
   const [chatInput, setChatInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -257,7 +268,9 @@ function AgentEditorWorkspace() {
             ...ARROW_EDGE,
           })),
         )
-        setEnvironment(agent.environment ?? '')
+        setWorkspace(agent.workspace ?? '')
+        setAgentTools(agent.tools ?? [])
+        setAgentKnowledgeBases(agent.knowledgeBases ?? [])
         setDescription(agent.description ?? '')
         setLoaded(true)
       })
@@ -265,9 +278,9 @@ function AgentEditorWorkspace() {
     listModels()
       .then(setModels)
       .catch(() => setModels([]))
-    listEnvironments()
-      .then(setEnvironments)
-      .catch(() => setEnvironments([]))
+    listWorkspaces()
+      .then(setWorkspaces)
+      .catch(() => setWorkspaces([]))
     listTools()
       .then(setToolCatalog)
       .catch(() => setToolCatalog([]))
@@ -434,14 +447,17 @@ function AgentEditorWorkspace() {
 
   const modelNames = useMemo(() => models.map((m) => m.name), [models])
 
-  const boundEnvironment = useMemo(() => environments.find((e) => e.name === environment), [environments, environment])
-  // The environment only stores tool NAMES (a live reference into the
-  // global catalog) — resolve them here the same way EnvironmentDetail's
-  // Playground does, dropping any name that's since been deleted from the
-  // catalog rather than erroring.
+  // availableTools resolves the agent's Tools set (names) against the global
+  // catalog, dropping any name that's since been deleted rather than
+  // erroring. This is the pool a tool / agent node picks from.
   const availableTools = useMemo(
-    () => (boundEnvironment?.tools ?? []).map((n) => toolCatalog.find((t) => t.name === n)).filter((t): t is Tool => t !== undefined),
-    [boundEnvironment, toolCatalog],
+    () => agentTools.map((n) => toolCatalog.find((t) => t.name === n)).filter((t): t is Tool => t !== undefined),
+    [agentTools, toolCatalog],
+  )
+  // The agent's knowledge-base set resolved against all bases.
+  const availableKnowledgeBases = useMemo(
+    () => agentKnowledgeBases.map((n) => knowledgeBases.find((k) => k.name === n)).filter((k): k is KnowledgeBase => k !== undefined),
+    [agentKnowledgeBases, knowledgeBases],
   )
 
   const selectedTool: Tool | undefined = useMemo(
@@ -468,17 +484,38 @@ function AgentEditorWorkspace() {
   // plain AgentGraph shape the backend expects — shared by Save and
   // StartDebugRun (the latter deliberately debugs this exact, possibly
   // unsaved, in-progress graph rather than requiring a save first).
-  const buildGraphPayload = (): AgentGraph => ({
-    nodes: nodes.map((n) => ({ id: n.id, type: n.type as NodeType, position: n.position, data: n.data })),
-    edges: edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      // The schema "out" handle is just the visual default branch — the
-      // engine's pass path is the unnamed handle, so canonicalise it.
-      sourceHandle: e.sourceHandle && e.sourceHandle !== 'out' ? e.sourceHandle : undefined,
-      target: e.target,
-    })),
-  })
+  const buildGraphPayload = (): AgentGraph => {
+    // Only a genuinely branching node emits a meaningful sourceHandle
+    // ("pass"/"fail", "body"/"done", switch cases + "default", or a schema'd
+    // prompt/agent's out/fail pair). Any other edge's sourceHandle is noise
+    // — canvas leftovers from a removed schema, a mis-drawn connection — and
+    // must be stripped, or the engine can't find the linear next edge and
+    // silently dead-ends the turn (echoing the node's own input back).
+    const branchSources = new Set(
+      nodes
+        .filter(
+          (n) =>
+            n.type === 'condition' ||
+            n.type === 'switch' ||
+            n.type === 'loop_start' ||
+            (n.type === 'prompt' && n.data.outputSchema?.trim()) ||
+            (n.type === 'agent' && n.data.agentOutputSchema?.trim()),
+        )
+        .map((n) => n.id),
+    )
+    return {
+      nodes: nodes.map((n) => ({ id: n.id, type: n.type as NodeType, position: n.position, data: n.data })),
+      edges: edges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        // The schema "out" handle is just the visual default branch — the
+        // engine's pass path is the unnamed handle, so canonicalise it away.
+        sourceHandle:
+          branchSources.has(e.source) && e.sourceHandle && e.sourceHandle !== 'out' ? e.sourceHandle : undefined,
+        target: e.target,
+      })),
+    }
+  }
 
   const handleSave = async () => {
     // Save is never blocked by validation — you can save work in progress;
@@ -486,7 +523,12 @@ function AgentEditorWorkspace() {
     setSaving(true)
     setError(null)
     try {
-      await saveAgent(name, buildGraphPayload(), environment || undefined, description || undefined)
+      await saveAgent(name, buildGraphPayload(), {
+        workspace: workspace || undefined,
+        tools: agentTools,
+        knowledgeBases: agentKnowledgeBases,
+        description: description || undefined,
+      })
       setSavedAt(Date.now())
     } catch (err) {
       setError((err as Error).message)
@@ -513,7 +555,7 @@ function AgentEditorWorkspace() {
     if (runBlocked) return
     setError(null)
     try {
-      const run = await startAgentRun(name)
+      const run = await startAgentRun(name, runWorkspace || undefined)
       setRunId(run.id)
       setMessages([])
       setSteps([])
@@ -548,6 +590,9 @@ function AgentEditorWorkspace() {
     if (runBlocked) return
     setPaletteOpen(true)
     setLeftTab('debug')
+    // The activity feed lives in the right sidebar during a debug session.
+    setInspectorOpen(true)
+    setInspectorTab('activity')
     if (!debugState) void handleStartDebug()
   }
 
@@ -558,6 +603,7 @@ function AgentEditorWorkspace() {
     setDebugError(null)
     setDebugFeed([])
     setStepStartedAt(null)
+    setInspectorTab('inspector')
   }
 
   const handleStartDebug = async () => {
@@ -568,8 +614,15 @@ function AgentEditorWorkspace() {
 
     setDebugStarting(true)
     setDebugError(null)
+    // The activity feed lives in the right sidebar during a debug session.
+    setInspectorOpen(true)
+    setInspectorTab('activity')
     try {
-      const state = await startAgentDebugRun(name, buildGraphPayload(), environment || undefined)
+      const state = await startAgentDebugRun(name, buildGraphPayload(), {
+        workspace: runWorkspace || workspace || undefined,
+        tools: agentTools,
+        knowledgeBases: agentKnowledgeBases,
+      })
       setDebugState(state)
     } catch (err) {
       setDebugError((err as Error).message)
@@ -655,8 +708,8 @@ function AgentEditorWorkspace() {
   // Live graph validation — recomputed on every edit. Any `error` disables
   // Run and Debug; `warning`s are advisory. See agentValidation.ts.
   const issues = useMemo(
-    () => validateGraph({ nodes, edges, environment, availableTools, knowledgeBases, environments }),
-    [nodes, edges, environment, availableTools, knowledgeBases, environments],
+    () => validateGraph({ nodes, edges, workspace, agentTools, agentKnowledgeBases, toolCatalog, knowledgeBases, workspaces }),
+    [nodes, edges, workspace, agentTools, agentKnowledgeBases, toolCatalog, knowledgeBases, workspaces],
   )
   const errorCount = issues.filter((i) => i.severity === 'error').length
   const warnCount = issues.length - errorCount
@@ -889,26 +942,16 @@ function AgentEditorWorkspace() {
                     )}
 
                     {debugFeed.length > 0 && (
-                      <>
-                        <div className="agent-palette-label">Activity</div>
-                        <ul className="event-log agent-debug-feed">
-                          {debugFeed.map((s, i) => (
-                            <li key={i} className={s.phase === 'start' ? 'agent-debug-feed-start' : undefined}>
-                              <span className="event-type">{s.nodeType}</span>
-                              <span className="event-data">{s.output}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    )}
-
-                    {debugState.lastStep && (
-                      <>
-                        <div className="agent-palette-label">
-                          Last step — {debugState.lastStep.nodeType}
-                        </div>
-                        <pre className="exec-output agent-debug-output">{debugState.lastStep.output || '(empty output)'}</pre>
-                      </>
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() => {
+                          setInspectorOpen(true)
+                          setInspectorTab('activity')
+                        }}
+                      >
+                        {debugFeed.length} activity event{debugFeed.length === 1 ? '' : 's'} → Activity panel
+                      </button>
                     )}
 
                     <div className="agent-palette-footer">
@@ -934,7 +977,10 @@ function AgentEditorWorkspace() {
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
-              onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+              onNodeClick={(_, node) => {
+                setSelectedNodeId(node.id)
+                setInspectorTab('inspector')
+              }}
               onPaneClick={() => setSelectedNodeId(null)}
               fitView
             >
@@ -953,13 +999,36 @@ function AgentEditorWorkspace() {
         {inspectorOpen && <div {...inspector.resizerProps} title="Drag to resize · double-click to reset" />}
         {inspectorOpen && (
           <aside className="agent-inspector" style={{ width: inspector.width }}>
-            {!selectedNode && (
+            {debugState && (
+              <div className="tab-bar">
+                <button
+                  type="button"
+                  className={`tab-button${inspectorTab === 'inspector' ? ' tab-button-active' : ''}`}
+                  onClick={() => setInspectorTab('inspector')}
+                >
+                  Inspector
+                </button>
+                <button
+                  type="button"
+                  className={`tab-button${inspectorTab === 'activity' ? ' tab-button-active' : ''}`}
+                  onClick={() => setInspectorTab('activity')}
+                >
+                  Activity{debugFeed.length > 0 ? ` (${debugFeed.length})` : ''}
+                </button>
+              </div>
+            )}
+
+            {debugState && inspectorTab === 'activity' && (
+              <DebugActivity feed={debugFeed} lastStep={debugState.lastStep} pending={!!debugState.pendingNodeId} />
+            )}
+
+            {(!debugState || inspectorTab === 'inspector') && !selectedNode && (
               <div className="inspector-empty">
                 <MousePointerClick size={28} />
                 <p>Select a node on the canvas to configure it.</p>
               </div>
             )}
-            {selectedNode && (
+            {(!debugState || inspectorTab === 'inspector') && selectedNode && (
               <>
                 <div className={`inspector-node-header inspector-node-header-${selectedNode.type}`}>
                   {(() => {
@@ -1365,17 +1434,17 @@ function AgentEditorWorkspace() {
                         <b>Agent</b> node instead.
                       </p>
 
-                      {!environment && (
+                      {agentTools.length === 0 && (
                         <p className="hint">
-                          This agent has no Environment configured —{' '}
+                          This agent has no tools —{' '}
                           <button type="button" className="link-button" onClick={() => setSettingsOpen(true)}>
-                            set one in Agent settings
+                            add some in Agent settings
                           </button>{' '}
-                          to give it tools to run.
+                          to give it something to run.
                         </p>
                       )}
 
-                      {environment && (
+                      {agentTools.length > 0 && (
                         <label>
                           Tool
                           <select value={selectedNode.data.toolName ?? ''} onChange={(e) => handleToolChange(e.target.value)}>
@@ -1389,9 +1458,16 @@ function AgentEditorWorkspace() {
                         </label>
                       )}
 
-                      {environment && selectedNode.data.toolName && !selectedTool && (
+                      {agentTools.length > 0 && selectedNode.data.toolName && !selectedTool && (
                         <p className="error">
-                          Tool "{selectedNode.data.toolName}" isn't on the "{environment}" environment anymore — pick another.
+                          Tool "{selectedNode.data.toolName}" isn't in this agent's tools anymore — pick another.
+                        </p>
+                      )}
+
+                      {!workspace && (
+                        <p className="hint">
+                          A Tool node also needs the agent bound to a workspace (Agent settings) — that's the
+                          sandbox the command runs in.
                         </p>
                       )}
 
@@ -1508,13 +1584,13 @@ function AgentEditorWorkspace() {
 
                       <div className="tool-arg-list">
                         <div className="inspector-section-label">Tools it can call</div>
-                        {!environment ? (
+                        {agentTools.length === 0 ? (
                           <p className="hint">
-                            This agent has no Environment configured —{' '}
+                            This agent has no tools —{' '}
                             <button type="button" className="link-button" onClick={() => setSettingsOpen(true)}>
-                              set one in Agent settings
-                            </button>{' '}
-                            to give this node tools.
+                              add some in Agent settings
+                            </button>
+                            .
                           </p>
                         ) : (
                           <MultiPickList
@@ -1526,13 +1602,13 @@ function AgentEditorWorkspace() {
                                 agentTools: checked ? [...cur, toolName] : cur.filter((n) => n !== toolName),
                               })
                             }}
-                            emptyMessage={`The "${environment}" environment has no tools attached.`}
+                            emptyMessage="The agent's tool set is empty."
                           />
                         )}
 
                         <div className="inspector-section-label">Knowledge bases it can search</div>
                         <MultiPickList
-                          options={knowledgeBases}
+                          options={availableKnowledgeBases}
                           selected={selectedNode.data.agentKnowledgeBases ?? []}
                           onToggle={(kbName, checked) => {
                             const cur = selectedNode.data.agentKnowledgeBases ?? []
@@ -1540,11 +1616,11 @@ function AgentEditorWorkspace() {
                               agentKnowledgeBases: checked ? [...cur, kbName] : cur.filter((n) => n !== kbName),
                             })
                           }}
-                          emptyMessage="No knowledge bases yet — create one on the Knowledge page."
+                          emptyMessage="The agent has no knowledge bases — add some in Agent settings."
                         />
                         <span className="field-hint">
                           Offered to the model as a built-in <code>knowledge_search</code> action — a deterministic
-                          keyword lookup, and it needs no Environment.
+                          keyword lookup, and it needs no workspace.
                         </span>
                       </div>
 
@@ -1574,15 +1650,19 @@ function AgentEditorWorkspace() {
                           onChange={(e) => updateSelectedNodeData({ knowledgeBaseName: e.target.value })}
                         >
                           <option value="">Select a knowledge base…</option>
-                          {knowledgeBases.map((kb) => (
+                          {availableKnowledgeBases.map((kb) => (
                             <option key={kb.name} value={kb.name}>
                               {kb.name}
                             </option>
                           ))}
                         </select>
-                        {knowledgeBases.length === 0 && (
+                        {agentKnowledgeBases.length === 0 && (
                           <span className="field-hint">
-                            No knowledge bases yet — create one on the <Link to="/knowledge">Knowledge</Link> page.
+                            This agent has no knowledge bases —{' '}
+                            <button type="button" className="link-button" onClick={() => setSettingsOpen(true)}>
+                              add some in Agent settings
+                            </button>
+                            .
                           </span>
                         )}
                       </label>
@@ -1646,10 +1726,18 @@ function AgentEditorWorkspace() {
 
       {settingsOpen && (
         <AgentSettingsModal
-          environment={environment}
-          environmentOptions={environments}
+          workspace={workspace}
+          testWorkspaces={workspaces.filter((w) => w.type === 'test')}
+          toolCatalog={toolCatalog}
+          knowledgeBases={knowledgeBases}
+          agentTools={agentTools}
+          agentKnowledgeBases={agentKnowledgeBases}
           description={description}
-          onChangeEnvironment={setEnvironment}
+          onChangeWorkspace={setWorkspace}
+          onToggleTool={(n, checked) => setAgentTools((cur) => (checked ? [...cur, n] : cur.filter((x) => x !== n)))}
+          onToggleKnowledgeBase={(n, checked) =>
+            setAgentKnowledgeBases((cur) => (checked ? [...cur, n] : cur.filter((x) => x !== n)))
+          }
           onChangeDescription={setDescription}
           onClose={() => setSettingsOpen(false)}
         />
@@ -1657,6 +1745,32 @@ function AgentEditorWorkspace() {
 
       {chatOpen && (
         <Modal title={`Chat with ${name}`} onClose={closeChat}>
+          <label className="run-workspace-picker">
+            Test workspace
+            <select
+              value={runWorkspace}
+              onChange={(e) => {
+                setRunWorkspace(e.target.value)
+                if (runId) void stopAgentRun(runId).catch(() => {})
+                setRunId(null)
+                setMessages([])
+                setSteps([])
+                void handleStartRun()
+              }}
+            >
+              <option value="">{workspace ? `Agent default (${workspace})` : 'None'}</option>
+              {workspaces
+                .filter((w) => w.type === 'test')
+                .map((w) => (
+                  <option key={w.name} value={w.name}>
+                    {w.name}
+                  </option>
+                ))}
+            </select>
+            <span className="field-hint">
+              A fresh copy is staged per run — find its folder in Workspaces → Running sandboxes to watch the agent work.
+            </span>
+          </label>
           {!runId && <p className="hint">Starting a run…</p>}
           {runId && (
             <>
@@ -1682,11 +1796,26 @@ function AgentEditorWorkspace() {
               {steps.length > 0 && (
                 <>
                   <h3>Live steps</h3>
-                  <ul className="event-log">
+                  <ul className="event-log agent-debug-feed">
                     {steps.map((s, i) => (
-                      <li key={i}>
-                        <span className="event-type">{s.nodeType}</span>
-                        <span className="event-data">{s.output}</span>
+                      <li
+                        key={i}
+                        className={
+                          s.phase === 'start'
+                            ? 'agent-debug-feed-start'
+                            : s.phase === 'tool'
+                              ? 'agent-debug-feed-tool'
+                              : undefined
+                        }
+                      >
+                        <span className="event-type">{s.phase === 'tool' ? 'tool call' : s.nodeType}</span>
+                        <span className="event-data">
+                          {s.phase === 'tool' && s.command ? (
+                            <code className="agent-tool-call">{s.command}</code>
+                          ) : (
+                            <Expandable text={s.output} limit={200} />
+                          )}
+                        </span>
                       </li>
                     ))}
                   </ul>
@@ -1754,77 +1883,125 @@ function ProgressGroup({ items, settled }: { items: ChatEntry[]; settled: boolea
   )
 }
 
-// MultiPickList is a checkbox list of named catalog items (tools or
-// knowledge bases) with an optional one-line description each — the agent
-// node's tool/knowledge selectors. Mirrors the tool node's .tool-arg-row
-// styling so both selectors read as the same component family.
-function MultiPickList({
-  options,
-  selected,
-  onToggle,
-  emptyMessage,
+// DebugActivity is the live event feed for a debug session — moved out of the
+// (cramped) left debug panel into the right sidebar. Each entry truncates long
+// text with a "Show more" toggle; a phase="tool" event shows the raw rendered
+// command the agent/tool node ran.
+function DebugActivity({
+  feed,
+  lastStep,
+  pending,
 }: {
-  options: { name: string; description?: string }[]
-  selected: string[]
-  onToggle: (name: string, checked: boolean) => void
-  emptyMessage: string
+  feed: AgentStepEvent[]
+  lastStep: DebugState['lastStep']
+  pending: boolean
 }) {
-  if (options.length === 0) return <p className="hint">{emptyMessage}</p>
+  if (feed.length === 0 && !lastStep) {
+    return <p className="hint">Step through a turn and each node's activity shows up here.</p>
+  }
   return (
-    <div className="tool-pick-list">
-      {options.map((o) => (
-        <label key={o.name} className="tool-pick-row">
-          <input
-            type="checkbox"
-            checked={selected.includes(o.name)}
-            onChange={(e) => onToggle(o.name, e.target.checked)}
-          />
-          <span className="tool-pick-row-body">
-            <span className="tool-pick-row-name">{o.name}</span>
-            {o.description && <span className="field-hint">{o.description}</span>}
-          </span>
-        </label>
-      ))}
+    <div className="agent-activity-panel">
+      {feed.length > 0 && (
+        <>
+          <div className="agent-palette-label">Activity{pending ? ' · running…' : ''}</div>
+          <ul className="event-log agent-debug-feed">
+            {feed.map((s, i) => {
+              const cls =
+                s.phase === 'start'
+                  ? 'agent-debug-feed-start'
+                  : s.phase === 'tool'
+                    ? 'agent-debug-feed-tool'
+                    : undefined
+              return (
+                <li key={i} className={cls}>
+                  <span className="event-type">{s.phase === 'tool' ? 'tool call' : s.nodeType}</span>
+                  <span className="event-data">
+                    {s.phase === 'tool' && s.command ? (
+                      <code className="agent-tool-call">{s.command}</code>
+                    ) : (
+                      <Expandable text={s.output} limit={200} />
+                    )}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </>
+      )}
+
+      {lastStep && (
+        <>
+          <div className="agent-palette-label">Last step — {lastStep.nodeType}</div>
+          <Expandable text={lastStep.output || '(empty output)'} limit={400} pre className="agent-debug-output" />
+        </>
+      )}
     </div>
   )
 }
 
 interface AgentSettingsModalProps {
-  environment: string
-  environmentOptions: Environment[]
+  workspace: string
+  testWorkspaces: Workspace[]
+  toolCatalog: Tool[]
+  knowledgeBases: KnowledgeBase[]
+  agentTools: string[]
+  agentKnowledgeBases: string[]
   description: string
-  onChangeEnvironment: (value: string) => void
+  onChangeWorkspace: (value: string) => void
+  onToggleTool: (name: string, checked: boolean) => void
+  onToggleKnowledgeBase: (name: string, checked: boolean) => void
   onChangeDescription: (value: string) => void
   onClose: () => void
 }
 
 function AgentSettingsModal({
-  environment,
-  environmentOptions,
+  workspace,
+  testWorkspaces,
+  toolCatalog,
+  knowledgeBases,
+  agentTools,
+  agentKnowledgeBases,
   description,
-  onChangeEnvironment,
+  onChangeWorkspace,
+  onToggleTool,
+  onToggleKnowledgeBase,
   onChangeDescription,
   onClose,
 }: AgentSettingsModalProps) {
-  const selected = environmentOptions.find((e) => e.name === environment)
-
   return (
-    <Modal title="Agent settings" onClose={onClose}>
+    <Modal title="Agent settings" onClose={onClose} size="lg">
       <div className="stacked-form">
         <label>
-          Environment
-          <select value={environment} onChange={(e) => onChangeEnvironment(e.target.value)}>
+          Workspace
+          <select value={workspace} onChange={(e) => onChangeWorkspace(e.target.value)}>
             <option value="">None</option>
-            {environmentOptions.map((env) => (
-              <option key={env.name} value={env.name}>
-                {env.name}
+            {testWorkspaces.map((w) => (
+              <option key={w.name} value={w.name}>
+                {w.name}
               </option>
             ))}
           </select>
+          <span className="field-hint">
+            A TEST workspace — a fresh copy of its files is the sandbox this agent's Tool/Agent nodes act
+            in. Real workspaces aren't selectable here; those are used through Deployments.
+          </span>
         </label>
-        {selected && (
-          <p className="hint">Tools available: {selected.tools.length > 0 ? selected.tools.join(', ') : 'none'}</p>
-        )}
+
+        <div className="inspector-section-label">Tools</div>
+        <MultiPickList
+          options={toolCatalog}
+          selected={agentTools}
+          onToggle={onToggleTool}
+          emptyMessage="No tools in the catalog yet — create some on the Tools page."
+        />
+
+        <div className="inspector-section-label">Knowledge bases</div>
+        <MultiPickList
+          options={knowledgeBases}
+          selected={agentKnowledgeBases}
+          onToggle={onToggleKnowledgeBase}
+          emptyMessage="No knowledge bases yet — create one on the Knowledge page."
+        />
 
         <label>
           Description

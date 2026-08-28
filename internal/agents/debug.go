@@ -103,7 +103,7 @@ func (dr *debugRun) applyStepResult(node *registry.Node, input, output, handle s
 	dr.lastStep = &StepEvent{NodeID: node.ID, NodeType: node.Type, Output: output}
 
 	var next *registry.Node
-	if edge := findEdge(dr.graph.Edges, node.ID, handle); edge != nil {
+	if edge := nextEdge(dr.graph.Edges, node.ID, node.Type, handle); edge != nil {
 		if n, found := dr.nodesByID[edge.Target]; found {
 			next = &n
 		}
@@ -141,13 +141,13 @@ func (dr *debugRun) applyStepResult(node *registry.Node, input, output, handle s
 }
 
 // StartDebugRun begins a paused debug session for agentName. Unlike
-// StartRun, the graph and environment binding it debugs come straight from
-// the caller (graph, environment) rather than the agent's saved
+// StartRun, the graph, workspace, and tool set it debugs come straight from
+// the caller (graph, workspace, toolNames) rather than the agent's saved
 // definition — so a session can debug the canvas's current, possibly
 // unsaved edits without round-tripping through Save first. agentName is
 // used only for display and to look up the agent when nothing else is
 // needed; it plays no role in choosing which graph runs.
-func (m *Manager) StartDebugRun(agentName string, graph registry.Graph, environment string) (*DebugState, error) {
+func (m *Manager) StartDebugRun(agentName string, graph registry.Graph, workspace string, toolNames []string) (*DebugState, error) {
 	// Resolve prompt/agent node model fields (a registry model name -> its
 	// path / repo id) before prepareGraph, so every node the debugger later
 	// steps carries the identifier mlx-lm's --model expects — same as a real
@@ -162,7 +162,7 @@ func (m *Manager) StartDebugRun(agentName string, graph registry.Graph, environm
 	// back-edges included) so applyStepResult follows the same paths Run does.
 	graph.Edges = edges
 
-	tools, err := m.resolveTools(environment)
+	tools, err := m.resolveTools(toolNames)
 	if err != nil {
 		return nil, err
 	}
@@ -178,10 +178,10 @@ func (m *Manager) StartDebugRun(agentName string, graph registry.Graph, environm
 		messages:  []ChatMessage{},
 	}
 
-	if environment != "" {
-		instance, err := m.envs.Launch(m.ctx, environment, fmt.Sprintf("agent-debug-%s", dr.id))
+	if workspace != "" {
+		instance, err := m.envs.Launch(m.ctx, workspace, fmt.Sprintf("agent-debug-%s", dr.id))
 		if err != nil {
-			return nil, fmt.Errorf("launch environment %q: %w", environment, err)
+			return nil, fmt.Errorf("launch workspace %q: %w", workspace, err)
 		}
 		dr.instanceID = instance.ID
 		dr.ownsInstance = true

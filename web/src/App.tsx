@@ -6,8 +6,8 @@ import BenchmarkDetail from './pages/BenchmarkDetail'
 import Benchmarks from './pages/Benchmarks'
 import DatasetDetail from './pages/DatasetDetail'
 import Datasets from './pages/Datasets'
-import EnvironmentDetail from './pages/EnvironmentDetail'
-import Environments from './pages/Environments'
+import DeploymentDetail from './pages/DeploymentDetail'
+import Deployments from './pages/Deployments'
 import EvaluationDetail from './pages/EvaluationDetail'
 import Evaluations from './pages/Evaluations'
 import Home from './pages/Home'
@@ -19,6 +19,8 @@ import Settings from './pages/Settings'
 import Tools from './pages/Tools'
 import Training from './pages/Training'
 import TrainingRunDetail from './pages/TrainingRunDetail'
+import WorkspaceDetail from './pages/WorkspaceDetail'
+import Workspaces from './pages/Workspaces'
 
 function App() {
   return (
@@ -31,8 +33,8 @@ function App() {
         <Route path="datasets/:name" element={<DatasetDetail />} />
         <Route path="training" element={<Training />} />
         <Route path="training/:id" element={<TrainingRunDetail />} />
-        <Route path="environments" element={<Environments />} />
-        <Route path="environments/:name" element={<EnvironmentDetail />} />
+        <Route path="workspaces" element={<Workspaces />} />
+        <Route path="workspaces/:name" element={<WorkspaceDetail />} />
         <Route path="knowledge" element={<Knowledge />} />
         <Route path="knowledge/:name" element={<KnowledgeDetail />} />
         <Route path="tools" element={<Tools />} />
@@ -42,6 +44,8 @@ function App() {
         <Route path="evaluations/:name" element={<EvaluationDetail />} />
         <Route path="benchmarks" element={<Benchmarks />} />
         <Route path="benchmarks/:name" element={<BenchmarkDetail />} />
+        <Route path="deployments" element={<Deployments />} />
+        <Route path="deployments/:name" element={<DeploymentDetail />} />
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>

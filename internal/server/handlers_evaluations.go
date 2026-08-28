@@ -12,8 +12,8 @@ import (
 )
 
 // normalizeEvaluation ensures TestCases (and each test case's Assertions/
-// Setup/VerifyCommands, and each verify step's own Assertions) never
-// serialize as JSON "null".
+// VerifyCommands, and each verify step's own Assertions) never serialize as
+// JSON "null".
 func normalizeEvaluation(e registry.Evaluation) registry.Evaluation {
 	if e.TestCases == nil {
 		e.TestCases = []registry.TestCase{}
@@ -28,9 +28,6 @@ func normalizeEvaluation(e registry.Evaluation) registry.Evaluation {
 func normalizeTestCase(tc registry.TestCase) registry.TestCase {
 	if tc.Assertions == nil {
 		tc.Assertions = []registry.Assertion{}
-	}
-	if tc.Setup == nil {
-		tc.Setup = []string{}
 	}
 	if tc.VerifyCommands == nil {
 		tc.VerifyCommands = []registry.VerifyStep{}
@@ -62,8 +59,7 @@ func listEvaluationsHandler(store evaluationStore) http.HandlerFunc {
 
 // saveEvaluationRequest is the POST /api/evaluations request body.
 type saveEvaluationRequest struct {
-	Name        string `json:"name"`
-	Environment string `json:"environment,omitempty"`
+	Name string `json:"name"`
 }
 
 // saveEvaluationHandler creates a new evaluation with no test cases at
@@ -81,7 +77,7 @@ func saveEvaluationHandler(store evaluationStore) http.HandlerFunc {
 			return
 		}
 
-		eval := registry.Evaluation{Name: req.Name, Environment: req.Environment}
+		eval := registry.Evaluation{Name: req.Name}
 		if err := store.SaveEvaluation(eval); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -111,35 +107,6 @@ func deleteEvaluationHandler(store evaluationStore) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-// updateEvaluationConfigRequest is the PUT /api/evaluations/{name}/config
-// request body.
-type updateEvaluationConfigRequest struct {
-	Environment string `json:"environment,omitempty"`
-}
-
-// updateEvaluationConfigHandler updates an evaluation's Environment binding
-// — a live setting, not versioned content, so this never touches TestCases
-// or Version.
-func updateEvaluationConfigHandler(store evaluationStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		name := r.PathValue("name")
-
-		var req updateEvaluationConfigRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
-			return
-		}
-
-		eval, err := store.UpdateEnvironment(name, req.Environment)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-
-		writeJSON(w, http.StatusOK, normalizeEvaluation(eval))
 	}
 }
 

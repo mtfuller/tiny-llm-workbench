@@ -74,6 +74,52 @@ func linearGraph() registry.Graph {
 	}
 }
 
+// A non-branching node whose only outgoing edge carries a stray sourceHandle
+// (e.g. left over from a removed output schema, or a mis-drawn connection)
+// must still be followed — not silently dead-end the turn and echo the
+// node's own input back.
+func TestRunToleratesStraySourceHandleOnLinearEdge(t *testing.T) {
+	graph := linearGraph()
+	graph.Edges[0].SourceHandle = "fail" // input node never produces "fail"
+
+	llm := &fakeLLM{responses: []string{"real reply"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "hi", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "real reply" {
+		t.Errorf("Run() = %q, want the prompt node to have run despite the stray handle", reply)
+	}
+}
+
+// But a real branching node (condition/switch/loop_start) with a genuinely
+// unwired branch still ends the turn there — the fallback is scoped to
+// linear nodes only.
+func TestRunConditionUnwiredBranchStillEndsTurn(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input"},
+			{ID: "c", Type: "condition", Data: registry.NodeData{ConditionType: "contains", ConditionValue: "yes"}},
+			{ID: "p", Type: "prompt", Data: registry.NodeData{Model: "m"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "c"},
+			{ID: "e2", Source: "c", SourceHandle: "pass", Target: "p"}, // only "pass" wired
+		},
+	}
+	engine := NewEngine(&fakeLLM{responses: []string{"unused"}}, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "no match here", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "no match here" {
+		t.Errorf("Run() = %q, want the turn to end at the condition's unwired fail branch (inbound value)", reply)
+	}
+}
+
 func TestRunLinearGraph(t *testing.T) {
 	llm := &fakeLLM{responses: []string{"hello there!"}}
 	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
@@ -1254,13 +1300,48 @@ func TestRunAgentNodeCallsToolThenFinal(t *testing.T) {
 		t.Errorf("tools.calls = %v, want [search 'capital of France']", tools.calls)
 	}
 	sawAgentIteration := false
+	sawRawToolCall := false
 	for _, s := range steps {
 		if s.NodeType == "agent" && strings.Contains(s.Output, "web_search") {
 			sawAgentIteration = true
 		}
+		if s.Phase == "tool" && s.Command == "search 'capital of France'" {
+			sawRawToolCall = true
+		}
 	}
 	if !sawAgentIteration {
 		t.Errorf("steps = %+v, want an agent iteration step mentioning web_search", steps)
+	}
+	if !sawRawToolCall {
+		t.Errorf("steps = %+v, want a phase=\"tool\" event carrying the raw rendered command", steps)
+	}
+}
+
+// A plain tool node also emits a phase="tool" event with the exact rendered
+// command before it runs — so the debug activity feed shows the raw call.
+func TestRunToolNodeEmitsRawCommand(t *testing.T) {
+	tools := &fakeTools{output: "file contents"}
+	toolDefs := []registry.Tool{{
+		Name:       "read_file",
+		Command:    "cat {{path}}",
+		Parameters: []registry.ToolParameter{{Name: "path", Type: registry.ToolParamString, Required: true}},
+	}}
+	graph := toolGraph(registry.NodeData{Name: "Read", ToolName: "read_file", ToolArgs: map[string]string{"path": "notes.txt"}})
+
+	var steps []StepEvent
+	engine := NewEngine(&fakeLLM{}, tools, &fakeKnowledgeReader{})
+	if _, err := engine.Run(context.Background(), graph, nil, "go", "container-1", toolDefs, &RunHooks{OnStep: func(s StepEvent) { steps = append(steps, s) }}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	sawRaw := false
+	for _, s := range steps {
+		if s.NodeType == "tool" && s.Phase == "tool" && s.Command == "cat 'notes.txt'" {
+			sawRaw = true
+		}
+	}
+	if !sawRaw {
+		t.Errorf("steps = %+v, want a tool-node phase=\"tool\" event with command \"cat 'notes.txt'\"", steps)
 	}
 }
 

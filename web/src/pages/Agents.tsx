@@ -28,10 +28,14 @@ function Agents() {
     setCreateError(null)
     try {
       // The canvas flows top-to-bottom, so the Input node starts near the top.
-      await saveAgent(name, {
-        nodes: [{ id: 'input-1', type: 'input', position: { x: 240, y: 60 }, data: { name: 'Input' } }],
-        edges: [],
-      })
+      await saveAgent(
+        name,
+        {
+          nodes: [{ id: 'input-1', type: 'input', position: { x: 240, y: 60 }, data: { name: 'Input' } }],
+          edges: [],
+        },
+        { tools: [], knowledgeBases: [] },
+      )
       navigate(`/agents/${encodeURIComponent(name)}`)
     } catch (err) {
       setCreateError((err as Error).message)
@@ -69,7 +73,7 @@ function Agents() {
           <thead>
             <tr>
               <th>Name</th>
-              <th>Environment</th>
+              <th>Workspace</th>
               <th>Nodes</th>
               <th>Created</th>
               <th></th>
@@ -81,7 +85,7 @@ function Agents() {
                 <td>
                   <Link to={`/agents/${encodeURIComponent(agent.name)}`}>{agent.name}</Link>
                 </td>
-                <td>{agent.environment || '—'}</td>
+                <td>{agent.workspace || '—'}</td>
                 <td>{agent.graph.nodes.length}</td>
                 <td>{formatDate(agent.createdAt)}</td>
                 <td className="row-actions">

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
 	"github.com/mtfuller/tiny-llm-workbench/internal/benchmarks"
+	"github.com/mtfuller/tiny-llm-workbench/internal/deployments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/environments"
 	"github.com/mtfuller/tiny-llm-workbench/internal/evaluations"
 	"github.com/mtfuller/tiny-llm-workbench/internal/eventbus"
@@ -69,26 +70,42 @@ type trainingManager interface {
 	GetRun(id string) (*training.Run, bool)
 }
 
-// environmentStore is the subset of registry.Registry the server needs for
-// Environment definitions.
-type environmentStore interface {
-	ListEnvironments() ([]registry.Environment, error)
-	SaveEnvironment(e registry.Environment) error
-	GetEnvironment(name string) (registry.Environment, error)
-	DeleteEnvironment(name string) error
-	UpdateConfig(name, image string, mounts []registry.Mount) error
-	AttachTool(name, toolName string) error
-	DetachTool(name, toolName string) error
+// workspaceStore is the subset of registry.Registry the server needs for
+// Workspace definitions.
+type workspaceStore interface {
+	ListWorkspaces() ([]registry.Workspace, error)
+	SaveWorkspace(w registry.Workspace) error
+	GetWorkspace(name string) (registry.Workspace, error)
+	DeleteWorkspace(name string) error
 }
 
-// environmentManager is the subset of environments.Manager the server needs.
-type environmentManager interface {
-	Launch(ctx context.Context, environmentName, instanceName string) (environments.Instance, error)
+// workspaceManager is the subset of environments.Manager the server needs to
+// launch/stop workspace sandboxes and exec into them.
+type workspaceManager interface {
+	Launch(ctx context.Context, workspaceName, instanceName string) (environments.Instance, error)
 	Stop(ctx context.Context, instanceID string) error
 	ListInstances(ctx context.Context) ([]environments.Instance, error)
 	StartExec(instanceID, command string) (*environments.Exec, error)
 	GetExec(id string) (*environments.Exec, bool)
 	TryTool(instanceID string, tool registry.Tool, args map[string]string) (*environments.Exec, error)
+}
+
+// deploymentStore is the subset of registry.Registry the server needs for
+// Deployment definitions.
+type deploymentStore interface {
+	ListDeployments() ([]registry.Deployment, error)
+	SaveDeployment(d registry.Deployment) error
+	GetDeployment(name string) (registry.Deployment, error)
+	DeleteDeployment(name string) error
+}
+
+// deploymentManager is the subset of deployments.Manager the server needs.
+type deploymentManager interface {
+	Start(deploymentName string) (*deployments.Session, error)
+	SendMessage(sessionID, message string) (agents.ChatMessage, error)
+	Stop(sessionID string) error
+	Get(sessionID string) (*deployments.Session, bool)
+	List() []*deployments.Session
 }
 
 // toolStore is the subset of registry.Registry the server needs for the
@@ -123,12 +140,12 @@ type agentStore interface {
 
 // agentManager is the subset of agents.Manager the server needs.
 type agentManager interface {
-	StartRun(agentName string) (*agents.Run, error)
+	StartRun(agentName, workspaceOverride string) (*agents.Run, error)
 	StopRun(runID string) error
 	SendMessage(runID, message string) (agents.ChatMessage, error)
 	GetRun(id string) (*agents.Run, bool)
 
-	StartDebugRun(agentName string, graph registry.Graph, environment string) (*agents.DebugState, error)
+	StartDebugRun(agentName string, graph registry.Graph, workspace string, tools []string) (*agents.DebugState, error)
 	SendDebugMessage(id, message string) (*agents.DebugState, error)
 	StepDebugRun(id string) (*agents.DebugState, error)
 	RetryDebugRun(id string) (*agents.DebugState, error)
@@ -143,7 +160,6 @@ type evaluationStore interface {
 	SaveEvaluation(e registry.Evaluation) error
 	GetEvaluation(name string) (registry.Evaluation, error)
 	DeleteEvaluation(name string) error
-	UpdateEnvironment(name, environment string) (registry.Evaluation, error)
 	AddEvaluationTestCases(evaluationName string, tcs []registry.TestCase) error
 	UpdateEvaluationTestCase(evaluationName string, index int, tc registry.TestCase) error
 	DeleteEvaluationTestCase(evaluationName string, index int) error
@@ -189,24 +205,26 @@ type testCaseGenerator interface {
 // Deps are the server's dependencies, all provided by the caller so they can
 // be swapped for fakes in tests.
 type Deps struct {
-	Bus          *eventbus.Bus
-	Models       modelStore
-	ModelRunner  modelRunner
-	HuggingFace  hfSearcher
-	Datasets     datasetStore
-	Generator    variationGenerator
-	Training     trainingManager
-	Environments environmentStore
-	Instances    environmentManager
-	Tools        toolStore
-	Knowledge    knowledgeStore
-	Agents       agentStore
-	AgentRuns    agentManager
-	Evaluations  evaluationStore
-	EvalRuns     evaluationManager
-	Benchmarks   benchmarkStore
-	BenchRuns    benchmarkManager
-	TestCaseGen  testCaseGenerator
+	Bus                *eventbus.Bus
+	Models             modelStore
+	ModelRunner        modelRunner
+	HuggingFace        hfSearcher
+	Datasets           datasetStore
+	Generator          variationGenerator
+	Training           trainingManager
+	Workspaces         workspaceStore
+	Instances          workspaceManager
+	Tools              toolStore
+	Knowledge          knowledgeStore
+	Agents             agentStore
+	AgentRuns          agentManager
+	Evaluations        evaluationStore
+	EvalRuns           evaluationManager
+	Benchmarks         benchmarkStore
+	BenchRuns          benchmarkManager
+	Deployments        deploymentStore
+	DeploymentSessions deploymentManager
+	TestCaseGen        testCaseGenerator
 
 	// RegistryRoot is a plain config value (not behavior), shown read-only
 	// on the Settings page.
@@ -249,24 +267,22 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /api/training/runs", listTrainingRunsHandler(deps.Training))
 	mux.HandleFunc("GET /api/training/runs/{id}", getTrainingRunHandler(deps.Training))
 	mux.HandleFunc("POST /api/training/runs/{id}/cancel", cancelTrainingRunHandler(deps.Training))
-	mux.HandleFunc("GET /api/environments", listEnvironmentsHandler(deps.Environments))
-	mux.HandleFunc("POST /api/environments", createEnvironmentHandler(deps.Environments))
-	mux.HandleFunc("GET /api/environments/{name}", getEnvironmentHandler(deps.Environments))
-	mux.HandleFunc("DELETE /api/environments/{name}", deleteEnvironmentHandler(deps.Environments))
-	mux.HandleFunc("PUT /api/environments/{name}/config", updateEnvironmentConfigHandler(deps.Environments))
-	mux.HandleFunc("POST /api/environments/{name}/tools", attachToolHandler(deps.Environments))
-	mux.HandleFunc("DELETE /api/environments/{name}/tools/{toolName}", detachToolHandler(deps.Environments))
-	mux.HandleFunc("POST /api/environments/{name}/tools/{toolName}/try", tryToolHandler(deps.Environments, deps.Tools, deps.Instances))
-	mux.HandleFunc("POST /api/environments/{name}/launch", launchEnvironmentHandler(deps.Instances))
-	mux.HandleFunc("GET /api/environments/instances", listInstancesHandler(deps.Instances))
-	mux.HandleFunc("POST /api/environments/instances/{id}/stop", stopInstanceHandler(deps.Instances))
-	mux.HandleFunc("POST /api/environments/instances/{id}/exec", startExecHandler(deps.Instances))
-	mux.HandleFunc("GET /api/environments/instances/{id}/execs/{execId}", getExecHandler(deps.Instances))
+	mux.HandleFunc("GET /api/workspaces", listWorkspacesHandler(deps.Workspaces))
+	mux.HandleFunc("POST /api/workspaces", createWorkspaceHandler(deps.Workspaces))
+	mux.HandleFunc("GET /api/workspaces/instances", listInstancesHandler(deps.Instances))
+	mux.HandleFunc("POST /api/workspaces/instances/{id}/stop", stopInstanceHandler(deps.Instances))
+	mux.HandleFunc("POST /api/workspaces/instances/{id}/exec", startExecHandler(deps.Instances))
+	mux.HandleFunc("GET /api/workspaces/instances/{id}/execs/{execId}", getExecHandler(deps.Instances))
+	mux.HandleFunc("GET /api/workspaces/{name}", getWorkspaceHandler(deps.Workspaces))
+	mux.HandleFunc("DELETE /api/workspaces/{name}", deleteWorkspaceHandler(deps.Workspaces))
+	mux.HandleFunc("POST /api/workspaces/{name}/launch", launchWorkspaceHandler(deps.Instances))
+	mux.HandleFunc("GET /api/fs/list", listDirectoryHandler())
 	mux.HandleFunc("GET /api/tools", listToolsHandler(deps.Tools))
 	mux.HandleFunc("POST /api/tools", createToolHandler(deps.Tools))
 	mux.HandleFunc("GET /api/tools/{name}", getToolHandler(deps.Tools))
 	mux.HandleFunc("PUT /api/tools/{name}", updateToolHandler(deps.Tools))
 	mux.HandleFunc("DELETE /api/tools/{name}", deleteToolHandler(deps.Tools))
+	mux.HandleFunc("POST /api/tools/{name}/try", tryCatalogToolHandler(deps.Tools, deps.Workspaces, deps.Instances))
 	mux.HandleFunc("GET /api/knowledge", listKnowledgeBasesHandler(deps.Knowledge))
 	mux.HandleFunc("POST /api/knowledge", createKnowledgeBaseHandler(deps.Knowledge))
 	mux.HandleFunc("GET /api/knowledge/{name}", getKnowledgeBaseHandler(deps.Knowledge))
@@ -292,7 +308,6 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/evaluations", saveEvaluationHandler(deps.Evaluations))
 	mux.HandleFunc("GET /api/evaluations/{name}", getEvaluationHandler(deps.Evaluations))
 	mux.HandleFunc("DELETE /api/evaluations/{name}", deleteEvaluationHandler(deps.Evaluations))
-	mux.HandleFunc("PUT /api/evaluations/{name}/config", updateEvaluationConfigHandler(deps.Evaluations))
 	mux.HandleFunc("POST /api/evaluations/{name}/test-cases", addEvaluationTestCasesHandler(deps.Evaluations))
 	mux.HandleFunc("PUT /api/evaluations/{name}/test-cases/{index}", updateEvaluationTestCaseHandler(deps.Evaluations))
 	mux.HandleFunc("DELETE /api/evaluations/{name}/test-cases/{index}", deleteEvaluationTestCaseHandler(deps.Evaluations))
@@ -331,6 +346,14 @@ func New(deps Deps) (http.Handler, error) {
 	// 2-segment GET patterns with the wildcard in a different position, and
 	// e.g. "/api/benchmarks/runs/results" would match either.
 	mux.HandleFunc("GET /api/benchmark-results/{name}", listBenchmarkResultsHandler(deps.BenchRuns))
+	mux.HandleFunc("GET /api/deployments", listDeploymentsHandler(deps.Deployments))
+	mux.HandleFunc("POST /api/deployments", createDeploymentHandler(deps.Deployments))
+	mux.HandleFunc("POST /api/deployments/sessions/{id}/messages", sendDeploymentMessageHandler(deps.DeploymentSessions))
+	mux.HandleFunc("GET /api/deployments/sessions/{id}", getDeploymentSessionHandler(deps.DeploymentSessions))
+	mux.HandleFunc("POST /api/deployments/sessions/{id}/stop", stopDeploymentSessionHandler(deps.DeploymentSessions))
+	mux.HandleFunc("GET /api/deployments/{name}", getDeploymentHandler(deps.Deployments))
+	mux.HandleFunc("DELETE /api/deployments/{name}", deleteDeploymentHandler(deps.Deployments))
+	mux.HandleFunc("POST /api/deployments/{name}/start", startDeploymentHandler(deps.DeploymentSessions))
 
 	return mux, nil
 }
