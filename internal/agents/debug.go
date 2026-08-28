@@ -65,6 +65,11 @@ type debugRun struct {
 	lastInput string
 	lastStep  *StepEvent
 
+	// lastFinalSaid holds the text of the most recent "say" node marked
+	// final this session, so a turn that ends downstream of one still reports
+	// that message as its reply — matching Engine.Run's final-answer rule.
+	lastFinalSaid *string
+
 	finished bool
 }
 
@@ -109,16 +114,22 @@ func (dr *debugRun) applyStepResult(node *registry.Node, input, output, handle s
 		// target) — this is where the turn ends.
 		dr.pending = nil
 		dr.pendingInput = ""
+		// A "say" node marked final overrides the terminal node's own output
+		// as the turn's reply, same as Engine.Run.
+		answer := output
+		if dr.lastFinalSaid != nil {
+			answer = *dr.lastFinalSaid
+		}
 		switch {
 		case dr.pendingUserMsg != nil:
 			// First time this turn has reached a finish.
-			dr.messages = append(dr.messages, *dr.pendingUserMsg, ChatMessage{Role: "assistant", Content: output, Timestamp: time.Now().UTC()})
+			dr.messages = append(dr.messages, *dr.pendingUserMsg, ChatMessage{Role: "assistant", Content: answer, Timestamp: time.Now().UTC()})
 			dr.pendingUserMsg = nil
 		case dr.finished && len(dr.messages) > 0:
 			// Retrying the already-finished turn's terminal node — replace
 			// the trailing assistant message with the fresh output rather
 			// than leaving the discarded attempt's text in history.
-			dr.messages[len(dr.messages)-1] = ChatMessage{Role: "assistant", Content: output, Timestamp: time.Now().UTC()}
+			dr.messages[len(dr.messages)-1] = ChatMessage{Role: "assistant", Content: answer, Timestamp: time.Now().UTC()}
 		}
 		dr.finished = true
 		return
@@ -210,6 +221,23 @@ func (m *Manager) SendDebugMessage(id, message string) (*DebugState, error) {
 	return dr.toState(), nil
 }
 
+// debugHooks builds the RunHooks a debug Step/Retry passes into runNode:
+// it streams step events and "say" messages on the eventbus (keyed to the
+// debug run id, same as a normal run) and records the last final "say" text
+// on dr so applyStepResult can report it as the turn's reply.
+func (m *Manager) debugHooks(id string, dr *debugRun) *RunHooks {
+	return &RunHooks{
+		OnStep: func(s StepEvent) { m.publishStep(id, s) },
+		OnMessage: func(msg TurnMessage) {
+			if msg.Kind == turnMessageFinal {
+				c := msg.Content
+				dr.lastFinalSaid = &c
+			}
+			m.publishTurnMessage(id, msg)
+		},
+	}
+}
+
 // StepDebugRun executes exactly the pending node — the same runNode logic
 // Run's own loop uses — and returns the resulting state, with LastStep
 // showing what that node itself produced. A failure leaves the session
@@ -231,7 +259,7 @@ func (m *Manager) StepDebugRun(id string) (*DebugState, error) {
 	input := dr.pendingInput
 	snapshot := dr.rc.clone() // state right before node runs — what a later Retry restores
 
-	output, handle, err := m.engine.runNode(m.ctx, node, input, dr.instanceID, dr.tools, dr.messages, dr.rc, func(s StepEvent) { m.publishStep(id, s) })
+	output, handle, err := m.engine.runNode(m.ctx, node, input, dr.instanceID, dr.tools, dr.messages, dr.rc, m.debugHooks(id, dr))
 	if err != nil {
 		soft, fatal := resolveStepErr(dr.graph.Edges, node.ID, err)
 		if fatal != nil {
@@ -272,7 +300,7 @@ func (m *Manager) RetryDebugRun(id string) (*DebugState, error) {
 	input := dr.lastInput
 	dr.rc = dr.rcBeforeLast.clone()
 
-	output, handle, err := m.engine.runNode(m.ctx, node, input, dr.instanceID, dr.tools, dr.messages, dr.rc, func(s StepEvent) { m.publishStep(id, s) })
+	output, handle, err := m.engine.runNode(m.ctx, node, input, dr.instanceID, dr.tools, dr.messages, dr.rc, m.debugHooks(id, dr))
 	if err != nil {
 		soft, fatal := resolveStepErr(dr.graph.Edges, node.ID, err)
 		if fatal != nil {

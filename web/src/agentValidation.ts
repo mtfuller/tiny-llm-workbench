@@ -52,6 +52,8 @@ function templateStringsFor(n: GraphNodeLike): string[] {
       return [d.matchTemplate].filter((s): s is string => !!s)
     case 'state':
       return [d.stateValue].filter((s): s is string => !!s)
+    case 'say':
+      return [d.sayTemplate].filter((s): s is string => !!s)
     case 'knowledge':
       return [d.knowledgeQuery].filter((s): s is string => !!s)
     case 'agent':
@@ -254,6 +256,11 @@ export function validateGraph({
           add('error', `Knowledge node ${label(n)}: knowledge base "${d.knowledgeBaseName}" no longer exists.`, n.id)
         break
 
+      case 'say':
+        if (d.sayFinal && !d.sayTemplate?.trim())
+          add('warning', `Say node ${label(n)} is marked final but has no text — it'll echo the previous node's output.`, n.id)
+        break
+
       case 'input':
         break
 
@@ -278,6 +285,12 @@ export function validateGraph({
   // Environment binding that no longer resolves.
   if (environment && !environments.some((e) => e.name === environment))
     add('error', `This agent is bound to Environment "${environment}", which no longer exists.`)
+
+  // More than one Say node marked final — whichever runs last on the taken
+  // path wins, which is easy to get wrong.
+  const finalSays = nodes.filter((n) => n.type === 'say' && n.data.sayFinal)
+  if (finalSays.length > 1)
+    add('warning', `${finalSays.length} Say nodes are marked as the final answer — whichever runs last wins.`)
 
   // De-dupe identical messages (e.g. the same bad {{ref}} in two fields).
   const key = (i: GraphIssue) => `${i.severity}|${i.nodeId ?? ''}|${i.message}`

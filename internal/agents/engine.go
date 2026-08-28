@@ -5,12 +5,14 @@
 // named Tool from the agent's bound Environment for each tool node,
 // deterministically keyword-searching a named KnowledgeBase for each
 // knowledge node (independent of any Environment — see internal/knowledge),
-// and returning whatever text the walk ends on. There's no dedicated
+// emitting a user-facing progress or final message for each "say" node, and
+// returning whatever text the walk ends on. There's no dedicated
 // "output" node type: a node with no outgoing edge for the handle it
 // produces is simply where the turn ends, and its own output becomes the
-// reply — this lets any node type serve as a graph's terminal, and means a
-// user never has to remember to wire up a trailing node just to mark "this
-// is the end." Every node's output is kept (by its user-chosen Name) for
+// reply (unless a "say" node marked final ran, in which case that message
+// is the reply) — this lets any node type serve as a graph's terminal, and
+// means a user never has to remember to wire up a trailing node just to mark
+// "this is the end." Every node's output is kept (by its user-chosen Name) for
 // the rest of the turn, so a downstream node's template can reference any
 // earlier node's output — not just its immediate predecessor — and, for a
 // prompt node with a declared output JSON Schema, a specific property of
@@ -86,6 +88,47 @@ type StepEvent struct {
 	NodeID   string `json:"nodeId"`
 	NodeType string `json:"nodeType"`
 	Output   string `json:"output"`
+}
+
+// TurnMessage is a user-facing message a "say" node emits mid-turn: a
+// progress update (Kind "progress"), shown live in the chat as the agent
+// works, or the turn's definitive reply (Kind "final"). The engine streams
+// these via RunHooks.OnMessage; the last "final" one emitted is what Run
+// returns as the turn's reply, and if none is emitted the terminal node's
+// own output is used instead (the pre-say-node behavior).
+type TurnMessage struct {
+	Kind    string `json:"kind"` // "progress" | "final"
+	Content string `json:"content"`
+}
+
+const (
+	turnMessageProgress = "progress"
+	turnMessageFinal    = "final"
+)
+
+// RunHooks carries the optional per-turn callbacks Run and the step-by-step
+// debugger invoke while walking the graph. A nil *RunHooks, or a nil field,
+// disables the corresponding callback — the emit* helpers are nil-safe so
+// callers never have to check.
+type RunHooks struct {
+	// OnStep fires once per node visited, and once per internal iteration of
+	// an agent node, for the Run view's live execution trace.
+	OnStep func(StepEvent)
+	// OnMessage fires when a "say" node emits a user-facing message, for
+	// live chat streaming.
+	OnMessage func(TurnMessage)
+}
+
+func (h *RunHooks) emitStep(s StepEvent) {
+	if h != nil && h.OnStep != nil {
+		h.OnStep(s)
+	}
+}
+
+func (h *RunHooks) emitMessage(m TurnMessage) {
+	if h != nil && h.OnMessage != nil {
+		h.OnMessage(m)
+	}
 }
 
 // llmClient is the subset of mlxrunner.Runner the engine needs to call a
@@ -190,15 +233,19 @@ func prepareGraph(graph registry.Graph) (*registry.Node, map[string]registry.Nod
 // configured) — required by any tool node in the graph. tools is the bound
 // Environment's declared Tool definitions (a tool node's ToolName resolves
 // against this list); empty if the agent has no Environment configured.
-// onStep, if non-nil, is called for every node visited, with what that node
-// itself produced.
+// hooks, if non-nil, carries per-turn callbacks: OnStep for every node
+// visited (with what that node itself produced) and OnMessage for each
+// user-facing message a "say" node emits.
+//
+// The turn's reply is the last "final" TurnMessage a say node emitted, or —
+// if no say node was marked final — the terminal node's own output.
 //
 // Every node that declares a Name (registry.NodeData.Name) becomes
 // referenceable in a later node's template fields (PromptTemplate,
 // MatchTemplate, ToolArgs values) as {{Name}} (its raw text output) or, if
 // it's a prompt node with OutputSchema configured, {{Name.property}} for a
 // specific property of its validated JSON reply — see runcontext.go.
-func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMessage, userMessage, instanceID string, tools []registry.Tool, onStep func(StepEvent)) (string, error) {
+func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMessage, userMessage, instanceID string, tools []registry.Tool, hooks *RunHooks) (string, error) {
 	inputNode, nodesByID, edges, err := prepareGraph(graph)
 	if err != nil {
 		return "", err
@@ -208,12 +255,26 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 	current := inputNode
 	output := userMessage
 
+	// Wrap the caller's hooks so we can capture the last "final" say message
+	// as the turn's reply while still forwarding every message on.
+	var finalOverride *string
+	inner := &RunHooks{
+		OnStep: func(s StepEvent) { hooks.emitStep(s) },
+		OnMessage: func(m TurnMessage) {
+			if m.Kind == turnMessageFinal {
+				c := m.Content
+				finalOverride = &c
+			}
+			hooks.emitMessage(m)
+		},
+	}
+
 	for step := 0; ; step++ {
 		if step >= maxSteps {
 			return "", fmt.Errorf("agent exceeded %d steps — an unbounded loop in the graph; give a loop start a max, or add a condition that eventually routes out", maxSteps)
 		}
 
-		newOutput, handle, err := e.runNode(ctx, *current, output, instanceID, tools, history, rc, onStep)
+		newOutput, handle, err := e.runNode(ctx, *current, output, instanceID, tools, history, rc, inner)
 		if err != nil {
 			soft, fatal := resolveStepErr(edges, current.ID, err)
 			if fatal != nil {
@@ -223,14 +284,14 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 		}
 		output = newOutput
 
-		if onStep != nil {
-			onStep(StepEvent{NodeID: current.ID, NodeType: current.Type, Output: output})
-		}
+		inner.emitStep(StepEvent{NodeID: current.ID, NodeType: current.Type, Output: output})
 
 		edge := findEdge(edges, current.ID, handle)
 		if edge == nil {
-			// No outgoing edge for this node's handle — this is where the
-			// graph ends; its own output is the turn's reply.
+			// No outgoing edge for this node's handle — the turn ends here.
+			if finalOverride != nil {
+				return *finalOverride, nil
+			}
 			return output, nil
 		}
 
@@ -247,10 +308,10 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 // handle to follow next: "" for most node types, "pass"/"fail" for a
 // condition node, "body"/"done" for a loop_start node. Shared by Run's loop
 // above and the step-by-step debugger (see debug.go) so both execute a
-// node identically. onStep (nil-safe) receives one event per internal
-// iteration of an agent node's tool-calling loop, so that loop shows up
-// live even though the whole node runs as a single step.
-func (e *Engine) runNode(ctx context.Context, node registry.Node, input, instanceID string, tools []registry.Tool, history []ChatMessage, rc *runContext, onStep func(StepEvent)) (output, handle string, err error) {
+// node identically. hooks (nil-safe) carries OnStep — one event per
+// internal iteration of an agent node's tool-calling loop — and OnMessage,
+// invoked when a "say" node emits a user-facing message.
+func (e *Engine) runNode(ctx context.Context, node registry.Node, input, instanceID string, tools []registry.Tool, history []ChatMessage, rc *runContext, hooks *RunHooks) (output, handle string, err error) {
 	switch node.Type {
 	case "input":
 		rc.set(node.Data.Name, input, nil)
@@ -393,8 +454,27 @@ func (e *Engine) runNode(ctx context.Context, node registry.Node, input, instanc
 		rc.set(node.Data.Name, newVal, nil)
 		return newVal, "", nil
 
+	case "say":
+		text := input
+		if node.Data.SayTemplate != "" {
+			rendered, err := rc.render(node.Data.SayTemplate)
+			if err != nil {
+				return "", "", fmt.Errorf("say node %q: %w", node.ID, err)
+			}
+			text = rendered
+		}
+		kind := turnMessageProgress
+		if node.Data.SayFinal {
+			kind = turnMessageFinal
+		}
+		hooks.emitMessage(TurnMessage{Kind: kind, Content: text})
+		// The rendered text also flows on to the next node so it's
+		// referenceable downstream as {{Name}} / {{Name.property}}.
+		rc.set(node.Data.Name, text, parseIfJSON(text))
+		return text, "", nil
+
 	case "agent":
-		final, err := e.runAgentNode(ctx, node, input, instanceID, tools, history, rc, onStep)
+		final, err := e.runAgentNode(ctx, node, input, instanceID, tools, history, rc, hooks)
 		if err != nil {
 			return "", "", err
 		}
@@ -534,9 +614,9 @@ var (
 // output as an OBSERVATION; a FINAL reply (or, as a graceful fallback, any
 // reply with neither a usable ACTION nor a FINAL) ends the loop and becomes
 // the node's output; hitting AgentMaxIterations returns the model's last
-// text best-effort. onStep (nil-safe) fires once per iteration for the live
-// log.
-func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, instanceID string, tools []registry.Tool, history []ChatMessage, rc *runContext, onStep func(StepEvent)) (string, error) {
+// text best-effort. hooks.OnStep (nil-safe) fires once per iteration for the
+// live log.
+func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, instanceID string, tools []registry.Tool, history []ChatMessage, rc *runContext, hooks *RunHooks) (string, error) {
 	instructions := input
 	if node.Data.AgentInstructions != "" {
 		rendered, err := rc.render(node.Data.AgentInstructions)
@@ -628,7 +708,7 @@ func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, in
 			}
 			obs := knowledge.FormatResults(recs)
 			transcript.WriteString(fmt.Sprintf("ACTION: %s\nARGS: %s\nOBSERVATION: %s\n\n", action, rawArgs, truncate(obs, 500)))
-			emitAgentStep(onStep, node.ID, i+1, action, obs)
+			emitAgentStep(hooks, node.ID, i+1, action, obs)
 			continue
 		}
 
@@ -640,7 +720,7 @@ func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, in
 			}
 			obs := fmt.Sprintf("error: no tool named %q (available: %s)", action, strings.Join(available, ", "))
 			transcript.WriteString(fmt.Sprintf("ACTION: %s\nOBSERVATION: %s\n\n", action, obs))
-			emitAgentStep(onStep, node.ID, i+1, action, obs)
+			emitAgentStep(hooks, node.ID, i+1, action, obs)
 			continue
 		}
 
@@ -654,7 +734,7 @@ func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, in
 		}
 
 		transcript.WriteString(fmt.Sprintf("ACTION: %s\nARGS: %s\nOBSERVATION: %s\n\n", action, rawArgs, truncate(obs, 500)))
-		emitAgentStep(onStep, node.ID, i+1, action, obs)
+		emitAgentStep(hooks, node.ID, i+1, action, obs)
 	}
 
 	return strings.TrimSpace(lastReply), nil
@@ -664,11 +744,8 @@ func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, in
 // uses to query the node's AgentKnowledgeBases.
 const knowledgeSearchTool = "knowledge_search"
 
-func emitAgentStep(onStep func(StepEvent), nodeID string, iter int, action, obs string) {
-	if onStep == nil {
-		return
-	}
-	onStep(StepEvent{NodeID: nodeID, NodeType: "agent", Output: fmt.Sprintf("iteration %d: %s -> %s", iter, action, truncate(obs, 200))})
+func emitAgentStep(hooks *RunHooks, nodeID string, iter int, action, obs string) {
+	hooks.emitStep(StepEvent{NodeID: nodeID, NodeType: "agent", Output: fmt.Sprintf("iteration %d: %s -> %s", iter, action, truncate(obs, 200))})
 }
 
 // buildAgentPrompt assembles one iteration's completion prompt for an agent

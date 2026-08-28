@@ -1548,6 +1548,10 @@ textarea {
   --node-color: #7c5cbf;
 }
 
+.inspector-node-header-say {
+  --node-color: #c25b7c;
+}
+
 .inspector-body {
   padding: 1rem;
   display: flex;
@@ -1828,6 +1832,19 @@ textarea {
   font-weight: 600;
 }
 
+.flow-node-badge {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: color-mix(in srgb, var(--ok) 85%, var(--text));
+  vertical-align: middle;
+}
+
 .flow-node-sub {
   color: color-mix(in srgb, var(--text) 60%, transparent);
   font-size: 0.78rem;
@@ -1879,6 +1896,10 @@ textarea {
 .flow-node-switch {
   border-left-color: #4b3fae;
   min-width: 180px;
+}
+
+.flow-node-say {
+  border-left-color: #c25b7c;
 }
 
 /* Two-handle nodes (condition, loop start) emit along the bottom edge; the
@@ -1936,6 +1957,37 @@ textarea {
   font-weight: 600;
   text-transform: capitalize;
   flex-shrink: 0;
+}
+
+/* say-node progress narration in the agent chat modal — dimmed, collapsible,
+   visually subordinate to the real user/assistant turns. */
+.chat-progress-group {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-width: 80%;
+}
+
+.chat-progress-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  align-self: flex-start;
+  padding: 0.15rem 0.4rem;
+  background: none;
+  border: none;
+  font-size: 0.72rem;
+  color: color-mix(in srgb, var(--text) 50%, transparent);
+  cursor: pointer;
+}
+
+.chat-message-progress {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  font-style: italic;
+  color: color-mix(in srgb, var(--text) 62%, transparent);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
 }
 
 /* Model chat modal (ModelChatModal) — a taller, avatar-based chat window

@@ -164,6 +164,21 @@ function StateNode({ data }: NodeProps<FlowNode>) {
   )
 }
 
+function SayNode({ data }: NodeProps<FlowNode>) {
+  const preview = data.sayTemplate?.trim() || 'echoes previous output'
+  return (
+    <div className={`flow-node flow-node-say${debugClass(data)}`}>
+      <Handle type="target" position={Position.Top} />
+      <div className="flow-node-title">
+        {data.name || 'Say'}
+        {data.sayFinal && <span className="flow-node-badge">final</span>}
+      </div>
+      <div className="flow-node-sub">{preview.length > 40 ? preview.slice(0, 40) + '…' : preview}</div>
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  )
+}
+
 function ToolNode({ data }: NodeProps<FlowNode>) {
   return (
     <div className={`flow-node flow-node-tool${debugClass(data)}`}>
@@ -211,6 +226,7 @@ export const nodeTypes = {
   loop_start: LoopStartNode,
   loop_end: LoopEndNode,
   state: StateNode,
+  say: SayNode,
   tool: ToolNode,
   agent: AgentNode,
   knowledge: KnowledgeNode,

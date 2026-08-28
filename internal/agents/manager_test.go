@@ -268,6 +268,70 @@ func TestSendMessageSuccess(t *testing.T) {
 	}
 }
 
+// A say node's messages are published on the eventbus (agent.message) as the
+// turn runs; a say node marked final is what SendMessage returns, and only
+// that final answer is kept in the run's conversation history — progress
+// messages are display-only.
+func TestSendMessageStreamsSayMessages(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "s1", Type: "say", Data: registry.NodeData{Name: "Progress", SayTemplate: "looking into it"}},
+			{ID: "s2", Type: "say", Data: registry.NodeData{Name: "Answer", SayTemplate: "done: {{Input}}", SayFinal: true}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "s1"},
+			{ID: "e2", Source: "s1", Target: "s2"},
+		},
+	}
+	agents := &fakeAgentReader{agents: map[string]registry.Agent{"narrator": {Name: "narrator", Graph: graph}}}
+	bus := eventbus.New()
+	m := NewManager(context.Background(), agents, &fakeLLM{}, &fakeEnvironmentRunner{}, &fakeEnvironmentReader{}, &fakeToolReader{}, &fakeKnowledgeReader{}, bus)
+
+	run, err := m.StartRun("narrator")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	events, unsub := bus.Subscribe()
+	defer unsub()
+
+	reply, err := m.SendMessage(run.ID, "my task")
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if reply.Content != "done: my task" {
+		t.Errorf("SendMessage() = %q, want the say-final message", reply.Content)
+	}
+
+	var messageEvents []string
+	drain := true
+	for drain {
+		select {
+		case e := <-events:
+			if e.Type == MessageEventType {
+				messageEvents = append(messageEvents, e.Data)
+			}
+		default:
+			drain = false
+		}
+	}
+	if len(messageEvents) != 2 {
+		t.Fatalf("agent.message events = %d, want 2 (one progress, one final); got %v", len(messageEvents), messageEvents)
+	}
+	if !strings.Contains(messageEvents[0], `"kind":"progress"`) || !strings.Contains(messageEvents[0], "looking into it") {
+		t.Errorf("first event = %q, want the progress message", messageEvents[0])
+	}
+	if !strings.Contains(messageEvents[1], `"kind":"final"`) || !strings.Contains(messageEvents[1], "done: my task") {
+		t.Errorf("second event = %q, want the final message", messageEvents[1])
+	}
+
+	got, _ := m.GetRun(run.ID)
+	if len(got.Messages) != 2 || got.Messages[1].Content != "done: my task" {
+		t.Errorf("history = %+v, want just [user, final-assistant] (progress messages not persisted)", got.Messages)
+	}
+}
+
 func TestSendMessageUsesRunInstanceForToolNodes(t *testing.T) {
 	agents := &fakeAgentReader{agents: map[string]registry.Agent{
 		"researcher": {

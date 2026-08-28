@@ -77,7 +77,7 @@ func TestRunLinearGraph(t *testing.T) {
 	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
 
 	var steps []StepEvent
-	reply, err := engine.Run(context.Background(), linearGraph(), nil, "hi", "", nil, func(s StepEvent) { steps = append(steps, s) })
+	reply, err := engine.Run(context.Background(), linearGraph(), nil, "hi", "", nil, &RunHooks{OnStep: func(s StepEvent) { steps = append(steps, s) }})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -186,6 +186,91 @@ func TestRunSwitchMatchTemplate(t *testing.T) {
 	}
 	if !strings.Contains(llm.calls[0], "branch urgent") {
 		t.Errorf("llm.calls[0] = %q, want the urgent branch matched via the template", llm.calls[0])
+	}
+}
+
+// A say node streams a user-facing progress message via hooks.OnMessage,
+// then passes its text on; the turn's reply is still the terminal node's
+// output (no say node was marked final).
+func TestRunSayNodeEmitsProgressMessage(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "s1", Type: "say", Data: registry.NodeData{Name: "Status", SayTemplate: "working on: {{Input}}"}},
+			{ID: "p1", Type: "prompt", Data: registry.NodeData{Model: "m", PromptTemplate: "answer {{Input}}"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "s1"},
+			{ID: "e2", Source: "s1", Target: "p1"},
+		},
+	}
+	llm := &fakeLLM{responses: []string{"the final answer"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	var msgs []TurnMessage
+	reply, err := engine.Run(context.Background(), graph, nil, "the task", "", nil, &RunHooks{
+		OnMessage: func(m TurnMessage) { msgs = append(msgs, m) },
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "the final answer" {
+		t.Errorf("Run() = %q, want the terminal prompt's output", reply)
+	}
+	if len(msgs) != 1 || msgs[0].Kind != "progress" || msgs[0].Content != "working on: the task" {
+		t.Errorf("msgs = %+v, want one progress message %q", msgs, "working on: the task")
+	}
+}
+
+// A say node marked final becomes the turn's reply even when the walk
+// continues past it to end on a different node.
+func TestRunSayNodeFinalOverridesTerminalOutput(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "s1", Type: "say", Data: registry.NodeData{Name: "Answer", SayTemplate: "here is your answer", SayFinal: true}},
+			{ID: "s2", Type: "say", Data: registry.NodeData{Name: "Cleanup", SayTemplate: "tidying up"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "s1"},
+			{ID: "e2", Source: "s1", Target: "s2"},
+		},
+	}
+	engine := NewEngine(&fakeLLM{}, &fakeTools{}, &fakeKnowledgeReader{})
+
+	var msgs []TurnMessage
+	reply, err := engine.Run(context.Background(), graph, nil, "go", "", nil, &RunHooks{
+		OnMessage: func(m TurnMessage) { msgs = append(msgs, m) },
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "here is your answer" {
+		t.Errorf("Run() = %q, want the say-final message, not the terminal node's output", reply)
+	}
+	if len(msgs) != 2 || msgs[0].Kind != "final" || msgs[1].Kind != "progress" {
+		t.Errorf("msgs = %+v, want [final, progress]", msgs)
+	}
+}
+
+// An empty say template falls back to the inbound value (same convention as
+// promptTemplate / matchTemplate).
+func TestRunSayNodeEmptyTemplateFallsBackToInput(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "s1", Type: "say", Data: registry.NodeData{Name: "Echo", SayFinal: true}},
+		},
+		Edges: []registry.Edge{{ID: "e1", Source: "in", Target: "s1"}},
+	}
+	engine := NewEngine(&fakeLLM{}, &fakeTools{}, &fakeKnowledgeReader{})
+
+	reply, err := engine.Run(context.Background(), graph, nil, "just echo me", "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply != "just echo me" {
+		t.Errorf("Run() = %q, want the inbound value echoed", reply)
 	}
 }
 
@@ -1140,7 +1225,7 @@ func TestRunAgentNodeCallsToolThenFinal(t *testing.T) {
 
 	var steps []StepEvent
 	graph := agentGraph(registry.NodeData{Name: "Agent", AgentModel: "m", AgentInstructions: "Find the capital.", AgentTools: []string{"web_search"}})
-	reply, err := engine.Run(context.Background(), graph, nil, "capital of France?", "container-1", toolDefs, func(s StepEvent) { steps = append(steps, s) })
+	reply, err := engine.Run(context.Background(), graph, nil, "capital of France?", "container-1", toolDefs, &RunHooks{OnStep: func(s StepEvent) { steps = append(steps, s) }})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}

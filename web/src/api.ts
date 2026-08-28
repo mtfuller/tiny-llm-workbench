@@ -198,6 +198,7 @@ export type NodeType =
   | 'loop_start'
   | 'loop_end'
   | 'state'
+  | 'say'
   | 'agent'
 
 export interface SwitchCase {
@@ -265,6 +266,15 @@ export interface AgentNodeData extends Record<string, unknown> {
   // {{nodeName}}/{{nodeName.field}} template references.
   toolName?: string
   toolArgs?: Record<string, string>
+
+  // Say nodes: emit a user-facing message mid-turn. sayTemplate is templated
+  // text (falls back to the inbound value when empty); sayFinal marks it as
+  // the turn's definitive reply rather than a progress update — the last
+  // final say message emitted wins, else the terminal node's own output is
+  // the reply. Progress messages stream to the chat live but aren't added to
+  // conversation history.
+  sayTemplate?: string
+  sayFinal?: boolean
 
   // Agent nodes: a bounded LLM tool-calling loop. agentInstructions is the
   // templated goal/system text; agentTools is a subset of the bound
@@ -340,6 +350,15 @@ export interface AgentStepEvent {
   nodeId: string
   nodeType: string
   output: string
+}
+
+// AgentMessageEvent is a user-facing message a "say" node emitted mid-turn,
+// streamed on the "agent.message" SSE channel: a progress update shown live
+// as the agent works, or the turn's definitive reply.
+export interface AgentMessageEvent {
+  runId: string
+  kind: 'progress' | 'final'
+  content: string
 }
 
 export interface AgentStepResult {

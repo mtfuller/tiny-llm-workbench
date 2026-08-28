@@ -170,6 +170,38 @@ func TestStepDebugRunFollowsSchemaFailHandle(t *testing.T) {
 	}
 }
 
+// Stepping through a graph with a say node marked final: the debug session's
+// finished-turn assistant message is that say-final text, matching Run.
+func TestStepDebugRunSayFinalIsTheReply(t *testing.T) {
+	graph := registry.Graph{
+		Nodes: []registry.Node{
+			{ID: "in", Type: "input", Data: registry.NodeData{Name: "Input"}},
+			{ID: "s1", Type: "say", Data: registry.NodeData{Name: "Answer", SayTemplate: "the answer is 42", SayFinal: true}},
+			{ID: "s2", Type: "say", Data: registry.NodeData{Name: "After", SayTemplate: "wrapping up"}},
+		},
+		Edges: []registry.Edge{
+			{ID: "e1", Source: "in", Target: "s1"},
+			{ID: "e2", Source: "s1", Target: "s2"},
+		},
+	}
+	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
+	started, _ := m.StartDebugRun("greeter", graph, "")
+	m.SendDebugMessage(started.ID, "hi")
+
+	m.StepDebugRun(started.ID)           // input
+	m.StepDebugRun(started.ID)           // say(final)
+	s, err := m.StepDebugRun(started.ID) // say(after) — dead end, turn ends
+	if err != nil {
+		t.Fatalf("StepDebugRun() error = %v", err)
+	}
+	if !s.Finished {
+		t.Fatalf("s.Finished = false, want the turn to have ended")
+	}
+	if len(s.Messages) != 2 || s.Messages[1].Content != "the answer is 42" {
+		t.Errorf("s.Messages = %+v, want the assistant message to be the say-final text", s.Messages)
+	}
+}
+
 func TestStepDebugRunNothingPendingErrors(t *testing.T) {
 	m := newDebugTestManager(&fakeLLM{}, &fakeEnvironmentRunner{}, &fakeToolReader{})
 	started, _ := m.StartDebugRun("greeter", linearGraph(), "")

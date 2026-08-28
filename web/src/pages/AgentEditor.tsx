@@ -25,6 +25,7 @@ import {
   Database,
   IterationCw,
   LogIn,
+  Megaphone,
   MessageSquare,
   MousePointerClick,
   PanelLeftClose,
@@ -62,6 +63,7 @@ import {
   stopAgentDebugRun,
   stopAgentRun,
   type AgentGraph,
+  type AgentMessageEvent,
   type AgentNodeData,
   type AgentStepEvent,
   type ChatMessage,
@@ -85,6 +87,11 @@ import { useResizableSidebar } from '../useResizableSidebar'
 
 type FlowNode = Node<AgentNodeData>
 
+// ChatEntry is a chat-modal message: a normal user/assistant turn, or an
+// assistant message streamed from a "say" node (kind "progress" = dimmed,
+// collapsible narration; "final" = the definitive reply).
+type ChatEntry = ChatMessage & { kind?: 'progress' | 'final' }
+
 // Mirrors the .flow-node-* border colors in index.css so the minimap (and
 // the inspector's node-type header) reads as the same graph, just recolored
 // consistently everywhere it appears.
@@ -96,6 +103,7 @@ const NODE_COLORS: Record<string, string> = {
   loop_start: '#2f8f8f',
   loop_end: '#2f8f8f',
   state: '#5f6b7a',
+  say: '#c25b7c',
   agent: '#b5468a',
 }
 
@@ -124,12 +132,13 @@ const NODE_META: Record<NodeType, NodeMeta> = {
   loop_start: { label: 'Loop start', icon: Repeat },
   loop_end: { label: 'Loop end', icon: IterationCw },
   state: { label: 'State', icon: Database },
+  say: { label: 'Say', icon: Megaphone },
   tool: { label: 'Tool', icon: Terminal },
   agent: { label: 'Agent', icon: Bot },
   knowledge: { label: 'Knowledge', icon: BookOpen },
 }
 
-const PALETTE: NodeType[] = ['prompt', 'condition', 'switch', 'loop_start', 'loop_end', 'state', 'tool', 'agent', 'knowledge']
+const PALETTE: NodeType[] = ['prompt', 'condition', 'switch', 'loop_start', 'loop_end', 'state', 'say', 'tool', 'agent', 'knowledge']
 
 // Arrowheads on every edge so flow direction reads at a glance.
 const ARROW_EDGE = { markerEnd: { type: MarkerType.ArrowClosed } } as const
@@ -175,11 +184,14 @@ function AgentEditorWorkspace() {
 
   const [chatOpen, setChatOpen] = useState(false)
   const [runId, setRunId] = useState<string | null>(null)
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messages, setMessages] = useState<ChatEntry[]>([])
   const [chatInput, setChatInput] = useState('')
   const [sending, setSending] = useState(false)
   const [steps, setSteps] = useState<AgentStepEvent[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  // True once a "say" node marked final streamed this turn — so the HTTP
+  // reply (which carries the same text) isn't appended a second time.
+  const streamedFinalRef = useRef(false)
 
   const [debugState, setDebugState] = useState<DebugState | null>(null)
   const [debugInput, setDebugInput] = useState('')
@@ -207,6 +219,7 @@ function AgentEditorWorkspace() {
   const matchTemplateRef = useRef<HTMLTextAreaElement>(null)
   const knowledgeQueryRef = useRef<HTMLTextAreaElement>(null)
   const stateValueRef = useRef<HTMLTextAreaElement>(null)
+  const sayTemplateRef = useRef<HTMLTextAreaElement>(null)
   const agentInstructionsRef = useRef<HTMLTextAreaElement>(null)
   const toolArgRefs = useRef<Map<string, HTMLInputElement>>(new Map())
 
@@ -252,6 +265,19 @@ function AgentEditorWorkspace() {
     return subscribe('agent.step', (event) => {
       const step = JSON.parse(event.data) as AgentStepEvent
       setSteps((prev) => (step.runId === runId ? [...prev, step] : prev))
+    })
+  }, [subscribe, runId])
+
+  // "say" nodes stream user-facing messages here as the turn runs.
+  useEffect(() => {
+    return subscribe('agent.message', (event) => {
+      const msg = JSON.parse(event.data) as AgentMessageEvent
+      if (msg.runId !== runId) return
+      if (msg.kind === 'final') streamedFinalRef.current = true
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: msg.content, timestamp: new Date().toISOString(), kind: msg.kind },
+      ])
     })
   }, [subscribe, runId])
 
@@ -301,22 +327,17 @@ function AgentEditorWorkspace() {
       // Click-to-add stacks nodes top-to-bottom (the canvas flows downward);
       // a drop uses the pointer position.
       const at = position ?? { x: 240 + (nodes.length % 3) * 48, y: 80 + nodes.length * 96 }
-      const perType: Partial<AgentNodeData> =
-        type === 'prompt'
-          ? { model: models[0]?.name }
-          : type === 'condition'
-            ? { conditionType: 'contains' }
-            : type === 'switch'
-              ? { switchCases: [{ value: '' }] }
-            : type === 'loop_start'
-              ? { loopMaxIterations: 5 }
-              : type === 'loop_end'
-                ? { loopStartName: nodes.find((n) => n.type === 'loop_start')?.data.name ?? '' }
-                : type === 'state'
-                  ? { stateOp: 'append' }
-                  : type === 'agent'
-                    ? { agentModel: models[0]?.name, agentMaxIterations: 6, agentTools: [], agentKnowledgeBases: [] }
-                    : {}
+      const perTypeDefaults: Partial<Record<NodeType, Partial<AgentNodeData>>> = {
+        prompt: { model: models[0]?.name },
+        condition: { conditionType: 'contains' },
+        switch: { switchCases: [{ value: '' }] },
+        loop_start: { loopMaxIterations: 5 },
+        loop_end: { loopStartName: nodes.find((n) => n.type === 'loop_start')?.data.name ?? '' },
+        state: { stateOp: 'append' },
+        say: { sayTemplate: '' },
+        agent: { agentModel: models[0]?.name, agentMaxIterations: 6, agentTools: [], agentKnowledgeBases: [] },
+      }
+      const perType: Partial<AgentNodeData> = perTypeDefaults[type] ?? {}
       const data: AgentNodeData = { name: `${NODE_META[type].label} ${countOfType}`, ...perType }
       const newNodes: FlowNode[] = [{ id, type, position: at, data }]
 
@@ -478,9 +499,12 @@ function AgentEditorWorkspace() {
     setChatInput('')
     setSending(true)
     setError(null)
+    streamedFinalRef.current = false
     try {
       const reply = await sendAgentMessage(runId, userMessage.content)
-      setMessages((prev) => [...prev, reply])
+      // If a "say" node marked final already streamed the reply in, don't
+      // append it again — its content is identical.
+      if (!streamedFinalRef.current) setMessages((prev) => [...prev, reply])
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -1225,6 +1249,56 @@ function AgentEditorWorkspace() {
                     </>
                   )}
 
+                  {selectedNode.type === 'say' && (
+                    <>
+                      <p className="field-hint">
+                        Sends a message to the user's chat as the agent works — for progress narration
+                        ("searching the codebase…", "running tests…") ahead of the final answer.
+                      </p>
+
+                      <label>
+                        Message
+                        <div className="template-field-row">
+                          <LineNumberedTextarea
+                            ref={sayTemplateRef}
+                            rows={3}
+                            placeholder="e.g. Looking into {{Input}}…"
+                            value={selectedNode.data.sayTemplate ?? ''}
+                            onChange={(next) => updateSelectedNodeData({ sayTemplate: next })}
+                          />
+                          <VariableMenuButton
+                            options={upstreamOptions}
+                            onInsert={(snippet) =>
+                              insertAtCursor(sayTemplateRef.current, selectedNode.data.sayTemplate ?? '', snippet, (next) =>
+                                updateSelectedNodeData({ sayTemplate: next }),
+                              )
+                            }
+                          />
+                        </div>
+                        <span className="field-hint">
+                          Leave blank to repeat the previous node's output. The rendered text also flows on, so
+                          downstream nodes can reference {'{{'}
+                          {selectedNode.data.name || 'Say'}
+                          {'}}'}.
+                        </span>
+                      </label>
+
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={selectedNode.data.sayFinal ?? false}
+                          onChange={(e) => updateSelectedNodeData({ sayFinal: e.target.checked })}
+                        />
+                        This is the final answer
+                      </label>
+                      <span className="field-hint">
+                        {selectedNode.data.sayFinal
+                          ? 'This message is the turn’s definitive reply — shown prominently, not as dimmed progress.'
+                          : 'A progress update — shown dimmed and collapsible once the final answer arrives. The turn’s reply is the last node’s output, or the last Say marked final.'}
+                      </span>
+                    </>
+                  )}
+
                   {selectedNode.type === 'tool' && (
                     <>
                       <p className="field-hint">
@@ -1530,12 +1604,7 @@ function AgentEditorWorkspace() {
             <>
               <div className="chat-log">
                 {messages.length === 0 && <p className="hint">Say hello to try your agent.</p>}
-                {messages.map((m, i) => (
-                  <div key={i} className={`chat-message chat-message-${m.role}`}>
-                    <span className="chat-role">{m.role}</span>
-                    <span>{m.content}</span>
-                  </div>
-                ))}
+                {renderChat(messages)}
                 <div ref={messagesEndRef} />
               </div>
               <form className="inline-form" onSubmit={handleSendMessage}>
@@ -1570,6 +1639,59 @@ function AgentEditorWorkspace() {
         </Modal>
       )}
 
+    </div>
+  )
+}
+
+// renderChat walks the chat entries and renders normal user/assistant
+// bubbles, grouping consecutive "progress" (say-node narration) entries into
+// one collapsible block that auto-collapses once a later message (the final
+// answer) follows it.
+function renderChat(entries: ChatEntry[]) {
+  const out: React.ReactNode[] = []
+  let i = 0
+  while (i < entries.length) {
+    if (entries[i].kind === 'progress') {
+      const group: ChatEntry[] = []
+      while (i < entries.length && entries[i].kind === 'progress') {
+        group.push(entries[i])
+        i++
+      }
+      out.push(<ProgressGroup key={`progress-${i}`} items={group} settled={i < entries.length} />)
+      continue
+    }
+    const m = entries[i]
+    out.push(
+      <div key={i} className={`chat-message chat-message-${m.role}`}>
+        <span className="chat-role">{m.role}</span>
+        <span>{m.content}</span>
+      </div>,
+    )
+    i++
+  }
+  return out
+}
+
+// ProgressGroup shows a run of say-node progress messages. It starts open
+// (you watch it work) and collapses itself once `settled` becomes true — i.e.
+// once the final answer has arrived — while still letting you expand it back.
+function ProgressGroup({ items, settled }: { items: ChatEntry[]; settled: boolean }) {
+  const [open, setOpen] = useState(!settled)
+  useEffect(() => {
+    if (settled) setOpen(false)
+  }, [settled])
+  return (
+    <div className="chat-progress-group">
+      <button type="button" className="chat-progress-toggle" onClick={() => setOpen((o) => !o)}>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        {settled ? `${items.length} step${items.length === 1 ? '' : 's'}` : 'Working…'}
+      </button>
+      {open &&
+        items.map((it, k) => (
+          <div key={k} className="chat-message chat-message-progress">
+            <span>{it.content}</span>
+          </div>
+        ))}
     </div>
   )
 }

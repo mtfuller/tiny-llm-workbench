@@ -17,6 +17,12 @@ import (
 // listens for to show live execution steps.
 const StepEventType = "agent.step"
 
+// MessageEventType is the eventbus event type carrying a user-facing message
+// a "say" node emitted mid-turn — progress narration or the turn's final
+// answer — for the chat UI to render live as the agent works. Each payload
+// is a TurnMessage with the run id attached.
+const MessageEventType = "agent.message"
+
 // agentReader is the subset of registry.Registry Manager needs.
 type agentReader interface {
 	GetAgent(name string) (registry.Agent, error)
@@ -209,8 +215,9 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 		return ChatMessage{}, err
 	}
 
-	reply, err := m.engine.Run(m.ctx, agent.Graph, history, message, run.InstanceID, tools, func(step StepEvent) {
-		m.publishStep(runID, step)
+	reply, err := m.engine.Run(m.ctx, agent.Graph, history, message, run.InstanceID, tools, &RunHooks{
+		OnStep:    func(step StepEvent) { m.publishStep(runID, step) },
+		OnMessage: func(msg TurnMessage) { m.publishTurnMessage(runID, msg) },
 	})
 
 	userMsg := ChatMessage{Role: "user", Content: message, Timestamp: time.Now().UTC()}
@@ -274,6 +281,17 @@ func (m *Manager) publishStep(runID string, step StepEvent) {
 		return
 	}
 	m.bus.Publish(eventbus.Event{Type: StepEventType, Data: string(data)})
+}
+
+func (m *Manager) publishTurnMessage(runID string, msg TurnMessage) {
+	data, err := json.Marshal(struct {
+		RunID string `json:"runId"`
+		TurnMessage
+	}{RunID: runID, TurnMessage: msg})
+	if err != nil {
+		return
+	}
+	m.bus.Publish(eventbus.Event{Type: MessageEventType, Data: string(data)})
 }
 
 func newRunID() string {

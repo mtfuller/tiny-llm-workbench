@@ -39,7 +39,9 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
   similarity) and a `switch` node routes N ways on a case match; a **loop start / loop end** pair
   brackets a loop — route a branch to the loop end to keep
   looping, anywhere else to break out — with `{{Loop.iteration}}` available inside and a max-iterations
-  cap; a `state` node accumulates a scratchpad across iterations; an `agent` node runs a bounded LLM
+  cap; a `state` node accumulates a scratchpad across iterations; a `say` node streams a progress
+  message to the chat as the agent works (with an optional "this is the final answer" marker); an
+  `agent` node runs a bounded LLM
   tool-calling loop over a chosen subset of the environment's tools plus any knowledge bases it's given,
   and can constrain its final answer to a JSON schema. A prompt or agent node with a schema can route a
   validation miss to a `fail` handle instead of ending the turn; any node whose output is JSON exposes
@@ -167,6 +169,12 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         case match; and `tool`/`knowledge` output that is JSON is now addressable as `{{Node.property}}`
         downstream. Verified live against real models and Docker: schema-fail routing, agent schema
         properties resolving downstream, a billing/shipping/default switch router, and the knowledge cap.
+  - [x] `say` node — stream output back to the user mid-turn. A `say` node posts its (templated) text
+        to the chat the moment the walk reaches it, streamed live over SSE (`agent.message`) as the
+        agent works — progress narration like a coding agent. An optional "this is the final answer"
+        marker distinguishes the definitive reply (shown prominently) from progress updates (shown
+        dimmed and collapsible once the answer arrives); progress messages are display-only and never
+        enter conversation history. Verified live end to end against a real MLX model.
 - [x] **Phase 4 — Evaluations**
   - [x] Add an Evaluations page to the navbar
   - [x] Define tests (prompt, assertions) against a set of agents in one environment — assertions are

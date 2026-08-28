@@ -87,6 +87,17 @@ type NodeData struct {
 	ToolName string            `json:"toolName,omitempty"` // tool nodes: name of a Tool on the agent's Environment
 	ToolArgs map[string]string `json:"toolArgs,omitempty"` // tool nodes: templated value per parameter name
 
+	// say nodes: emit a user-facing message mid-turn. SayTemplate is the
+	// templated text (falls back to the inbound value when empty, same
+	// convention as PromptTemplate). SayFinal marks it as the turn's
+	// definitive reply rather than a progress update: the last "final" say
+	// message emitted during a turn is what the run returns; if no say node
+	// is marked final, the terminal node's own output is the reply (the
+	// pre-say-node behavior). Progress messages stream to the chat UI live
+	// but are not added to the run's conversation history.
+	SayTemplate string `json:"sayTemplate,omitempty"`
+	SayFinal    bool   `json:"sayFinal,omitempty"`
+
 	// agent nodes: a bounded LLM tool-calling loop — the model is asked to
 	// emit ACTION/ARGS (to call one of AgentTools, a subset of the bound
 	// Environment's tools; or the built-in "knowledge_search" when
@@ -126,7 +137,7 @@ type SwitchCase struct {
 }
 
 // Node is one node in an agent's graph. Type is one of "input", "prompt",
-// "condition", "switch", "loop_start", "loop_end", "state", "tool",
+// "condition", "switch", "loop_start", "loop_end", "state", "say", "tool",
 // "knowledge", "agent". There's no dedicated "output" type — a node with no
 // outgoing edge for the handle it produces is simply where a turn ends (see
 // internal/agents.Engine), so any node type can be a graph's terminal. Edges

@@ -936,6 +936,51 @@ choice:
       `{{Name}}` resolves, unchanged. Deliberately *not* applied to prompt output (a schemaless prompt's
       `.property` access is an intentional error — `TestRunPromptTemplateDotPathWithoutSchemaErrors`).
       Guards: `TestRunToolNodeJSONOutputExposesPropertyDownstream`, `...PlainTextOutputHasNoProperties`.
+
+  **2026-08-28 addendum #9 — `say` node: stream progress + a marked final answer to the chat.** The
+  user wanted a coding-agent-style flow — narrate while working ("searching the codebase…", "running
+  tests…"), then deliver a distinct final answer — in the canvas. Four forks were surfaced via
+  `AskUserQuestion` (their picks recorded): a **dedicated `say` node type** (not a per-node "post to
+  chat" flag, not promoting the debug step log); progress messages **stream live** as the agent works
+  (not batched at turn end); the final answer is an **explicit marker** (`sayFinal`), not
+  "whatever the terminal node output"; **whole messages only**, no token streaming.
+
+  No async rewrite was needed — the turn stays synchronous at the HTTP layer (`SendMessage` still
+  blocks and still returns the final `ChatMessage`, which Evaluations/Benchmarks depend on), and live
+  delivery reuses the exact concurrent-SSE-during-a-blocking-call mechanism `agent.step` already uses.
+  - `registry.NodeData` gained `SayTemplate string` (templated; empty falls back to the inbound value,
+    same convention as `PromptTemplate`) and `SayFinal bool`.
+  - `internal/agents`: the `onStep func(StepEvent)` param on `Engine.Run` / `runNode` / `runAgentNode`
+    was replaced by a **`*RunHooks`** struct (`OnStep func(StepEvent)`, `OnMessage func(TurnMessage)`;
+    nil-safe `emitStep`/`emitMessage` methods) — a grab-bag-of-callbacks change chosen specifically so
+    the ~63 existing test call sites passing `nil` for the last arg kept compiling (only 2 passing a
+    real `func(StepEvent)` needed a wrap). `case "say"` renders `SayTemplate`, calls
+    `hooks.emitMessage(TurnMessage{Kind: "progress"|"final", Content: text})`, then passes the rendered
+    text on (so `{{SayName}}` / `{{SayName.property}}` — via `parseIfJSON` — resolve downstream).
+    `Run` wraps the caller's hooks to capture the **last** `"final"` message as `finalOverride`, and
+    returns that instead of the terminal node's output when set. `debug.go` mirrors this: a
+    `debugHooks(id, dr)` helper streams messages on the eventbus and records `dr.lastFinalSaid`, which
+    `applyStepResult` prefers over the terminal output for the finished turn's assistant message.
+  - `agents.Manager` gained `MessageEventType = "agent.message"` and `publishTurnMessage` — the SSE
+    channel the chat UI listens on. **Progress messages are display-only: they are NOT appended to
+    `run.Messages`**, so a later turn's history the model sees stays `[user, final-assistant]`.
+  - Frontend: `NodeType` `+ "say"`; `AgentNodeData` `+ sayTemplate?, sayFinal?`; new `AgentMessageEvent`
+    type. `SayNode` component (rose `#c25b7c`, lucide `Megaphone`, a "final" `.flow-node-badge` when
+    `sayFinal`); palette entry + inspector (line-numbered templated `Message` field + insert-variable
+    button + a "This is the final answer" checkbox with a contextual hint). Chat modal: a new
+    `agent.message` subscription pushes streamed messages into a local `ChatEntry[]` (`kind:
+    'progress' | 'final'`); `renderChat` groups consecutive `progress` entries into a `ProgressGroup`
+    that shows "Working…" while live and auto-collapses to "N steps" once the final answer follows
+    (still expandable). A `streamedFinalRef` guard stops `handleSendMessage` from appending the HTTP
+    reply a second time when a `sayFinal` already streamed it. `agentValidation.ts`: warns on an empty
+    `sayFinal` template and on >1 `sayFinal` node in the graph (last-on-path wins).
+  - Verified live end-to-end against a real local MLX model: `input → say("Looking into: {{Input}}") →
+    prompt → say(final, "Here is what I found: {{Work}}")` — the SSE stream carried a `progress` then a
+    `final` `agent.message`, the HTTP reply was the say-final text (not the prompt's raw output), the
+    chat modal showed the progress line dimmed/collapsible above a prominent final answer bubble with no
+    duplication, and templates resolved. Guards: `TestRunSayNode{EmitsProgressMessage,
+    FinalOverridesTerminalOutput,EmptyTemplateFallsBackToInput}`, `TestSendMessageStreamsSayMessages`,
+    `TestStepDebugRunSayFinalIsTheReply`.
 - **Evaluation runner**: how assertions are expressed and checked against agent output, and how
   environment starting state is set up per-test (Phase 4).
   **Decided:** assertions are deterministic rules — `contains` / `not_contains` / `regex` — checked
