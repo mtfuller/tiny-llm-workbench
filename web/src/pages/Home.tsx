@@ -179,7 +179,9 @@ function Home() {
     <>
       <div className="page-header">
         <h2>Overview</h2>
-        <span className={`status status-${status}`}>{status === 'open' ? 'connected' : status}</span>
+        <span className={`status status-${status}`}>
+          {status === 'open' ? 'connected' : status === 'reconnecting' ? 'reconnecting…' : status}
+        </span>
       </div>
 
       <div className="dashboard-grid">

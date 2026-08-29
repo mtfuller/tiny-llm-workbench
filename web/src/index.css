@@ -257,8 +257,35 @@ a.nav-item:hover {
   background: var(--ok);
 }
 
-.status-row-closed .status-dot {
+.status-row-closed .status-dot,
+.status-row-reconnecting .status-dot {
   background: var(--danger);
+}
+
+/* Shown across the top of the content area while the SSE stream is down and
+   the provider is retrying with backoff. */
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 1rem;
+  font-size: 0.85rem;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.connection-banner .status-dot {
+  background: var(--danger);
+}
+
+.connection-banner button {
+  margin-left: auto;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  background: var(--danger);
+  color: white;
 }
 
 .app-main {
@@ -370,7 +397,8 @@ a.nav-item:hover {
   background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
-.status-closed {
+.status-closed,
+.status-reconnecting {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 14%, transparent);
 }

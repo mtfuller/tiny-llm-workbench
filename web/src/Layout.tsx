@@ -76,11 +76,11 @@ function Logo() {
 function connectionLabel(status: ReturnType<typeof useEventStream>['status']): string {
   if (status === 'open') return 'Online'
   if (status === 'connecting') return 'Connecting'
-  return 'Offline'
+  return 'Reconnecting'
 }
 
 function Layout() {
-  const { status } = useEventStream()
+  const { status, reconnect } = useEventStream()
   const location = useLocation()
 
   // Persisted per-browser (not per-agent-data), so it belongs in
@@ -160,6 +160,15 @@ function Layout() {
       </aside>
 
       <div className="app-main">
+        {status === 'reconnecting' && (
+          <div className="connection-banner" role="status">
+            <span className="status-dot" />
+            <span>Connection to the server lost — retrying…</span>
+            <button type="button" onClick={reconnect}>
+              Retry now
+            </button>
+          </div>
+        )}
         <main className="page-content">
           <div className="page-transition" key={location.pathname}>
             <Outlet />
