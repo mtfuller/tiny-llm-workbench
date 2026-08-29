@@ -8,6 +8,32 @@ A handful are genuine blockers.
 
 ---
 
+## Resolution status (2026-08-29)
+
+Worked through on branch `pre-release-blockers`:
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | Placeholder scaffolding commands | ✅ removed (greet/calc/process, pkg/example, their tests) |
+| 2 | Server binds to `0.0.0.0` | ✅ defaults to `127.0.0.1`; opt-in `--host` |
+| 3 | Stale landing page | ✅ dashboard rebuilt (10 cards, real event feed) |
+| 4 | No 404 route | ✅ `NotFound` catch-all added |
+| 5 | Working tree / `web/dist` / README | ✅ committed, dist rebuilt, roadmap synced (release tag: still your call) |
+| 6 | Platform lock-in undersold | ✅ "macOS on Apple Silicon" now top-line in intro + prerequisites |
+| 7 | First-run onboarding | ✅ `tlw serve --open` + empty-registry "Get started" guide on Home |
+| 8 | No install path | ✅ README Install section (GitHub Release + Gatekeeper step, `go install`); release workflow builds the binary |
+| 9 | No CI | ✅ `ci.yml` (go build/vet/test + web lint/tsc/build + `web/dist` freshness) and `release.yml` (tag → draft release, unsigned darwin/arm64) |
+| 10 | Registry has no locking | ✅ `sync.Mutex` on `*Registry`, non-reentrant, guard test under `-race` |
+| 11 | `testcasegen.parsePrompts` fragile | ✅ ported datasetgen's tolerant parser + regression tests |
+| 12 | Global SSE stream has no reconnect UX | ✅ explicit backoff + "connection lost" banner + `reconnect()`, verified live |
+
+Green items: `tlw --version` ✅, busy-port hint ✅. Not done: `CONTRIBUTING.md`, coverage gate/badge,
+in-app `~/.tlw` export, and the pre-existing `-race` failures in the training/eval/benchmark/agent run
+managers (`go test -race` is scoped to `./internal/registry/...` in CI until those are fixed — separate
+follow-up).
+
+---
+
 ## 🔴 Release blockers
 
 ### 1. Placeholder scaffolding commands still ship
