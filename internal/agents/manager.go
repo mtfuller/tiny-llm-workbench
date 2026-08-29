@@ -137,7 +137,7 @@ func (m *Manager) StartRun(agentName, workspaceOverride string) (*Run, error) {
 	m.runs[run.ID] = run
 	m.mu.Unlock()
 
-	return run, nil
+	return cloneRun(run), nil
 }
 
 // StartRunInInstance begins a new chat session against agentName, reusing
@@ -164,7 +164,7 @@ func (m *Manager) StartRunInInstance(agentName, instanceID string) (*Run, error)
 	m.runs[run.ID] = run
 	m.mu.Unlock()
 
-	return run, nil
+	return cloneRun(run), nil
 }
 
 // StopRun ends a chat session, stopping its Environment instance if this
@@ -284,13 +284,29 @@ func (m *Manager) resolveTools(toolNames []string) ([]registry.Tool, error) {
 	return tools, nil
 }
 
-// GetRun returns the run with the given ID, if any.
+// GetRun returns a snapshot copy of the run with the given ID, if any. It's a
+// copy because a concurrent SendMessage for the same run appends to
+// run.Messages under m.mu — handing out the live pointer would race any
+// caller that reads it (e.g. the run view polling while a turn executes).
 func (m *Manager) GetRun(id string) (*Run, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	run, ok := m.runs[id]
-	return run, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRun(run), true
+}
+
+// cloneRun copies run by value with a fresh Messages slice; each ChatMessage
+// is frozen once appended under m.mu, so a shallow copy is enough.
+func cloneRun(run *Run) *Run {
+	cp := *run
+	if run.Messages != nil {
+		cp.Messages = append(make([]ChatMessage, 0, len(run.Messages)), run.Messages...)
+	}
+	return &cp
 }
 
 func (m *Manager) publishStep(runID string, step StepEvent) {

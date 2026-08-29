@@ -175,9 +175,13 @@ func (m *Manager) StartRun(cfg Config) (*Run, error) {
 	m.persist(run)
 	m.publishStatus(run)
 
+	// Snapshot before the goroutine can touch run — the caller must not get
+	// the live pointer (see ListRuns).
+	snapshot := cloneRun(run)
+
 	go m.run(runCtx, run, examples)
 
-	return run, nil
+	return snapshot, nil
 }
 
 // CancelRun stops a running training job, killing its subprocess. It's a
@@ -188,12 +192,13 @@ func (m *Manager) CancelRun(id string) error {
 	m.mu.Lock()
 	run, ok := m.runs[id]
 	cancel, hasCancel := m.cancels[id]
+	running := ok && run.Status == StatusRunning
 	m.mu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("no such run %q", id)
 	}
-	if run.Status != StatusRunning || !hasCancel {
+	if !running || !hasCancel {
 		return nil
 	}
 
@@ -201,27 +206,49 @@ func (m *Manager) CancelRun(id string) error {
 	return nil
 }
 
-// ListRuns returns every known run, most recently started first.
+// ListRuns returns a snapshot of every known run, most recently started
+// first. The returned Runs are copies — the background training goroutine
+// keeps mutating the live ones under m.mu, so handing those out directly
+// would race with any caller that reads them (e.g. a handler marshaling to
+// JSON).
 func (m *Manager) ListRuns() []*Run {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	runs := make([]*Run, 0, len(m.runs))
 	for _, r := range m.runs {
-		runs = append(runs, r)
+		runs = append(runs, cloneRun(r))
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.After(runs[j].StartedAt) })
 
 	return runs
 }
 
-// GetRun returns the run with the given ID, if any.
+// GetRun returns a snapshot copy of the run with the given ID, if any (see
+// ListRuns for why it's a copy).
 func (m *Manager) GetRun(id string) (*Run, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	run, ok := m.runs[id]
-	return run, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRun(run), true
+}
+
+// cloneRun returns a deep-enough copy of run for a caller to read without
+// holding m.mu: the struct is copied by value and Progress is copied into a
+// fresh slice (FinishedAt and each ProgressPoint's fields are only ever set
+// once, so sharing those pointers is safe).
+func cloneRun(run *Run) *Run {
+	cp := *run
+	if run.Progress != nil {
+		// make (not append(nil, ...)) so an empty Progress stays a non-nil
+		// slice — it must still marshal as [] rather than null.
+		cp.Progress = append(make([]ProgressPoint, 0, len(run.Progress)), run.Progress...)
+	}
+	return &cp
 }
 
 // run drives a single training job to completion. It always runs in its own

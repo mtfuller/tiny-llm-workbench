@@ -162,18 +162,36 @@ func (m *Manager) StartExec(instanceID, command string) (*Exec, error) {
 
 	m.publishExecStatus(exec)
 
+	// Snapshot before the goroutine can touch exec — the caller must not get
+	// the live pointer (see GetExec).
+	snapshot := cloneExec(exec)
+
 	go m.runExec(exec)
 
-	return exec, nil
+	return snapshot, nil
 }
 
-// GetExec returns the exec with the given ID, if any.
+// GetExec returns a snapshot copy of the exec with the given ID, if any. It's
+// a copy because runExec keeps mutating the live one (Output, Status, ...)
+// under m.mu, so handing that pointer out would race any caller that reads it
+// (e.g. a handler marshaling to JSON, or a poll loop).
 func (m *Manager) GetExec(id string) (*Exec, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	exec, ok := m.execs[id]
-	return exec, ok
+	if !ok {
+		return nil, false
+	}
+	cp := *exec
+	return &cp, true
+}
+
+// cloneExec copies exec by value; Exec has no slices, and its ExitCode /
+// FinishedAt pointers are only ever set once, so sharing them is safe.
+func cloneExec(exec *Exec) *Exec {
+	cp := *exec
+	return &cp
 }
 
 // TryTool renders tool's command with args (see RenderToolCommand) and

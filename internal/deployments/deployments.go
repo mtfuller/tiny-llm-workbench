@@ -128,7 +128,19 @@ func (m *Manager) Start(deploymentName string) (*Session, error) {
 	m.sessions[id] = session
 	m.mu.Unlock()
 
-	return session, nil
+	return cloneSession(session), nil
+}
+
+// cloneSession copies session by value with a fresh Messages slice. A
+// concurrent SendMessage appends to the live session's Messages under m.mu,
+// so callers that read a session (Get/List/Start, e.g. a handler marshaling
+// to JSON) must get a copy, not the live pointer.
+func cloneSession(s *Session) *Session {
+	cp := *s
+	if s.Messages != nil {
+		cp.Messages = append(make([]agents.ChatMessage, 0, len(s.Messages)), s.Messages...)
+	}
+	return &cp
 }
 
 // SendMessage runs one chat turn in the session and appends the exchange to
@@ -181,17 +193,21 @@ func (m *Manager) Get(sessionID string) (*Session, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session, ok := m.sessions[sessionID]
-	return session, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneSession(session), true
 }
 
-// List returns every live session, most recently started first.
+// List returns a snapshot of every live session, most recently started
+// first (the returned Sessions are copies — see cloneSession).
 func (m *Manager) List() []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	sessions := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		sessions = append(sessions, s)
+		sessions = append(sessions, cloneSession(s))
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].StartedAt.After(sessions[j].StartedAt) })
 	return sessions

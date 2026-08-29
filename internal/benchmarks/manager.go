@@ -172,32 +172,56 @@ func (m *Manager) StartRun(benchmarkName string, version int, modelNames []strin
 
 	m.publishStatus(run)
 
+	// Snapshot before the goroutine can touch run — the caller must not get
+	// the live pointer (see ListRuns).
+	snapshot := cloneRun(run)
+
 	go m.run(run, ver)
 
-	return run, nil
+	return snapshot, nil
 }
 
-// ListRuns returns every known run, most recently started first.
+// ListRuns returns a snapshot of every known run, most recently started
+// first. The returned Runs are copies: the background goroutine keeps
+// mutating the live ones under m.mu, so handing those out directly would
+// race any caller that reads them (e.g. a handler marshaling to JSON).
 func (m *Manager) ListRuns() []*Run {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	runs := make([]*Run, 0, len(m.runs))
 	for _, r := range m.runs {
-		runs = append(runs, r)
+		runs = append(runs, cloneRun(r))
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.After(runs[j].StartedAt) })
 
 	return runs
 }
 
-// GetRun returns the run with the given ID, if any.
+// GetRun returns a snapshot copy of the run with the given ID, if any (see
+// ListRuns for why it's a copy).
 func (m *Manager) GetRun(id string) (*Run, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	run, ok := m.runs[id]
-	return run, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRun(run), true
+}
+
+// cloneRun returns a copy of run safe for a caller to read without holding
+// m.mu: the struct is copied by value and the slices the goroutine appends
+// to (ModelNames is immutable, Results grows) are reallocated. Each RunResult
+// is frozen once appended under m.mu, so a shallow Results copy is enough.
+func cloneRun(run *Run) *Run {
+	cp := *run
+	cp.ModelNames = append(make([]string, 0, len(run.ModelNames)), run.ModelNames...)
+	if run.Results != nil {
+		cp.Results = append(make([]RunResult, 0, len(run.Results)), run.Results...)
+	}
+	return &cp
 }
 
 // ListResults returns every persisted RunResult for benchmarkName, in no

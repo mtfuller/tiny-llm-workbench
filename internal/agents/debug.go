@@ -78,7 +78,7 @@ func (dr *debugRun) toState() *DebugState {
 		ID:         dr.id,
 		AgentName:  dr.agentName,
 		InstanceID: dr.instanceID,
-		Messages:   dr.messages,
+		Messages:   append([]ChatMessage(nil), dr.messages...),
 		LastStep:   dr.lastStep,
 		Finished:   dr.finished,
 		CreatedAt:  dr.createdAt,

@@ -22,15 +22,20 @@ Worked through on branch `pre-release-blockers`:
 | 6 | Platform lock-in undersold | ✅ "macOS on Apple Silicon" now top-line in intro + prerequisites |
 | 7 | First-run onboarding | ✅ `tlw serve --open` + empty-registry "Get started" guide on Home |
 | 8 | No install path | ✅ README Install section (GitHub Release + Gatekeeper step, `go install`); release workflow builds the binary |
-| 9 | No CI | ✅ `ci.yml` (go build/vet/test + web lint/tsc/build + `web/dist` freshness) and `release.yml` (tag → draft release, unsigned darwin/arm64) |
+| 9 | No CI | ✅ `ci.yml` (go build/vet/`test -race` + web lint/tsc/build + `web/dist` freshness) and `release.yml` (tag → draft release, unsigned darwin/arm64) |
 | 10 | Registry has no locking | ✅ `sync.Mutex` on `*Registry`, non-reentrant, guard test under `-race` |
 | 11 | `testcasegen.parsePrompts` fragile | ✅ ported datasetgen's tolerant parser + regression tests |
 | 12 | Global SSE stream has no reconnect UX | ✅ explicit backoff + "connection lost" banner + `reconnect()`, verified live |
 
-Green items: `tlw --version` ✅, busy-port hint ✅. Not done: `CONTRIBUTING.md`, coverage gate/badge,
-in-app `~/.tlw` export, and the pre-existing `-race` failures in the training/eval/benchmark/agent run
-managers (`go test -race` is scoped to `./internal/registry/...` in CI until those are fixed — separate
-follow-up).
+Green items: `tlw --version` ✅, busy-port hint ✅.
+
+Also fixed: the pre-existing `go test -race ./...` failures — `GetRun`/`ListRuns`/`GetExec`/`Get`/`List`
+in the training, benchmarks, evaluations, environments, agents, and deployments managers handed out the
+live `*Run`/`*Exec`/`*Session` pointer that a background goroutine mutates under the manager mutex, so
+any concurrent reader (a handler marshaling to JSON, a poll loop) raced it. They now return
+snapshot copies. CI runs `go test -race ./...` repo-wide.
+
+Not done: `CONTRIBUTING.md`, coverage gate/badge, in-app `~/.tlw` export.
 
 ---
 

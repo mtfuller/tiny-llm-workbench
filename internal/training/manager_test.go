@@ -65,6 +65,10 @@ type fakeTrainer struct {
 	// succeeded but couldn't be turned into a servable model.
 	fuseErr error
 	fused   []string // baseModel|adapterDir|savePath for each Fuse call
+
+	// progressDelay, when set, spaces out the onProgress calls so a test can
+	// observe a run mid-stream (e.g. polling GetRun while Progress grows).
+	progressDelay time.Duration
 }
 
 func (f *fakeTrainer) Train(ctx context.Context, cfg Config, examples []registry.Example, onProgress func(ProgressPoint)) (Result, error) {
@@ -73,6 +77,9 @@ func (f *fakeTrainer) Train(ctx context.Context, cfg Config, examples []registry
 	}
 	for _, p := range f.progress {
 		onProgress(p)
+		if f.progressDelay > 0 {
+			time.Sleep(f.progressDelay)
+		}
 	}
 	if f.blockUntilCancel {
 		<-ctx.Done()
@@ -396,5 +403,51 @@ func TestLoadRunsMarksInterruptedRunsFailed(t *testing.T) {
 	}
 	if run.Status != StatusFailed {
 		t.Errorf("run.Status = %q, want %q for an interrupted run", run.Status, StatusFailed)
+	}
+}
+
+// TestGetRunSnapshotIsRaceFreeWhileRunning polls GetRun while a run's
+// background goroutine is appending progress. GetRun must return a snapshot
+// copy, not the live *Run — otherwise `go test -race` flags the concurrent
+// read of run.Progress against the goroutine's append.
+func TestGetRunSnapshotIsRaceFreeWhileRunning(t *testing.T) {
+	loss := 0.25
+	points := make([]ProgressPoint, 8)
+	for i := range points {
+		p := loss
+		points[i] = ProgressPoint{Iteration: i, TrainLoss: &p}
+	}
+	trainer := &fakeTrainer{progress: points, progressDelay: 2 * time.Millisecond, result: Result{OutputDir: "/tmp/adapter"}}
+	datasets := &fakeDatasets{examples: map[string][]registry.Example{"greetings": {{Input: "hi", Output: "hello!"}}}}
+	m := NewManager(context.Background(), t.TempDir(), eventbus.New(), datasets, &fakeModelSaver{}, trainer)
+
+	run, err := m.StartRun(validConfig())
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			got, ok := m.GetRun(run.ID)
+			if !ok {
+				t.Errorf("GetRun(%s) not found mid-run", run.ID)
+				return
+			}
+			// Touch the snapshot's slice the way a JSON handler would.
+			_ = len(got.Progress)
+			for _, p := range got.Progress {
+				_ = p.Iteration
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	finished := waitForStatus(t, m, run.ID, StatusSucceeded, 2*time.Second)
+	<-done
+
+	if len(finished.Progress) != len(points) {
+		t.Errorf("finished.Progress has %d points, want %d", len(finished.Progress), len(points))
 	}
 }
