@@ -28,3 +28,13 @@ func TestServeCmdDefaultsToLoopback(t *testing.T) {
 		t.Errorf("--host default = %q, want 127.0.0.1 (loopback-only by default)", flag.DefValue)
 	}
 }
+
+func TestServeCmdOpenFlagDefaultsOff(t *testing.T) {
+	flag := serveCmd.Flags().Lookup("open")
+	if flag == nil {
+		t.Fatal("serve command has no --open flag")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("--open default = %q, want false (don't auto-open a browser unless asked)", flag.DefValue)
+	}
+}

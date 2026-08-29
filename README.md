@@ -262,10 +262,13 @@ task build
 
 `task build` rebuilds the browser UI (`web:build`) before compiling the Go binary. `tlw serve` starts
 the local webserver, bound to `127.0.0.1` by default — open the printed URL (default
-`http://localhost:8080`) to see the UI receiving live events over SSE. Pass `--host 0.0.0.0` to
-deliberately expose it on your LAN (the API can run shell commands, shell out to `mlx_lm`, and read and
-write files, so this is loopback-only unless you opt in), and `--port` to change the port. Run
-`./tlw --help` to see everything available.
+`http://localhost:8080`), or run `tlw serve --open` to launch it in your browser automatically. Pass
+`--host 0.0.0.0` to deliberately expose it on your LAN (the API can run shell commands, shell out to
+`mlx_lm`, and read and write files, so this is loopback-only unless you opt in), and `--port` to change
+the port. Run `./tlw --help` to see everything available.
+
+On first run the registry (`~/.tlw`) is empty and the Home page shows a short "Get started" guide: add
+a base model, build a dataset, and train — or jump straight to building an agent on the canvas.
 
 ## Development
 

@@ -120,6 +120,9 @@ function Home() {
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const nextId = useRef(0)
   const [cards, setCards] = useState<DashboardCard[] | null>(null)
+  // null until loaded; true when the registry has no user-created resources
+  // of any kind, so Home can show a first-run "get started" guide.
+  const [empty, setEmpty] = useState<boolean | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -135,6 +138,12 @@ function Home() {
       listDeployments().catch(() => []),
     ]).then(([models, datasets, runs, benchmarks, workspaces, knowledge, tools, agents, evaluations, deployments]) => {
       const activeRuns = runs.filter((r) => r.status === 'running').length
+      // Tools ship with prebuilt entries, so they don't count toward "empty".
+      setEmpty(
+        [models, datasets, runs, benchmarks, workspaces, knowledge, agents, evaluations, deployments].every(
+          (list) => list.length === 0,
+        ),
+      )
       setCards([
         { to: '/models', label: 'Models', icon: Box, value: String(models.length) },
         { to: '/datasets', label: 'Datasets', icon: Database, value: String(datasets.length) },
@@ -183,6 +192,27 @@ function Home() {
           {status === 'open' ? 'connected' : status === 'reconnecting' ? 'reconnecting…' : status}
         </span>
       </div>
+
+      {empty === true && (
+        <div className="panel getting-started">
+          <h3>Get started</h3>
+          <p className="hint">
+            Nothing here yet. TLW needs <code>mlx-lm</code> on PATH for anything model-related (and Docker running for
+            agent tools). Two ways in:
+          </p>
+          <ol>
+            <li>
+              <strong>Fine-tune a tiny model.</strong> <Link to="/models">Add a base model</Link> from Hugging Face,{' '}
+              <Link to="/datasets">build a dataset</Link> (a fine-tuned helper generates variations for you), then{' '}
+              <Link to="/training">run training</Link> and watch it live.
+            </li>
+            <li>
+              <strong>Build an agent.</strong> <Link to="/agents">Create an agent</Link> on the canvas — wire up input,
+              prompt, tool, and knowledge nodes — then chat with it or step through a run in the debugger.
+            </li>
+          </ol>
+        </div>
+      )}
 
       <div className="dashboard-grid">
         {cards === null

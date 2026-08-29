@@ -6,8 +6,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -37,6 +39,7 @@ const shutdownTimeout = 5 * time.Second
 var (
 	servePort int
 	serveHost string
+	serveOpen bool
 )
 
 // serveCmd represents the serve command
@@ -137,6 +140,11 @@ deliberately expose it on your LAN.`,
 
 		go publishHeartbeats(ctx, bus)
 
+		url := fmt.Sprintf("http://%s:%d", displayHost(serveHost), listener.Addr().(*net.TCPAddr).Port)
+		if serveOpen {
+			go openBrowser(url)
+		}
+
 		return runServer(ctx, &http.Server{Handler: handler}, listener)
 	},
 }
@@ -164,6 +172,27 @@ func runServer(ctx context.Context, httpServer *http.Server, listener net.Listen
 			return fmt.Errorf("serve: %w", err)
 		}
 		return nil
+	}
+}
+
+// openBrowser tries to open url in the user's default browser, after a short
+// delay so the server is already accepting connections. A failure is logged,
+// not fatal — the URL is printed regardless.
+func openBrowser(url string) {
+	time.Sleep(400 * time.Millisecond)
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+
+	if err := cmd.Start(); err != nil {
+		logger.Warn("Could not open a browser automatically (%v) — open %s yourself", err, url)
 	}
 }
 
@@ -199,4 +228,5 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 	serveCmd.Flags().IntVarP(&servePort, "port", "p", 8080, "port to serve the webserver on")
 	serveCmd.Flags().StringVar(&serveHost, "host", "127.0.0.1", "address to bind to (use 0.0.0.0 to expose on your LAN)")
+	serveCmd.Flags().BoolVar(&serveOpen, "open", false, "open the UI in your default browser once the server is up")
 }
