@@ -260,6 +260,18 @@ choice:
   the public `GetTool`/`SaveTool`. Regression guards: `internal/registry/locking_test.go` (run with
   `-race`).
 
+  **2026-08-29 — run/exec/session managers return snapshots, not live pointers.** Every long-running
+  job manager (`internal/training`, `internal/benchmarks`, `internal/evaluations`,
+  `internal/environments` execs, `internal/agents` runs, `internal/deployments` sessions) tracks its
+  state in a `map[string]*Run` (or `*Exec`/`*Session`) that a background goroutine mutates under the
+  manager's `mu`. `GetRun`/`ListRuns`/`GetExec`/`Get`/`List` — and `StartRun`/`StartExec`/`Start` — now
+  return a **copy** (`cloneRun`/`cloneExec`/`cloneSession`: struct by value + the goroutine-grown
+  slices `Progress`/`Results`/`Messages` reallocated), because handing out the live pointer races any
+  concurrent reader (an HTTP handler marshaling to JSON, a poll loop). The background goroutine and
+  `SendMessage` still operate on the live map entry. `go test -race ./...` is clean and CI runs it
+  repo-wide. When adding a new job manager, follow this: mutate the live struct under the lock, return
+  clones.
+
   **2026-08-28 addendum — dataset page: AI-provenance flags + record-level actions.** `registry.Example`
   gained `Source string` (`"ai"` when `datasetgen` generated it, empty for human-authored/imported),
   `Approved bool` (a human reviewed an AI example), and `NeedsReview bool` (a human explicitly flagged
