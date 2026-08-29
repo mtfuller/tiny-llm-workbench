@@ -5,6 +5,7 @@ import (
 
 	"github.com/mtfuller/tiny-llm-workbench/internal/color"
 	"github.com/mtfuller/tiny-llm-workbench/internal/logger"
+	"github.com/mtfuller/tiny-llm-workbench/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +23,7 @@ running, and evaluating agents backed by tiny LLMs, via a local webserver and br
 
 Run ` + color.Bold("tlw serve") + ` to start the webserver and open the browser UI. See README.md
 for the full feature list.`,
+	Version: version.Version,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Configure logger based on flags
 		if verbose {
@@ -43,6 +45,10 @@ func Execute() {
 }
 
 func init() {
+	// `tlw --version` prints just the version; `tlw version` still gives the
+	// fuller commit/build-date breakdown.
+	rootCmd.SetVersionTemplate("tlw {{.Version}}\n")
+
 	// Global flags
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output (debug level)")
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "l", "info", "set log level (debug, info, warn, error)")

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -135,6 +136,9 @@ deliberately expose it on your LAN.`,
 		addr := net.JoinHostPort(serveHost, strconv.Itoa(servePort))
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
+			if errors.Is(err, syscall.EADDRINUSE) {
+				return fmt.Errorf("port %d is already in use — start with --port to pick another", servePort)
+			}
 			return fmt.Errorf("listen on %s: %w", addr, err)
 		}
 

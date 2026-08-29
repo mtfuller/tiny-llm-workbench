@@ -33,6 +33,24 @@ func TestCLIVersion(t *testing.T) {
 	}
 }
 
+// TestCLIVersionFlag tests that `tlw --version` (the Cobra flag, not the
+// subcommand) prints a one-line version.
+func TestCLIVersionFlag(t *testing.T) {
+	cmd := exec.Command("go", "run", "../main.go", "--version")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to run --version: %v\nOutput: %s", err, out.String())
+	}
+
+	output := strings.TrimSpace(out.String())
+	if output != "tlw dev" {
+		t.Errorf("--version output = %q, want %q", output, "tlw dev")
+	}
+}
+
 // TestCLIVersionShort tests the version command with --short flag
 func TestCLIVersionShort(t *testing.T) {
 	cmd := exec.Command("go", "run", "../main.go", "version", "--short")
