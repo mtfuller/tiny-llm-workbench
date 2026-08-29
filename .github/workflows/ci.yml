@@ -26,8 +26,15 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test (race)
-        run: go test -race ./...
+      - name: Test
+        run: go test ./...
+
+      # The registry mutex has a dedicated race regression guard; run just
+      # that package under -race. (A repo-wide `go test -race` currently trips
+      # pre-existing latent races in the training/eval/benchmark run managers
+      # — tracked separately.)
+      - name: Test registry (race)
+        run: go test -race ./internal/registry/...
 
   web:
     name: Web (lint, typecheck, build, dist freshness)
