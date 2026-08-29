@@ -7,9 +7,9 @@ You are a knowledgeable software engineer familiar with best practices for build
 
 ## Layout (key parts)
 - main.go: entrypoint that calls cmd.Execute()
-- cmd/: Cobra commands (root.go, version.go, greet.go, calc.go, process.go)
+- cmd/: Cobra commands (root.go, serve.go, version.go)
 - internal/: business logic (logger, color, spinner, version)
-- pkg/: reusable libraries (example)
+- pkg/: reusable libraries (currently none; add here if code is genuinely reusable outside this CLI)
 - tests/: integration tests
 - Taskfile.yml: build automation
 

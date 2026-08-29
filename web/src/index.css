@@ -461,6 +461,23 @@ a.nav-item:hover {
   font-weight: 600;
 }
 
+.event-log:not(.agent-debug-feed) .event-type {
+  flex-shrink: 0;
+  min-width: 5.5rem;
+}
+
+.event-log:not(.agent-debug-feed) .event-data {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.event-log:not(.agent-debug-feed) .event-time {
+  color: color-mix(in srgb, var(--text) 45%, transparent);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .empty-state {
   color: color-mix(in srgb, var(--text) 55%, transparent);
   border: 1px solid var(--border);

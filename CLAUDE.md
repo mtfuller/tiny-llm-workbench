@@ -8,14 +8,12 @@ here, not what the product does.
 
 Tiny LLM Workbench (TLW) is a local tool for training, running, and evaluating agents backed by tiny
 LLMs, via a Go CLI (module `github.com/mtfuller/tiny-llm-workbench`, binary `tlw`) + local webserver +
-browser UI. **The product described in the README has not been built yet.** The repo currently
-contains the Go CLI scaffolding it was bootstrapped from (a generic Cobra starter — `cmd/greet.go`,
-`cmd/calc.go`, `cmd/process.go` are placeholder example commands that still need to be replaced with
-real TLW commands).
+browser UI. Every roadmap phase (0–4) is built and verified live; the CLI now has just two commands —
+`serve` (the whole product) and `version` — after the generic Cobra-starter placeholders (`greet`,
+`calc`, `process`, and `pkg/example`) were removed in the pre-release cleanup.
 
-Don't assume anything beyond `cmd/`, `internal/`, `pkg/`, `tests/`, `main.go`, and `Taskfile.yml`
-exists. If you're the first to touch a given roadmap phase, you're deciding its shape, not discovering
-an existing one — treat non-trivial structural choices accordingly (see below).
+The work now is release polish and hardening, not new phases — see `PRE-RELEASE-AUDIT.md`. If you're
+extending an existing area, keep changes additive and phase-scoped (see Working agreements below).
 
 ## Roadmap
 

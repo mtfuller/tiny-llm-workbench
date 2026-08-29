@@ -48,7 +48,7 @@ tasks:
     desc: Run unit tests only
     cmds:
       - echo "Running unit tests..."
-      - go test -v ./internal/... ./pkg/...
+      - go test -v ./cmd/... ./internal/...
 
   test-integration:
     desc: Run integration tests only

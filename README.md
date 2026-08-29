@@ -82,6 +82,11 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         registered, runnable model) is verified end-to-end against a real mlx-lm install (see
         CLAUDE.md's MLX integration note).
   - [x] Local MLX model client for generating dataset variations
+  - [x] Dataset review workflow — AI-generated examples are flagged for review; per-record duplicate /
+        generate-variations-from-this-record / flag / approve actions, a "needs review" filter, and a
+        banner counting unreviewed records, so generated data gets vetted before training.
+  - [x] Model pickers gained a searchable "Browse models" modal (grouped: your models / suggested,
+        downloaded on first use) so you don't have to recall a model's exact name.
 - [x] **Phase 2 — Environments**
   - [x] Add an Environments page to the navbar — since expanded into its own "Environments" nav section
         (Environments, Knowledge, Tools)
@@ -179,6 +184,13 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         marker distinguishes the definitive reply (shown prominently) from progress updates (shown
         dimmed and collapsible once the answer arrives); progress messages are display-only and never
         enter conversation history. Verified live end to end against a real MLX model.
+  - [x] "Preview model" on prompt and agent node inspectors — run just that node against a sample
+        input, with no graph / tools / workspace / history, to see what it would produce (and whether
+        its output schema validates), so you can iterate on a single node fast.
+  - [x] The agent node's per-iteration ReAct prompt is a fully editable template — placeholders for
+        `instructions` / `tools` / `knowledge` / `history` / `transcript` / `input` / `tool_names` /
+        `args_example` plus `{{#section}}…{{/section}}` conditional blocks, with a "load the default
+        template to edit" button and a tool-list format toggle (list / JSON / markdown).
 - [x] **Phase 4 — Evaluations**
   - [x] Add an Evaluations page to the navbar
   - [x] Define tests (prompt, assertions) against a set of agents in one environment — assertions are
@@ -211,6 +223,10 @@ third-party service. Training and running models are both powered by [mlx-lm](ht
         start it, and chat with the agent to do actual, persisting work. The Environments-page Playground
         moved to the **Tools** page: pick a tool + a test workspace and run it in a sandbox to see the
         effects.
+  - [x] Benchmarks — test suites (prompt + assertions) run directly against a set of models, with no
+        agent or environment involved. Same draft/publish versioning, durable per-model comparison
+        results (pass@1 / assertion rate / error rate / avg latency, sortable), and per-test-case
+        review workflow as Evaluations. TLW ships a tiny LLM fine-tuned to generate prompt variations.
 
 Check off items as they land — this list is the source of truth for "what's actually built" and future
 agent sessions rely on it being current. See [CLAUDE.md](CLAUDE.md) for how it's kept in sync.
@@ -219,6 +235,9 @@ agent sessions rely on it being current. See [CLAUDE.md](CLAUDE.md) for how it's
 
 ### Prerequisites
 
+- **macOS on Apple Silicon (M-series) is required.** `mlx-lm` powers Training *and all model
+  inference* (agents, chat, dataset/test-case generation, benchmarks), and it is Apple-Silicon-only. On
+  Linux, Windows, or an Intel Mac the CLI and browser UI run, but every model-backed feature fails.
 - Go 1.22 or higher
 - [Task](https://taskfile.dev) (optional, for build automation)
 - Node.js 22+ and npm — only needed if you're changing the browser UI under `web/`. A prebuilt copy of
@@ -226,8 +245,8 @@ agent sessions rely on it being current. See [CLAUDE.md](CLAUDE.md) for how it's
 - Docker (e.g. Docker Desktop) running locally — only needed to launch Environments. `tlw serve` starts
   fine without it; launching an Environment will just fail with a clear "Docker daemon unreachable"
   error until it's running.
-- [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (Apple Silicon only) — needed for Training, and for
-  anything that runs a model (Agents, dataset variation generation) — TLW has no other model runtime.
+- [`mlx-lm`](https://github.com/ml-explore/mlx-lm) — needed for Training, and for anything that runs a
+  model (Agents, dataset variation generation) — TLW has no other model runtime.
   Install with `pip install mlx-lm` or `brew install mlx-lm`, and make sure the resulting `mlx_lm.*`
   commands are on PATH for wherever `tlw serve` runs. `tlw serve` starts fine without it; anything that
   needs a model will just fail with a clear "not found on PATH" error until it's installed.
@@ -242,10 +261,11 @@ task build
 ```
 
 `task build` rebuilds the browser UI (`web:build`) before compiling the Go binary. `tlw serve` starts
-the local webserver — open the printed URL (default `http://localhost:8080`) to see the UI shell
-receiving live events over SSE. The `greet`, `calc`, `process`, and `version` commands are still
-placeholder scaffolding left over from the Go CLI template this project started from. Run `./tlw --help`
-to see everything currently available.
+the local webserver, bound to `127.0.0.1` by default — open the printed URL (default
+`http://localhost:8080`) to see the UI receiving live events over SSE. Pass `--host 0.0.0.0` to
+deliberately expose it on your LAN (the API can run shell commands, shell out to `mlx_lm`, and read and
+write files, so this is loopback-only unless you opt in), and `--port` to change the port. Run
+`./tlw --help` to see everything available.
 
 ## Development
 
@@ -265,8 +285,7 @@ to see everything currently available.
 │   ├── environments/       # Environment instance lifecycle (launch/stop/exec)
 │   ├── agents/             # Agent graph execution engine + chat run manager
 │   ├── evaluations/        # Deterministic assertion checks + evaluation run manager
-│   └── ...                 # logger, color, spinner, version
-├── pkg/                    # Reusable packages
+│   └── ...                 # benchmarks, deployments, knowledge, huggingface, safetensors, logger, ...
 ├── web/                    # React + TypeScript browser UI (Vite). web/dist is embedded
 │                           # into the binary via web/embed.go.
 ├── tests/                  # Integration tests (full CLI invocations)

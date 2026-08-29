@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	verbose bool
+	verbose  bool
 	logLevel string
 )
 
@@ -20,8 +20,8 @@ var rootCmd = &cobra.Command{
 	Long: color.Bold("tlw") + ` is the CLI for Tiny LLM Workbench (TLW), a local tool for training,
 running, and evaluating agents backed by tiny LLMs, via a local webserver and browser UI.
 
-The commands below (greet, calc, process, version) are scaffolding placeholders left over from the
-Go CLI template this project was bootstrapped from. See README.md and CLAUDE.md for the real roadmap.`,
+Run ` + color.Bold("tlw serve") + ` to start the webserver and open the browser UI. See README.md
+for the full feature list.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Configure logger based on flags
 		if verbose {

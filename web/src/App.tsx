@@ -15,6 +15,7 @@ import Knowledge from './pages/Knowledge'
 import KnowledgeDetail from './pages/KnowledgeDetail'
 import ModelDetail from './pages/ModelDetail'
 import Models from './pages/Models'
+import NotFound from './pages/NotFound'
 import Settings from './pages/Settings'
 import Tools from './pages/Tools'
 import Training from './pages/Training'
@@ -47,6 +48,7 @@ function App() {
         <Route path="deployments" element={<Deployments />} />
         <Route path="deployments/:name" element={<DeploymentDetail />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
   )

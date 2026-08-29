@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -33,7 +34,10 @@ import (
 
 const shutdownTimeout = 5 * time.Second
 
-var servePort int
+var (
+	servePort int
+	serveHost string
+)
 
 // serveCmd represents the serve command
 var serveCmd = &cobra.Command{
@@ -41,7 +45,12 @@ var serveCmd = &cobra.Command{
 	Short: "Start the local TLW webserver and browser UI",
 	Long: `Start the local webserver that serves the browser UI and streams CLI
 events to it over Server-Sent Events. Leave this running and open the printed
-URL in a browser. Stop it with Ctrl+C.`,
+URL in a browser. Stop it with Ctrl+C.
+
+By default the server binds to 127.0.0.1 (loopback only), since the API can run
+shell commands in Docker containers, shell out to mlx_lm, and read and write
+files on this machine. Pass --host 0.0.0.0 (or a specific interface address) to
+deliberately expose it on your LAN.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		bus := eventbus.New()
 
@@ -120,9 +129,10 @@ URL in a browser. Stop it with Ctrl+C.`,
 			return fmt.Errorf("build server: %w", err)
 		}
 
-		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", servePort))
+		addr := net.JoinHostPort(serveHost, strconv.Itoa(servePort))
+		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			return fmt.Errorf("listen on port %d: %w", servePort, err)
+			return fmt.Errorf("listen on %s: %w", addr, err)
 		}
 
 		go publishHeartbeats(ctx, bus)
@@ -140,7 +150,7 @@ func runServer(ctx context.Context, httpServer *http.Server, listener net.Listen
 	}()
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	color.Success("TLW is running at http://localhost:%d", port)
+	color.Success("TLW is running at http://%s:%d", displayHost(serveHost), port)
 	logger.Info("Webserver listening on %s", listener.Addr())
 
 	select {
@@ -154,6 +164,18 @@ func runServer(ctx context.Context, httpServer *http.Server, listener net.Listen
 			return fmt.Errorf("serve: %w", err)
 		}
 		return nil
+	}
+}
+
+// displayHost turns a bind address into something usable in a browser URL:
+// a wildcard bind (0.0.0.0 / ::) is reachable via localhost on the same
+// machine, and an empty host means loopback.
+func displayHost(host string) string {
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		return "localhost"
+	default:
+		return host
 	}
 }
 
@@ -176,4 +198,5 @@ func publishHeartbeats(ctx context.Context, bus *eventbus.Bus) {
 func init() {
 	rootCmd.AddCommand(serveCmd)
 	serveCmd.Flags().IntVarP(&servePort, "port", "p", 8080, "port to serve the webserver on")
+	serveCmd.Flags().StringVar(&serveHost, "host", "127.0.0.1", "address to bind to (use 0.0.0.0 to expose on your LAN)")
 }
