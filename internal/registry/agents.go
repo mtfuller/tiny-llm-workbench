@@ -225,7 +225,14 @@ func (r *Registry) agentsDir() string {
 // what the caller passed in (mirrors the same fix in SaveBenchmark/
 // SaveEvaluation).
 func (r *Registry) SaveAgent(agent Agent) error {
-	if existing, err := r.GetAgent(agent.Name); err == nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.saveAgent(agent)
+}
+
+// saveAgent is the non-locking core of SaveAgent; callers must hold r.mu.
+func (r *Registry) saveAgent(agent Agent) error {
+	if existing, err := r.getAgent(agent.Name); err == nil {
 		agent.CreatedAt = existing.CreatedAt
 	} else if agent.CreatedAt.IsZero() {
 		agent.CreatedAt = time.Now().UTC()
@@ -250,6 +257,13 @@ func (r *Registry) SaveAgent(agent Agent) error {
 
 // GetAgent returns the named agent's definition.
 func (r *Registry) GetAgent(name string) (Agent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getAgent(name)
+}
+
+// getAgent is the non-locking core of GetAgent; callers must hold r.mu.
+func (r *Registry) getAgent(name string) (Agent, error) {
 	data, err := os.ReadFile(filepath.Join(r.agentDir(name), agentMetadataFile))
 	if err != nil {
 		return Agent{}, fmt.Errorf("read agent %q: %w", name, err)
@@ -266,6 +280,9 @@ func (r *Registry) GetAgent(name string) (Agent, error) {
 // DeleteAgent removes an agent's directory (its graph definition). It's an
 // error to delete an agent that doesn't exist.
 func (r *Registry) DeleteAgent(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.agentDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("agent %q not found", name)
@@ -278,6 +295,9 @@ func (r *Registry) DeleteAgent(name string) error {
 
 // ListAgents returns every registry-tracked agent, sorted by name.
 func (r *Registry) ListAgents() ([]Agent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.agentsDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -292,7 +312,7 @@ func (r *Registry) ListAgents() ([]Agent, error) {
 			continue
 		}
 
-		agent, err := r.GetAgent(entry.Name())
+		agent, err := r.getAgent(entry.Name())
 		if err != nil {
 			continue // skip directories without a valid definition
 		}

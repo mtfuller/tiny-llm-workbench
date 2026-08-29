@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/mtfuller/tiny-llm-workbench/internal/assertions"
 )
 
 // checkResolvedModel fails fast if model is a bare name mlx-lm can't load —
@@ -99,18 +101,134 @@ Respond with ONLY a JSON array of strings. Do not include any other text.`, seed
 }
 
 // parsePrompts extracts a JSON array of strings from an LLM response,
-// tolerating surrounding prose or markdown code fences.
+// tolerating the ways small local models mangle "respond with only a JSON
+// array": surrounding prose or markdown fences, a trailing comma before the
+// closing bracket, a stray "]" in trailing prose, and individual malformed
+// entries mixed in with good ones. Mirrors internal/datasetgen.parseExamples.
 func parsePrompts(response string) ([]string, error) {
-	start := strings.IndexByte(response, '[')
-	end := strings.LastIndexByte(response, ']')
-	if start == -1 || end == -1 || end < start {
+	raw, ok := firstJSONArray(response)
+	if !ok {
 		return nil, fmt.Errorf("no JSON array found in response: %q", response)
 	}
 
+	raw = stripTrailingCommas(raw)
+
 	var prompts []string
-	if err := json.Unmarshal([]byte(response[start:end+1]), &prompts); err != nil {
-		return nil, fmt.Errorf("invalid JSON array: %w", err)
+	if err := json.Unmarshal([]byte(raw), &prompts); err == nil {
+		return nonEmpty(prompts), nil
+	} else {
+		// The array wrapper was fine but something inside it didn't parse —
+		// pull the quoted strings out one at a time and keep the usable ones.
+		salvaged := nonEmpty(quotedStrings(raw))
+		if len(salvaged) == 0 {
+			return nil, fmt.Errorf("invalid JSON array: %w", err)
+		}
+		return salvaged, nil
+	}
+}
+
+// firstJSONArray returns the first balanced [...] substring in s (ignoring
+// brackets inside string literals), or ok=false if there isn't one.
+func firstJSONArray(s string) (string, bool) {
+	for {
+		i := strings.IndexByte(s, '[')
+		if i == -1 {
+			return "", false
+		}
+		if v, ok := assertions.ExtractJSONValue(s[i:]); ok {
+			return v, true
+		}
+		s = s[i+1:]
+	}
+}
+
+// quotedStrings returns every JSON string literal in s, decoded — the
+// last-resort salvage when an array as a whole won't parse.
+func quotedStrings(s string) []string {
+	var out []string
+	for i := 0; i < len(s); i++ {
+		if s[i] != '"' {
+			continue
+		}
+		j := i + 1
+		for j < len(s) {
+			if s[j] == '\\' {
+				j += 2
+				continue
+			}
+			if s[j] == '"' {
+				break
+			}
+			j++
+		}
+		if j >= len(s) {
+			break
+		}
+		var decoded string
+		if json.Unmarshal([]byte(s[i:j+1]), &decoded) == nil {
+			out = append(out, decoded)
+		}
+		i = j
+	}
+	return out
+}
+
+// nonEmpty drops blank entries (a salvaged list can pick up empty strings
+// from a "" the model emitted between real ones).
+func nonEmpty(in []string) []string {
+	out := in[:0]
+	for _, s := range in {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// stripTrailingCommas removes a comma that's followed only by whitespace and
+// a closing } or ] — the trailing-comma mistake small models routinely make.
+// Commas inside string literals are left untouched.
+func stripTrailingCommas(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+
+		if inString {
+			b.WriteByte(c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			b.WriteByte(c)
+			continue
+		}
+
+		if c == ',' {
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			if j < len(s) && (s[j] == '}' || s[j] == ']') {
+				continue // drop the trailing comma
+			}
+		}
+
+		b.WriteByte(c)
 	}
 
-	return prompts, nil
+	return b.String()
 }

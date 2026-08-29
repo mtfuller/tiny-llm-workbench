@@ -80,6 +80,65 @@ func TestVariationsInvalidJSON(t *testing.T) {
 	}
 }
 
+// A trailing comma before the closing bracket makes json.Unmarshal fail with
+// "invalid character ']' looking for beginning of value" — the same bug class
+// fixed in datasetgen. parsePrompts now strips it.
+func TestVariationsToleratesTrailingComma(t *testing.T) {
+	llm := &fakeLLM{response: "[\n  \"say good morning\",\n  \"greet politely\",\n]"}
+	gen := New(llm, nil)
+
+	got, err := gen.Variations(context.Background(), "mlx-community/Qwen2.5-0.5B-Instruct-4bit", "say hello", 2)
+	if err != nil {
+		t.Fatalf("Variations() error = %v", err)
+	}
+	if len(got) != 2 || got[0] != "say good morning" || got[1] != "greet politely" {
+		t.Errorf("Variations() = %+v, want the two prompts", got)
+	}
+}
+
+// A stray "]" in trailing prose used to make LastIndexByte grab a garbled
+// span. The balanced-scan approach ignores it.
+func TestVariationsIgnoresBracketsInSurroundingProse(t *testing.T) {
+	llm := &fakeLLM{response: `Here are the prompts: ["say good morning"] (that's a list [sic]).`}
+	gen := New(llm, nil)
+
+	got, err := gen.Variations(context.Background(), "mlx-community/Qwen2.5-0.5B-Instruct-4bit", "say hello", 1)
+	if err != nil {
+		t.Fatalf("Variations() error = %v", err)
+	}
+	if len(got) != 1 || got[0] != "say good morning" {
+		t.Errorf("Variations() = %+v, want [say good morning]", got)
+	}
+}
+
+func TestVariationsKeepsCommasInsideStrings(t *testing.T) {
+	llm := &fakeLLM{response: `["greet the user, warmly", "say hi, then wave"]`}
+	gen := New(llm, nil)
+
+	got, err := gen.Variations(context.Background(), "mlx-community/Qwen2.5-0.5B-Instruct-4bit", "say hello", 2)
+	if err != nil {
+		t.Fatalf("Variations() error = %v", err)
+	}
+	if len(got) != 2 || got[0] != "greet the user, warmly" || got[1] != "say hi, then wave" {
+		t.Errorf("Variations() = %+v, want the commas preserved inside each string", got)
+	}
+}
+
+// A single unquoted/broken entry among good ones shouldn't sink the whole
+// batch — the salvage path pulls the valid strings out.
+func TestVariationsSalvagesMalformedEntries(t *testing.T) {
+	llm := &fakeLLM{response: `["say good morning", nope, "greet politely"]`}
+	gen := New(llm, nil)
+
+	got, err := gen.Variations(context.Background(), "mlx-community/Qwen2.5-0.5B-Instruct-4bit", "say hello", 3)
+	if err != nil {
+		t.Fatalf("Variations() error = %v", err)
+	}
+	if len(got) != 2 || got[0] != "say good morning" || got[1] != "greet politely" {
+		t.Errorf("Variations() = %+v, want the two well-formed prompts", got)
+	}
+}
+
 func TestVariationsRejectsUnresolvableBareName(t *testing.T) {
 	llm := &fakeLLM{response: `[]`}
 	gen := New(llm, &fakeResolver{})

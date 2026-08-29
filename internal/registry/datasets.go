@@ -53,6 +53,9 @@ type Example struct {
 // description are optional, freeform metadata shown on the dataset's detail
 // page — they don't affect training.
 func (r *Registry) CreateDataset(name, title, description string) (Dataset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.datasetDir(name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Dataset{}, fmt.Errorf("create dataset directory: %w", err)
@@ -80,11 +83,16 @@ func (r *Registry) CreateDataset(name, title, description string) (Dataset, erro
 // GetDataset returns a single dataset's metadata (name, title, description,
 // creation time), without its examples.
 func (r *Registry) GetDataset(name string) (Dataset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.readDatasetMetadata(name)
 }
 
 // ListDatasets returns all registry-tracked datasets, sorted by name.
 func (r *Registry) ListDatasets() ([]DatasetSummary, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.datasetsDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -104,7 +112,7 @@ func (r *Registry) ListDatasets() ([]DatasetSummary, error) {
 			continue // skip directories without valid metadata
 		}
 
-		examples, err := r.ListExamples(entry.Name())
+		examples, err := r.listExamples(entry.Name())
 		if err != nil {
 			continue
 		}
@@ -119,6 +127,13 @@ func (r *Registry) ListDatasets() ([]DatasetSummary, error) {
 
 // ListExamples returns every input/output pair in the named dataset.
 func (r *Registry) ListExamples(name string) ([]Example, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listExamples(name)
+}
+
+// listExamples is the non-locking core of ListExamples; callers must hold r.mu.
+func (r *Registry) listExamples(name string) ([]Example, error) {
 	f, err := os.Open(filepath.Join(r.datasetDir(name), datasetExamplesFile))
 	if err != nil {
 		return nil, fmt.Errorf("open dataset examples: %w", err)
@@ -148,6 +163,9 @@ func (r *Registry) ListExamples(name string) ([]Example, error) {
 
 // AppendExamples adds examples to the end of the named dataset.
 func (r *Registry) AppendExamples(name string, examples []Example) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	f, err := os.OpenFile(filepath.Join(r.datasetDir(name), datasetExamplesFile), os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("open dataset examples: %w", err)
@@ -170,7 +188,10 @@ func (r *Registry) AppendExamples(name string, examples []Example) error {
 // UpdateExample overwrites the example at index (0-based, in the order
 // ListExamples returns them). It's an error if index is out of range.
 func (r *Registry) UpdateExample(name string, index int, example Example) error {
-	examples, err := r.ListExamples(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	examples, err := r.listExamples(name)
 	if err != nil {
 		return err
 	}
@@ -186,7 +207,10 @@ func (r *Registry) UpdateExample(name string, index int, example Example) error 
 // Approved and clears any NeedsReview flag, so it no longer shows up in the
 // UI's "needs review" filter. It's an error if index is out of range.
 func (r *Registry) ApproveExample(name string, index int) error {
-	examples, err := r.ListExamples(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	examples, err := r.listExamples(name)
 	if err != nil {
 		return err
 	}
@@ -204,7 +228,10 @@ func (r *Registry) ApproveExample(name string, index int) error {
 // re-flagged stops reading as reviewed. It's an error if index is out of
 // range.
 func (r *Registry) FlagExampleForReview(name string, index int) error {
-	examples, err := r.ListExamples(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	examples, err := r.listExamples(name)
 	if err != nil {
 		return err
 	}
@@ -220,7 +247,10 @@ func (r *Registry) FlagExampleForReview(name string, index int) error {
 // DeleteExample removes the example at index (0-based, in the order
 // ListExamples returns them). It's an error if index is out of range.
 func (r *Registry) DeleteExample(name string, index int) error {
-	examples, err := r.ListExamples(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	examples, err := r.listExamples(name)
 	if err != nil {
 		return err
 	}
@@ -258,6 +288,9 @@ func (r *Registry) writeExamples(name string, examples []Example) error {
 // DeleteDataset removes a dataset's directory (metadata and examples). It's
 // an error to delete a dataset that doesn't exist.
 func (r *Registry) DeleteDataset(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.datasetDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("dataset %q not found", name)

@@ -6,14 +6,24 @@ package registry
 import (
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // homeEnvVar overrides the registry root, mainly for tests.
 const homeEnvVar = "TLW_HOME"
 
 // Registry reads and writes the model/dataset registry rooted at Root.
+//
+// The registry is a plain directory tree with no database, so every mutating
+// operation is a load-mutate-save against a JSON file. mu serializes those:
+// without it, two goroutines (e.g. two browser tabs editing the same agent)
+// can both load, both mutate, and both save — silently losing one edit. mu
+// is a plain, non-reentrant Mutex, so a public method that holds it must call
+// the unexported, non-locking core helpers (getX/saveX/...), never another
+// public method.
 type Registry struct {
 	root string
+	mu   sync.Mutex
 }
 
 // New creates a Registry rooted at root.

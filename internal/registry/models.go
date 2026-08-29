@@ -30,6 +30,9 @@ type Model struct {
 
 // SaveModel writes m's metadata, creating its directory if needed.
 func (r *Registry) SaveModel(m Model) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.modelDir(m.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create model directory: %w", err)
@@ -49,6 +52,8 @@ func (r *Registry) SaveModel(m Model) error {
 
 // GetModel returns a single registry-tracked model's metadata.
 func (r *Registry) GetModel(name string) (Model, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.readModelMetadata(name)
 }
 
@@ -63,7 +68,10 @@ func (r *Registry) GetModel(name string) (Model, error) {
 // registry name — which mlx-lm can't resolve on its own (an org-less name
 // like "Llama-3.2-1B-Instruct-4bit" makes the Hub return 401).
 func (r *Registry) ResolveModelRef(ref string) string {
-	if m, err := r.GetModel(ref); err == nil && m.Path != "" {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if m, err := r.readModelMetadata(ref); err == nil && m.Path != "" {
 		return m.Path
 	}
 	return ref
@@ -71,6 +79,9 @@ func (r *Registry) ResolveModelRef(ref string) string {
 
 // ListModels returns all registry-tracked models, sorted by name.
 func (r *Registry) ListModels() ([]Model, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.modelsDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -101,6 +112,9 @@ func (r *Registry) ListModels() ([]Model, error) {
 // files alongside it, e.g. adapter weights). It's an error to delete a model
 // that doesn't exist.
 func (r *Registry) DeleteModel(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.modelDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("model %q not found", name)

@@ -66,7 +66,14 @@ func (r *Registry) toolsDir() string {
 // it. CreatedAt is set on first save and preserved on later overwrites,
 // same reasoning as SaveAgent/SaveBenchmark.
 func (r *Registry) SaveTool(tool Tool) error {
-	if existing, err := r.GetTool(tool.Name); err == nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.saveTool(tool)
+}
+
+// saveTool is the non-locking core of SaveTool; callers must hold r.mu.
+func (r *Registry) saveTool(tool Tool) error {
+	if existing, err := r.getTool(tool.Name); err == nil {
 		tool.CreatedAt = existing.CreatedAt
 	} else if tool.CreatedAt.IsZero() {
 		tool.CreatedAt = time.Now().UTC()
@@ -91,6 +98,13 @@ func (r *Registry) SaveTool(tool Tool) error {
 
 // GetTool returns the named catalog tool's definition.
 func (r *Registry) GetTool(name string) (Tool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getTool(name)
+}
+
+// getTool is the non-locking core of GetTool; callers must hold r.mu.
+func (r *Registry) getTool(name string) (Tool, error) {
 	data, err := os.ReadFile(filepath.Join(r.toolDir(name), toolMetadataFile))
 	if err != nil {
 		return Tool{}, fmt.Errorf("read tool %q: %w", name, err)
@@ -110,6 +124,9 @@ func (r *Registry) GetTool(name string) (Tool, error) {
 // longer on its bound Environment (a clear "not found" surfaced in the UI),
 // rather than a cascading delete across every environment.
 func (r *Registry) DeleteTool(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.toolDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("tool %q not found", name)
@@ -122,6 +139,9 @@ func (r *Registry) DeleteTool(name string) error {
 
 // ListTools returns every catalog tool, sorted by name.
 func (r *Registry) ListTools() ([]Tool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.toolsDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -136,7 +156,7 @@ func (r *Registry) ListTools() ([]Tool, error) {
 			continue
 		}
 
-		tool, err := r.GetTool(entry.Name())
+		tool, err := r.getTool(entry.Name())
 		if err != nil {
 			continue // skip directories without a valid definition
 		}
@@ -208,6 +228,10 @@ func PrebuiltTools() []Tool {
 // they don't already exist. It never overwrites an existing definition, so
 // a user is free to edit or delete them — deleting one just means it won't
 // be reseeded until the next `tlw serve` start finds it still missing.
+//
+// This runs once at startup, before the server accepts requests, so it
+// deliberately does NOT take r.mu — it calls the public (locking) GetTool /
+// SaveTool, which would deadlock a non-reentrant mutex if this held it too.
 func (r *Registry) EnsurePrebuiltTools() error {
 	for _, tool := range PrebuiltTools() {
 		if _, err := r.GetTool(tool.Name); err == nil {

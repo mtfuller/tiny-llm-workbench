@@ -65,7 +65,14 @@ func (r *Registry) WorkspaceFilesDir(name string) string {
 // forces HostPath to point at it; a real workspace keeps its caller-supplied
 // HostPath. CreatedAt is set on first save and preserved on overwrite.
 func (r *Registry) SaveWorkspace(w Workspace) error {
-	if existing, err := r.GetWorkspace(w.Name); err == nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.saveWorkspace(w)
+}
+
+// saveWorkspace is the non-locking core of SaveWorkspace; callers must hold r.mu.
+func (r *Registry) saveWorkspace(w Workspace) error {
+	if existing, err := r.getWorkspace(w.Name); err == nil {
 		w.CreatedAt = existing.CreatedAt
 	} else if w.CreatedAt.IsZero() {
 		w.CreatedAt = time.Now().UTC()
@@ -98,6 +105,13 @@ func (r *Registry) SaveWorkspace(w Workspace) error {
 
 // GetWorkspace returns the named workspace.
 func (r *Registry) GetWorkspace(name string) (Workspace, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getWorkspace(name)
+}
+
+// getWorkspace is the non-locking core of GetWorkspace; callers must hold r.mu.
+func (r *Registry) getWorkspace(name string) (Workspace, error) {
 	data, err := os.ReadFile(filepath.Join(r.workspaceDir(name), workspaceMetadataFile))
 	if err != nil {
 		return Workspace{}, fmt.Errorf("read workspace %q: %w", name, err)
@@ -116,6 +130,9 @@ func (r *Registry) GetWorkspace(name string) (Workspace, error) {
 // directory on the user's machine is never touched, only the registry
 // pointer to it. It's an error to delete one that doesn't exist.
 func (r *Registry) DeleteWorkspace(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.workspaceDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("workspace %q not found", name)
@@ -128,6 +145,9 @@ func (r *Registry) DeleteWorkspace(name string) error {
 
 // ListWorkspaces returns every registry-tracked workspace, sorted by name.
 func (r *Registry) ListWorkspaces() ([]Workspace, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.workspacesDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -142,7 +162,7 @@ func (r *Registry) ListWorkspaces() ([]Workspace, error) {
 			continue
 		}
 
-		w, err := r.GetWorkspace(entry.Name())
+		w, err := r.getWorkspace(entry.Name())
 		if err != nil {
 			continue // skip directories without valid metadata
 		}

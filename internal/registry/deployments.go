@@ -35,7 +35,14 @@ func (r *Registry) deploymentDir(name string) string {
 // SaveDeployment writes d's definition, creating or overwriting it.
 // CreatedAt is set on first save and preserved on every later overwrite.
 func (r *Registry) SaveDeployment(d Deployment) error {
-	if existing, err := r.GetDeployment(d.Name); err == nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.saveDeployment(d)
+}
+
+// saveDeployment is the non-locking core of SaveDeployment; callers must hold r.mu.
+func (r *Registry) saveDeployment(d Deployment) error {
+	if existing, err := r.getDeployment(d.Name); err == nil {
 		d.CreatedAt = existing.CreatedAt
 	} else if d.CreatedAt.IsZero() {
 		d.CreatedAt = time.Now().UTC()
@@ -60,6 +67,13 @@ func (r *Registry) SaveDeployment(d Deployment) error {
 
 // GetDeployment returns the named deployment's definition.
 func (r *Registry) GetDeployment(name string) (Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getDeployment(name)
+}
+
+// getDeployment is the non-locking core of GetDeployment; callers must hold r.mu.
+func (r *Registry) getDeployment(name string) (Deployment, error) {
 	data, err := os.ReadFile(filepath.Join(r.deploymentDir(name), deploymentMetadataFile))
 	if err != nil {
 		return Deployment{}, fmt.Errorf("read deployment %q: %w", name, err)
@@ -76,6 +90,9 @@ func (r *Registry) GetDeployment(name string) (Deployment, error) {
 // DeleteDeployment removes a deployment's directory. It's an error to delete
 // one that doesn't exist.
 func (r *Registry) DeleteDeployment(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.deploymentDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("deployment %q not found", name)
@@ -88,6 +105,9 @@ func (r *Registry) DeleteDeployment(name string) error {
 
 // ListDeployments returns every registry-tracked deployment, sorted by name.
 func (r *Registry) ListDeployments() ([]Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.deploymentsDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -102,7 +122,7 @@ func (r *Registry) ListDeployments() ([]Deployment, error) {
 			continue
 		}
 
-		d, err := r.GetDeployment(entry.Name())
+		d, err := r.getDeployment(entry.Name())
 		if err != nil {
 			continue // skip directories without a valid definition
 		}

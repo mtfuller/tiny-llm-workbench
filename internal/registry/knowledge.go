@@ -48,7 +48,14 @@ func (r *Registry) knowledgeBasesDir() string {
 // CreatedAt is set on first save and preserved on later overwrites, same
 // reasoning as SaveAgent/SaveBenchmark.
 func (r *Registry) SaveKnowledgeBase(kb KnowledgeBase) error {
-	if existing, err := r.GetKnowledgeBase(kb.Name); err == nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.saveKnowledgeBase(kb)
+}
+
+// saveKnowledgeBase is the non-locking core of SaveKnowledgeBase; callers must hold r.mu.
+func (r *Registry) saveKnowledgeBase(kb KnowledgeBase) error {
+	if existing, err := r.getKnowledgeBase(kb.Name); err == nil {
 		kb.CreatedAt = existing.CreatedAt
 	} else if kb.CreatedAt.IsZero() {
 		kb.CreatedAt = time.Now().UTC()
@@ -73,6 +80,13 @@ func (r *Registry) SaveKnowledgeBase(kb KnowledgeBase) error {
 
 // GetKnowledgeBase returns the named knowledge base.
 func (r *Registry) GetKnowledgeBase(name string) (KnowledgeBase, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getKnowledgeBase(name)
+}
+
+// getKnowledgeBase is the non-locking core of GetKnowledgeBase; callers must hold r.mu.
+func (r *Registry) getKnowledgeBase(name string) (KnowledgeBase, error) {
 	data, err := os.ReadFile(filepath.Join(r.knowledgeDir(name), knowledgeMetadataFile))
 	if err != nil {
 		return KnowledgeBase{}, fmt.Errorf("read knowledge base %q: %w", name, err)
@@ -89,6 +103,9 @@ func (r *Registry) GetKnowledgeBase(name string) (KnowledgeBase, error) {
 // DeleteKnowledgeBase removes a knowledge base's directory. It's an error to
 // delete one that doesn't exist.
 func (r *Registry) DeleteKnowledgeBase(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.knowledgeDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("knowledge base %q not found", name)
@@ -102,6 +119,9 @@ func (r *Registry) DeleteKnowledgeBase(name string) error {
 // ListKnowledgeBases returns every registry-tracked knowledge base, sorted
 // by name.
 func (r *Registry) ListKnowledgeBases() ([]KnowledgeBase, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.knowledgeBasesDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -116,7 +136,7 @@ func (r *Registry) ListKnowledgeBases() ([]KnowledgeBase, error) {
 			continue
 		}
 
-		kb, err := r.GetKnowledgeBase(entry.Name())
+		kb, err := r.getKnowledgeBase(entry.Name())
 		if err != nil {
 			continue // skip directories without a valid definition
 		}
@@ -132,7 +152,10 @@ func (r *Registry) ListKnowledgeBases() ([]KnowledgeBase, error) {
 // each a fresh server-side ID (mirrors AppendExamples/AddTestCases) —
 // ignoring any ID the caller sent.
 func (r *Registry) AddRecords(name string, records []KnowledgeRecord) error {
-	kb, err := r.GetKnowledgeBase(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	kb, err := r.getKnowledgeBase(name)
 	if err != nil {
 		return err
 	}
@@ -140,14 +163,17 @@ func (r *Registry) AddRecords(name string, records []KnowledgeRecord) error {
 		rec.ID = fmt.Sprintf("rec-%d-%d", time.Now().UnixNano(), i)
 		kb.Records = append(kb.Records, rec)
 	}
-	return r.SaveKnowledgeBase(kb)
+	return r.saveKnowledgeBase(kb)
 }
 
 // UpdateRecord overwrites the record at index (0-based, in the order
 // GetKnowledgeBase returns them), preserving its existing ID. It's an error
 // if index is out of range.
 func (r *Registry) UpdateRecord(name string, index int, record KnowledgeRecord) error {
-	kb, err := r.GetKnowledgeBase(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	kb, err := r.getKnowledgeBase(name)
 	if err != nil {
 		return err
 	}
@@ -156,13 +182,16 @@ func (r *Registry) UpdateRecord(name string, index int, record KnowledgeRecord) 
 	}
 	record.ID = kb.Records[index].ID
 	kb.Records[index] = record
-	return r.SaveKnowledgeBase(kb)
+	return r.saveKnowledgeBase(kb)
 }
 
 // DeleteRecord removes the record at index (0-based, in the order
 // GetKnowledgeBase returns them). It's an error if index is out of range.
 func (r *Registry) DeleteRecord(name string, index int) error {
-	kb, err := r.GetKnowledgeBase(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	kb, err := r.getKnowledgeBase(name)
 	if err != nil {
 		return err
 	}
@@ -170,5 +199,5 @@ func (r *Registry) DeleteRecord(name string, index int) error {
 		return fmt.Errorf("record index %d out of range (knowledge base has %d records)", index, len(kb.Records))
 	}
 	kb.Records = append(kb.Records[:index], kb.Records[index+1:]...)
-	return r.SaveKnowledgeBase(kb)
+	return r.saveKnowledgeBase(kb)
 }

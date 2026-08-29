@@ -249,6 +249,17 @@ choice:
   entry above), the registry is the *only* model source — no external catalog to merge with. See
   `internal/registry`.
 
+  **2026-08-29 — registry is now goroutine-safe (`sync.Mutex` on `*Registry`).** Every public
+  read/write method takes `r.mu` for its whole body, so a load-mutate-save sequence (e.g.
+  `AddTestCases` = `getBenchmark` + append + `saveBenchmark`) can't interleave with another
+  goroutine's and silently drop a write — the "two browser tabs editing the same dataset" corruption
+  the pre-release audit flagged. The mutex is **not reentrant**: a public method that holds it must
+  call the unexported non-locking cores (`getBenchmark`/`saveBenchmark`/`listExamples`/…), never
+  another public method. The only exception is startup one-shots like `EnsurePrebuiltTools`, which run
+  single-threaded before the server accepts requests and deliberately take no lock so they can call
+  the public `GetTool`/`SaveTool`. Regression guards: `internal/registry/locking_test.go` (run with
+  `-race`).
+
   **2026-08-28 addendum — dataset page: AI-provenance flags + record-level actions.** `registry.Example`
   gained `Source string` (`"ai"` when `datasetgen` generated it, empty for human-authored/imported),
   `Approved bool` (a human reviewed an AI example), and `NeedsReview bool` (a human explicitly flagged

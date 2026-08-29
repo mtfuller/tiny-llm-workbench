@@ -109,7 +109,14 @@ func (r *Registry) evaluationsDir() string {
 // — draft edits (Add/Update/DeleteTestCase) never change Version. Only
 // PublishVersion changes Version.
 func (r *Registry) SaveEvaluation(eval Evaluation) error {
-	if existing, err := r.GetEvaluation(eval.Name); err == nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.saveEvaluation(eval)
+}
+
+// saveEvaluation is the non-locking core of SaveEvaluation; callers must hold r.mu.
+func (r *Registry) saveEvaluation(eval Evaluation) error {
+	if existing, err := r.getEvaluation(eval.Name); err == nil {
 		eval.CreatedAt = existing.CreatedAt
 		eval.Version = existing.Version
 	} else {
@@ -140,6 +147,13 @@ func (r *Registry) writeEvaluationDefinition(eval Evaluation) error {
 
 // GetEvaluation returns the named evaluation's definition.
 func (r *Registry) GetEvaluation(name string) (Evaluation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getEvaluation(name)
+}
+
+// getEvaluation is the non-locking core of GetEvaluation; callers must hold r.mu.
+func (r *Registry) getEvaluation(name string) (Evaluation, error) {
 	data, err := os.ReadFile(filepath.Join(r.evaluationDir(name), evaluationMetadataFile))
 	if err != nil {
 		return Evaluation{}, fmt.Errorf("read evaluation %q: %w", name, err)
@@ -157,6 +171,9 @@ func (r *Registry) GetEvaluation(name string) (Evaluation, error) {
 // any published versions). It's an error to delete an evaluation that
 // doesn't exist.
 func (r *Registry) DeleteEvaluation(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.evaluationDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("evaluation %q not found", name)
@@ -176,7 +193,10 @@ func (r *Registry) DeleteEvaluation(name string) error {
 // below) only because both types share the *Registry receiver in this one
 // package — a plain "PublishVersion(name string)" can't be declared twice.
 func (r *Registry) PublishEvaluationVersion(evaluationName string) (EvaluationVersion, error) {
-	eval, err := r.GetEvaluation(evaluationName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	eval, err := r.getEvaluation(evaluationName)
 	if err != nil {
 		return EvaluationVersion{}, err
 	}
@@ -184,7 +204,7 @@ func (r *Registry) PublishEvaluationVersion(evaluationName string) (EvaluationVe
 		return EvaluationVersion{}, fmt.Errorf("evaluation %q has no test cases to publish", evaluationName)
 	}
 
-	versions, err := r.ListEvaluationVersions(evaluationName)
+	versions, err := r.listEvaluationVersions(evaluationName)
 	if err != nil {
 		return EvaluationVersion{}, err
 	}
@@ -211,6 +231,14 @@ func (r *Registry) PublishEvaluationVersion(evaluationName string) (EvaluationVe
 // evaluation, oldest first. An evaluation with nothing published yet
 // returns an empty slice, not an error.
 func (r *Registry) ListEvaluationVersions(evaluationName string) ([]EvaluationVersion, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listEvaluationVersions(evaluationName)
+}
+
+// listEvaluationVersions is the non-locking core of ListEvaluationVersions;
+// callers must hold r.mu.
+func (r *Registry) listEvaluationVersions(evaluationName string) ([]EvaluationVersion, error) {
 	data, err := os.ReadFile(filepath.Join(r.evaluationDir(evaluationName), evaluationVersionsFile))
 	if os.IsNotExist(err) {
 		return []EvaluationVersion{}, nil
@@ -230,7 +258,10 @@ func (r *Registry) ListEvaluationVersions(evaluationName string) ([]EvaluationVe
 // GetEvaluationVersion returns one published version of the named
 // evaluation.
 func (r *Registry) GetEvaluationVersion(evaluationName string, version int) (EvaluationVersion, error) {
-	versions, err := r.ListEvaluationVersions(evaluationName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	versions, err := r.listEvaluationVersions(evaluationName)
 	if err != nil {
 		return EvaluationVersion{}, err
 	}
@@ -269,7 +300,10 @@ func (r *Registry) writeEvaluationVersions(evaluationName string, versions []Eva
 // same-package-receiver-collision reason as PublishEvaluationVersion
 // above). This never touches any published version.
 func (r *Registry) AddEvaluationTestCases(evaluationName string, tcs []TestCase) error {
-	eval, err := r.GetEvaluation(evaluationName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	eval, err := r.getEvaluation(evaluationName)
 	if err != nil {
 		return err
 	}
@@ -280,7 +314,7 @@ func (r *Registry) AddEvaluationTestCases(evaluationName string, tcs []TestCase)
 		eval.TestCases = append(eval.TestCases, tc)
 	}
 
-	return r.SaveEvaluation(eval)
+	return r.saveEvaluation(eval)
 }
 
 // UpdateEvaluationTestCase overwrites the draft test case at index
@@ -288,7 +322,10 @@ func (r *Registry) AddEvaluationTestCases(evaluationName string, tcs []TestCase)
 // ID. It's an error if index is out of range. This never touches any
 // published version.
 func (r *Registry) UpdateEvaluationTestCase(evaluationName string, index int, tc TestCase) error {
-	eval, err := r.GetEvaluation(evaluationName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	eval, err := r.getEvaluation(evaluationName)
 	if err != nil {
 		return err
 	}
@@ -298,14 +335,17 @@ func (r *Registry) UpdateEvaluationTestCase(evaluationName string, index int, tc
 
 	tc.ID = eval.TestCases[index].ID
 	eval.TestCases[index] = tc
-	return r.SaveEvaluation(eval)
+	return r.saveEvaluation(eval)
 }
 
 // DeleteEvaluationTestCase removes the draft test case at index (0-based,
 // in the order GetEvaluation returns them). It's an error if index is out
 // of range. This never touches any published version.
 func (r *Registry) DeleteEvaluationTestCase(evaluationName string, index int) error {
-	eval, err := r.GetEvaluation(evaluationName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	eval, err := r.getEvaluation(evaluationName)
 	if err != nil {
 		return err
 	}
@@ -314,11 +354,14 @@ func (r *Registry) DeleteEvaluationTestCase(evaluationName string, index int) er
 	}
 
 	eval.TestCases = append(eval.TestCases[:index], eval.TestCases[index+1:]...)
-	return r.SaveEvaluation(eval)
+	return r.saveEvaluation(eval)
 }
 
 // ListEvaluations returns every registry-tracked evaluation, sorted by name.
 func (r *Registry) ListEvaluations() ([]Evaluation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.evaluationsDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -333,7 +376,7 @@ func (r *Registry) ListEvaluations() ([]Evaluation, error) {
 			continue
 		}
 
-		eval, err := r.GetEvaluation(entry.Name())
+		eval, err := r.getEvaluation(entry.Name())
 		if err != nil {
 			continue // skip directories without a valid definition
 		}

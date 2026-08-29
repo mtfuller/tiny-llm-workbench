@@ -62,7 +62,14 @@ func (r *Registry) benchmarksDir() string {
 // (Add/Update/DeleteTestCase) never change Version. Only PublishVersion
 // changes Version.
 func (r *Registry) SaveBenchmark(b Benchmark) error {
-	if existing, err := r.GetBenchmark(b.Name); err == nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.saveBenchmark(b)
+}
+
+// saveBenchmark is the non-locking core of SaveBenchmark; callers must hold r.mu.
+func (r *Registry) saveBenchmark(b Benchmark) error {
+	if existing, err := r.getBenchmark(b.Name); err == nil {
 		b.CreatedAt = existing.CreatedAt
 		b.Version = existing.Version
 	} else {
@@ -93,6 +100,13 @@ func (r *Registry) writeBenchmarkDefinition(b Benchmark) error {
 
 // GetBenchmark returns the named benchmark's definition.
 func (r *Registry) GetBenchmark(name string) (Benchmark, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getBenchmark(name)
+}
+
+// getBenchmark is the non-locking core of GetBenchmark; callers must hold r.mu.
+func (r *Registry) getBenchmark(name string) (Benchmark, error) {
 	data, err := os.ReadFile(filepath.Join(r.benchmarkDir(name), benchmarkMetadataFile))
 	if err != nil {
 		return Benchmark{}, fmt.Errorf("read benchmark %q: %w", name, err)
@@ -110,6 +124,9 @@ func (r *Registry) GetBenchmark(name string) (Benchmark, error) {
 // published versions). It's an error to delete a benchmark that doesn't
 // exist.
 func (r *Registry) DeleteBenchmark(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	dir := r.benchmarkDir(name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("benchmark %q not found", name)
@@ -126,7 +143,10 @@ func (r *Registry) DeleteBenchmark(name string) error {
 // benchmark with no draft test cases — there'd be nothing for a run to
 // exercise.
 func (r *Registry) PublishVersion(benchmarkName string) (BenchmarkVersion, error) {
-	b, err := r.GetBenchmark(benchmarkName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	b, err := r.getBenchmark(benchmarkName)
 	if err != nil {
 		return BenchmarkVersion{}, err
 	}
@@ -134,7 +154,7 @@ func (r *Registry) PublishVersion(benchmarkName string) (BenchmarkVersion, error
 		return BenchmarkVersion{}, fmt.Errorf("benchmark %q has no test cases to publish", benchmarkName)
 	}
 
-	versions, err := r.ListVersions(benchmarkName)
+	versions, err := r.listVersions(benchmarkName)
 	if err != nil {
 		return BenchmarkVersion{}, err
 	}
@@ -161,6 +181,13 @@ func (r *Registry) PublishVersion(benchmarkName string) (BenchmarkVersion, error
 // oldest first. A benchmark with nothing published yet returns an empty
 // slice, not an error.
 func (r *Registry) ListVersions(benchmarkName string) ([]BenchmarkVersion, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listVersions(benchmarkName)
+}
+
+// listVersions is the non-locking core of ListVersions; callers must hold r.mu.
+func (r *Registry) listVersions(benchmarkName string) ([]BenchmarkVersion, error) {
 	data, err := os.ReadFile(filepath.Join(r.benchmarkDir(benchmarkName), benchmarkVersionsFile))
 	if os.IsNotExist(err) {
 		return []BenchmarkVersion{}, nil
@@ -179,7 +206,10 @@ func (r *Registry) ListVersions(benchmarkName string) ([]BenchmarkVersion, error
 
 // GetVersion returns one published version of the named benchmark.
 func (r *Registry) GetVersion(benchmarkName string, version int) (BenchmarkVersion, error) {
-	versions, err := r.ListVersions(benchmarkName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	versions, err := r.listVersions(benchmarkName)
 	if err != nil {
 		return BenchmarkVersion{}, err
 	}
@@ -216,7 +246,10 @@ func (r *Registry) writeVersions(benchmarkName string, versions []BenchmarkVersi
 // tcs (a fresh one is always assigned) — mirrors AppendExamples for
 // datasets. This never touches any published version.
 func (r *Registry) AddTestCases(benchmarkName string, tcs []TestCase) error {
-	b, err := r.GetBenchmark(benchmarkName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	b, err := r.getBenchmark(benchmarkName)
 	if err != nil {
 		return err
 	}
@@ -227,14 +260,17 @@ func (r *Registry) AddTestCases(benchmarkName string, tcs []TestCase) error {
 		b.TestCases = append(b.TestCases, tc)
 	}
 
-	return r.SaveBenchmark(b)
+	return r.saveBenchmark(b)
 }
 
 // UpdateTestCase overwrites the draft test case at index (0-based, in the
 // order GetBenchmark returns them), keeping its existing ID. It's an error
 // if index is out of range. This never touches any published version.
 func (r *Registry) UpdateTestCase(benchmarkName string, index int, tc TestCase) error {
-	b, err := r.GetBenchmark(benchmarkName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	b, err := r.getBenchmark(benchmarkName)
 	if err != nil {
 		return err
 	}
@@ -244,14 +280,17 @@ func (r *Registry) UpdateTestCase(benchmarkName string, index int, tc TestCase) 
 
 	tc.ID = b.TestCases[index].ID
 	b.TestCases[index] = tc
-	return r.SaveBenchmark(b)
+	return r.saveBenchmark(b)
 }
 
 // ApproveTestCase marks the draft test case at index as human-reviewed: it
 // sets Approved and clears any NeedsReview flag. It's an error if index is
 // out of range. This never touches any published version.
 func (r *Registry) ApproveTestCase(benchmarkName string, index int) error {
-	b, err := r.GetBenchmark(benchmarkName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	b, err := r.getBenchmark(benchmarkName)
 	if err != nil {
 		return err
 	}
@@ -261,14 +300,17 @@ func (r *Registry) ApproveTestCase(benchmarkName string, index int) error {
 
 	b.TestCases[index].Approved = true
 	b.TestCases[index].NeedsReview = false
-	return r.SaveBenchmark(b)
+	return r.saveBenchmark(b)
 }
 
 // FlagTestCaseForReview marks the draft test case at index as needing
 // another human look, also clearing Approved. It's an error if index is out
 // of range. This never touches any published version.
 func (r *Registry) FlagTestCaseForReview(benchmarkName string, index int) error {
-	b, err := r.GetBenchmark(benchmarkName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	b, err := r.getBenchmark(benchmarkName)
 	if err != nil {
 		return err
 	}
@@ -278,14 +320,17 @@ func (r *Registry) FlagTestCaseForReview(benchmarkName string, index int) error 
 
 	b.TestCases[index].NeedsReview = true
 	b.TestCases[index].Approved = false
-	return r.SaveBenchmark(b)
+	return r.saveBenchmark(b)
 }
 
 // DeleteTestCase removes the draft test case at index (0-based, in the
 // order GetBenchmark returns them). It's an error if index is out of range.
 // This never touches any published version.
 func (r *Registry) DeleteTestCase(benchmarkName string, index int) error {
-	b, err := r.GetBenchmark(benchmarkName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	b, err := r.getBenchmark(benchmarkName)
 	if err != nil {
 		return err
 	}
@@ -294,11 +339,14 @@ func (r *Registry) DeleteTestCase(benchmarkName string, index int) error {
 	}
 
 	b.TestCases = append(b.TestCases[:index], b.TestCases[index+1:]...)
-	return r.SaveBenchmark(b)
+	return r.saveBenchmark(b)
 }
 
 // ListBenchmarks returns every registry-tracked benchmark, sorted by name.
 func (r *Registry) ListBenchmarks() ([]Benchmark, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	entries, err := os.ReadDir(r.benchmarksDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -313,7 +361,7 @@ func (r *Registry) ListBenchmarks() ([]Benchmark, error) {
 			continue
 		}
 
-		b, err := r.GetBenchmark(entry.Name())
+		b, err := r.getBenchmark(entry.Name())
 		if err != nil {
 			continue // skip directories without a valid definition
 		}
