@@ -8,6 +8,10 @@ build agent workflows on a visual canvas, and evaluate how they perform — with
 third-party service. Training and running models are both powered by [mlx-lm](https://github.com/ml-explore/mlx-lm)
 — no other model runtime is involved, so a model trained here is a model you can actually chat with here.
 
+**Requires macOS on Apple Silicon.** `mlx-lm` is Apple-Silicon-only and every model-backed feature
+depends on it. On other platforms the CLI and UI still run, but training, chat, generation, and
+benchmarks all fail.
+
 > **Status:** early development, but every phase in the roadmap below is now built and verified live
 > against real local infrastructure (Docker, and a real `mlx-lm` install for Training and running
 > models). See [Roadmap](#roadmap) for specifics, and [CLAUDE.md](CLAUDE.md) for the conventions and
@@ -238,7 +242,7 @@ agent sessions rely on it being current. See [CLAUDE.md](CLAUDE.md) for how it's
 - **macOS on Apple Silicon (M-series) is required.** `mlx-lm` powers Training *and all model
   inference* (agents, chat, dataset/test-case generation, benchmarks), and it is Apple-Silicon-only. On
   Linux, Windows, or an Intel Mac the CLI and browser UI run, but every model-backed feature fails.
-- Go 1.22 or higher
+- Go 1.23 or higher (only to build from source)
 - [Task](https://taskfile.dev) (optional, for build automation)
 - Node.js 22+ and npm — only needed if you're changing the browser UI under `web/`. A prebuilt copy of
   `web/dist` is committed, so a plain `go build`/`go test` works without Node.
@@ -250,6 +254,26 @@ agent sessions rely on it being current. See [CLAUDE.md](CLAUDE.md) for how it's
   Install with `pip install mlx-lm` or `brew install mlx-lm`, and make sure the resulting `mlx_lm.*`
   commands are on PATH for wherever `tlw serve` runs. `tlw serve` starts fine without it; anything that
   needs a model will just fail with a clear "not found on PATH" error until it's installed.
+
+### Install
+
+**From a GitHub Release (recommended).** Grab the latest `tlw_<version>_darwin_arm64.tar.gz` from the
+[Releases page](https://github.com/mtfuller/tiny-llm-workbench/releases), then:
+
+```bash
+tar -xzf tlw_*_darwin_arm64.tar.gz
+xattr -d com.apple.quarantine tlw   # the binary is not notarized — clear Gatekeeper
+./tlw serve --open
+```
+
+**With `go install`** (builds from source, needs Go 1.23+):
+
+```bash
+go install github.com/mtfuller/tiny-llm-workbench@latest
+# installs as `tiny-llm-workbench` in $(go env GOPATH)/bin — rename to `tlw` if you like
+```
+
+**From source** — see below.
 
 ### Build & run
 

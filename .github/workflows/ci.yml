@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (build, vet, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race)
+        run: go test -race ./...
+
+  web:
+    name: Web (lint, typecheck, build, dist freshness)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build (tsc + vite)
+        run: npm run build
+
+      # web/dist is committed so `go build`/`go test` work without Node. If a
+      # web/src change landed without a matching `task web:build`, the freshly
+      # built dist here won't match what's committed — fail loudly.
+      - name: web/dist is in sync with web/src
+        run: |
+          git add dist
+          if ! git diff --cached --quiet -- dist; then
+            echo "::error::web/dist is stale. Run 'task web:build' and commit the result."
+            git diff --cached --stat -- dist
+            exit 1
+          fi

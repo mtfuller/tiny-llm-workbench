@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build macOS/arm64 binary and draft a release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # web/dist is committed, so no Node step is needed — `go build` embeds it.
+      - name: Build tlw (darwin/arm64)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          PKG=github.com/mtfuller/tiny-llm-workbench/internal/version
+          go build -trimpath \
+            -ldflags "-s -w -X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${GITHUB_SHA} -X ${PKG}.BuildDate=${BUILD_DATE}" \
+            -o dist/tlw ./main.go
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          cp LICENSE README.md dist/
+          tar -C dist -czf "tlw_${VERSION}_darwin_arm64.tar.gz" tlw LICENSE README.md
+          shasum -a 256 "tlw_${VERSION}_darwin_arm64.tar.gz" > SHA256SUMS
+
+      - name: Draft release notes
+        run: |
+          cat > NOTES.md <<'EOF'
+          ## tlw ${{ github.ref_name }} — macOS on Apple Silicon
+
+          `mlx-lm` (Apple-Silicon-only) powers Training and all model inference, so
+          this build targets **macOS / arm64** only.
+
+          The binary is **not notarized**. After downloading and extracting, clear
+          the Gatekeeper quarantine flag before first run:
+
+          ```bash
+          xattr -d com.apple.quarantine tlw
+          ./tlw serve --open
+          ```
+
+          Verify the download:
+
+          ```bash
+          shasum -a 256 -c SHA256SUMS
+          ```
+          EOF
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --title "tlw ${GITHUB_REF_NAME}" \
+            --notes-file NOTES.md \
+            "tlw_${GITHUB_REF_NAME}_darwin_arm64.tar.gz" \
+            SHA256SUMS
