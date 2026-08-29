@@ -13,13 +13,14 @@ import (
 	"github.com/mtfuller/tiny-llm-workbench/internal/training"
 )
 
-// modelJSON is a model as returned by GET /api/models — deliberately
-// slimmer than registry.Model (drops Path/CreatedAt, which are internal
-// filesystem details, not part of the public API).
+// modelJSON is a model as returned by GET /api/models — slimmer than
+// registry.Model (drops Path, an internal filesystem detail). CreatedAt is
+// included so the model picker / list can show and sort by it.
 type modelJSON struct {
-	Name      string `json:"name"`
-	BaseModel string `json:"baseModel,omitempty"`
-	Source    string `json:"source"`
+	Name      string    `json:"name"`
+	BaseModel string    `json:"baseModel,omitempty"`
+	Source    string    `json:"source"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // listModelsHandler responds with every registry-tracked model.
@@ -33,7 +34,7 @@ func listModelsHandler(models modelStore) http.HandlerFunc {
 
 		out := make([]modelJSON, len(list))
 		for i, m := range list {
-			out[i] = modelJSON{Name: m.Name, BaseModel: m.BaseModel, Source: m.Source}
+			out[i] = modelJSON{Name: m.Name, BaseModel: m.BaseModel, Source: m.Source, CreatedAt: m.CreatedAt}
 		}
 		writeJSON(w, http.StatusOK, out)
 	}

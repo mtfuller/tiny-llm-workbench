@@ -169,6 +169,23 @@ choice:
     frontend doesn't need to distinguish them; model pickers are a free-text input + `<datalist>`
     combobox seeded with registry models, not a restrictive `<select>`.
 
+    **2026-08-28 addendum — `ModelCombobox` gained a "Browse" button + searchable modal.** The
+    free-text-input-with-`<datalist>` was hard to use when you couldn't recall a model's exact name.
+    `web/src/ModelCombobox.tsx` now renders the text input (unchanged — free text, raw repo id / path
+    still work) *plus* a magnifier icon-button that opens a `ModelPickerModal`: a filter box + a
+    grouped list ("Your models" / "Suggested — downloaded on first use"), each row showing the name, a
+    source `Badge` (`modelSourceLabel` in `web/src/lib/models.ts` — the same "Hugging Face" / "Trained"
+    / raw mapping the Models list page uses), the base model, and the created date; clicking a row sets
+    the value. The component's `models` prop went from `string[]` (names) to `Model[]` (needs the
+    metadata) — call sites (`AgentEditor` ×2, `Training`, `DatasetDetail`, `BenchmarkDetail`, and now
+    `EvaluationDetail`, whose "Generate test cases" modal previously had a bare `<input>`) pass their
+    existing `listModels()` array directly and their `modelNames` memos were removed.
+    `GET /api/models` (`modelJSON`) now also returns `createdAt` (was dropped as "internal"); the
+    frontend `Model` type gained `createdAt?: string`. **Note the app-wide base rule
+    `button { background: var(--accent); color: white }`** — any full-row `<button>` (like
+    `.model-picker-row`) must set its own `color`/`background` or it renders as a white-on-accent
+    primary button.
+
   **A real upstream bug drove the fuse-not-adapter design**: `mlx_lm.server`'s `--adapter-path` flag
   (and the request-body `"adapters"` override) is broken in the installed version (0.31.3, confirmed by
   hand) — a base-model-path-remapping bug means the CLI-supplied adapter is silently never applied, so
@@ -233,6 +250,29 @@ choice:
   `datasets/<name>/metadata.json` + `data.jsonl`. Since the Ollama removal (see the MLX integration
   entry above), the registry is the *only* model source — no external catalog to merge with. See
   `internal/registry`.
+
+  **2026-08-28 addendum — dataset page: AI-provenance flags + record-level actions.** `registry.Example`
+  gained `Source string` (`"ai"` when `datasetgen` generated it, empty for human-authored/imported),
+  `Approved bool` (a human reviewed an AI example), and `NeedsReview bool` (a human explicitly flagged
+  any record — AI or hand-written — for another look). `datasetgen.Generator.Variations` stamps every
+  returned pair `Source:"ai", Approved:false`. Registry methods (load-mutate-save, mirroring
+  `UpdateExample`): `ApproveExample(name, index)` sets `Approved` + clears `NeedsReview`;
+  `FlagExampleForReview(name, index)` sets `NeedsReview` + clears `Approved`. Routes (both 204, wired
+  through the `datasetStore` interface): `POST /api/datasets/{name}/examples/{index}/approve` and
+  `.../flag`. "Needs review" in the UI = `NeedsReview || (Source=="ai" && !Approved)`.
+  The Dataset detail page: a warning banner counts records needing review ("check them before
+  training") with a "Show only these" shortcut; a Source column shows a "Needs review" / "Unreviewed
+  AI" / "AI · reviewed" flag per row; the `FilterMenu` (now always rendered, not just when tags exist)
+  has a "Review" group with a single "Needs review" toggle. Per-row inline actions: **Duplicate**
+  (appends a copy with `approved:false, needsReview:false` so it re-enters the queue), **Generate
+  variations from this record** (pre-seeds the generate modal), **Flag for review** / **Mark as
+  reviewed** (whichever applies), plus edit/delete. Editing a record in the modal and saving it counts
+  as a review (`approved` flips true for AI, `needsReview` always clears).
+  The shared `Modal` component changed too: it now dismisses only on a click that both *starts and
+  ends* on the overlay (a `mousedown` inside then drag-release outside — e.g. overshooting a text
+  selection — no longer closes it), and gained a third `size="xl"` (960px). The example add/edit and
+  generate-variations modals use `xl` with side-by-side, fixed-height, internally-scrolling
+  `LineNumberedTextarea` input/output editors (`.example-editor-fields` in `index.css`).
 
   **2026-08-28 addendum — "Add from Hugging Face" model search on the Models page.** The user wanted
   to discover and pull down mlx-community models from the Hub without leaving the app ("easily have
@@ -896,6 +936,15 @@ choice:
   (widths restored from localStorage), double-clicked to reset, and confirmed the Debug-tab min-width
   floor still applies over a 190px inline width.
 
+  **2026-08-28 fix — node-inspector pickers refresh on window focus.** `AgentEditor.tsx` fetched the
+  model / workspace / tool / knowledge-base lists once, in the same mount effect as `getAgent`. A model
+  (or tool, etc.) created on its own page while the editor stayed open never appeared in the node
+  inspectors' pickers (`ModelCombobox`'s `<datalist>`, the tool/KB `MultiPickList`s) until a full
+  reload — the reported "I created a model but it's not in the agent node dropdown". Split those four
+  `list*` calls into a `refreshLibraries` effect (its own `[]`-dep) that also runs on
+  `window` `'focus'`; on a refetch error it now keeps the previous list instead of blanking it
+  (`.catch(() => {})` rather than `.catch(() => setX([]))`).
+
   **2026-08-27 addendum #8 — node-type consistency pass + `agent` node reaches parity with `tool`.**
   After the cyclic-architecture work landed, the user asked to evaluate every node type for gaps and
   inconsistencies; the result was a 12-item list tackled in phases. Phases 1–2 (this addendum):
@@ -1044,6 +1093,62 @@ choice:
     duplication, and templates resolved. Guards: `TestRunSayNode{EmitsProgressMessage,
     FinalOverridesTerminalOutput,EmptyTemplateFallsBackToInput}`, `TestSendMessageStreamsSayMessages`,
     `TestStepDebugRunSayFinalIsTheReply`.
+
+  **2026-08-28 addendum #10 — "Preview model" on prompt & agent nodes.** A quick "what would this node
+  say?" check right in the inspector, without spinning up the whole graph/workspace/debug session. New
+  `agents.Engine.PreviewNode(ctx, node, input) (PreviewResult, error)` — model-only, no graph walk, no
+  tools/knowledge/history: a `prompt` node builds its user turn (`buildPrompt(systemPrompt, nil,
+  userTurn)`); an `agent` node makes **one** `buildAgentPrompt` call (no tool loop) and takes a
+  `FINAL:` answer if the model gives one, else the whole reply. Every `{{...}}` placeholder in the
+  node's PromptTemplate / AgentInstructions is filled with the sample input (regex
+  `previewPlaceholderRe`, since there's no run context to resolve names against). `PreviewResult`
+  carries `{Output, SchemaChecked, SchemaOK, SchemaError}` — the node's OutputSchema /
+  AgentOutputSchema is validated via `assertions.ValidateJSONSchema` and reported, not enforced.
+  `agents.Manager.PreviewNode` resolves the node's model ref first (same `ResolveModelRef` as
+  `resolveGraphModels`). Route `POST /api/agents/preview-node` (body `{nodeType, data, input}`; 400
+  for a non-prompt/agent type, 502 on a model error), added to the server's `agentManager` interface +
+  fake. Frontend: `api.ts` `previewNode()` + `NodePreviewResult`; `AgentEditor.tsx` `<NodePreview>`
+  component (sample-input textarea + "Preview output" button + scrollable `<pre>` result + a schema
+  ✓/✗ `example-flag` chip) rendered at the bottom of the prompt and agent inspector sections,
+  `key={selectedNode.id}` so it resets per node. Guards: `TestPreviewNode{Prompt,PromptWithSchema,
+  AgentTakesFinal,Errors}` (engine), `TestPreviewNode{,RejectsUnsupportedType,ModelError}` (handler).
+  Verified live against a real MLX model for both node types + schema pass/fail.
+
+  **2026-08-28 addendum #11 — agent node's per-iteration prompt is now a fully editable template.**
+  `buildAgentPrompt` hardcoded the layout (instructions → history → tools+protocol → FINAL reminder →
+  transcript → "What is your next step?"). This landed in two rounds in one session: (1) structured
+  knobs (`AgentToolFormat`, `AgentOmitHistory`, `AgentToolsHeader`, `AgentHistoryHeader`,
+  `AgentSectionOrder`); (2) the user reconsidered and picked, via `AskUserQuestion`: **replace the
+  knobs with a full template**, **everything is a placeholder** (nothing auto-appended — the template
+  owns the ACTION/ARGS/FINAL text and `{{transcript}}` placement), and expose the whole placeholder
+  set. So round 1's four layout knobs were removed; only `AgentToolFormat` survived.
+  - `registry.NodeData`: `AgentPromptTemplate string` (empty = built-in default) + `AgentToolFormat`
+    (`""`/`"list"` bulleted, `"json"` array, `"markdown"` `### name` — controls how `{{tools}}` /
+    `{{knowledge}}` render).
+  - `internal/agents`: exported `DefaultAgentPromptTemplate` (a const that reproduces the pre-template
+    output byte-for-byte — verified). `buildAgentPrompt(input, instructions, tools, kbs, history,
+    transcript, template, toolFormat string)`. Rendering: (1) `{{#name}}...{{/name}}` conditional
+    blocks — `name` ∈ instructions/tools/knowledge/history/transcript/**actions** (=tools OR
+    knowledge); body kept iff that value is non-empty; one compiled regex *per name* since Go's RE2
+    has no backreferences; same-name nesting unsupported. (2) scalar `{{...}}` — instructions / tools
+    / knowledge / history / transcript / input / tool_names / args_example. (3) light tidy (rtrim
+    lines, trim ends). `formatAgentTools(tools, nil, fmt)` renders `{{tools}}`, `formatAgentTools(nil,
+    kbs, fmt)` renders `{{knowledge}}` (the existing list/JSON/Markdown helpers already handle a
+    nil side). Both callers (`runAgentNode`, `PreviewNode`'s agent branch) pass `input` +
+    `AgentPromptTemplate` + `AgentToolFormat`.
+  - Route `GET /api/agent-prompt-default` → `{"template": DefaultAgentPromptTemplate}` (a plain literal
+    route, no manager dep; sits above the `/api/agents/{name}` wildcard).
+  - Frontend: `AgentNodeData` `agentPromptTemplate?` + `agentToolFormat?`; `<AgentPromptTemplateFields>`
+    (replaces `<AgentPromptFormatFields>`) — a format `<select>`, a `LineNumberedTextarea` +
+    `VariableMenuButton` (the 8 scalar placeholders), a placeholders/conditionals hint, and a "Load
+    default template to edit" button (`api.ts` `agentPromptDefault()`). `agentValidation.ts` warns (not
+    blocks) on a template with no `{{transcript}}`, no `ACTION`/`FINAL` when tools/kbs are selected, or
+    an unknown `{{placeholder}}` / `{{#block}}`.
+  - Guards: `TestBuildAgentPrompt{DefaultTemplate,DefaultTemplateOmitsEmptySections,CustomTemplate,
+    ToolFormats}`, `TestAgentPromptDefault` (handler). Verified live: "Load default" fills the field;
+    a hand-written custom template (`<available_tools>{{tools}}</available_tools>` + markdown format +
+    `{{args_example}}` + `{{transcript}}`) saved, reloaded, and ran — the model parsed the tool list
+    and emitted a real `ACTION: read_directory` call, loop terminated at max iterations.
 - **Workspaces / agent access model / Deployments (2026-08-28).** "Environments" was reframed as
   **Workspaces** and the agent binding model changed. Four forks were surfaced via `AskUserQuestion`;
   the user's answers, verbatim where they redirected: **sandbox image** — *"Single fixed default"* (no
@@ -1444,6 +1549,27 @@ choice:
   `web/src/TagFilterDropdown.tsx` so `BenchmarkDetail.tsx` could use the identical tag-filter popover
   rather than a second copy — this was a pure extraction, no behavior change to Datasets.
 
+  **2026-08-28 addendum — Benchmarks got Datasets' inline test-case actions (review workflow +
+  duplicate + generate-from-record).** `registry.TestCase` (shared with Evaluations) gained
+  `Source string` (`"ai"` when `testcasegen` generated the prompt), `Approved bool`, `NeedsReview
+  bool` — same review model as a dataset `Example`, currently surfaced only by the Benchmarks UI.
+  New `registry.ApproveTestCase` / `FlagTestCaseForReview` (load-mutate-save via `SaveBenchmark`,
+  mirroring `ApproveExample`/`FlagExampleForReview`); routes `POST /api/benchmarks/{name}/test-cases/
+  {index}/approve` and `.../flag` (both 204, added to the `benchmarkStore` interface + fake).
+  `generateTestCasesHandler` now stamps every generated case `Source:"ai"` (the *handler*, not
+  `testcasegen`, since the generator returns bare prompt strings). `BenchmarkDetail.tsx` Test cases
+  tab: a warning banner counts cases needing review ("check them before publishing a version") with a
+  "Show only these" shortcut; a "Source" column ("Needs review" / "Unreviewed AI" / "AI · reviewed");
+  the `FilterMenu` is always rendered now with a "Review" group; per-row inline actions **Duplicate**
+  (copy with `approved:false, needsReview:false` so a copy re-enters the queue), **Generate
+  variations from this test case** (`generateState: {seed?} | null` replaced the `generateOpen`
+  bool; pre-seeds prompt + assertions + tags), **Flag for review** / **Mark as reviewed**, plus
+  edit/delete. Editing a case in the modal clears `needsReview` (and approves an AI one). "Needs
+  review" everywhere = `needsReview || (source === "ai" && !approved)` (`testCaseNeedsReview` helper).
+  No hard gate on Publish — the banner is the nudge. Verified live end to end (flag→approve
+  round-trip, duplicate, pre-seeded generate modal). **`testcasegen.parsePrompts` still has the
+  fragile IndexByte/LastIndexByte JSON parser** — separate follow-up (chip filed).
+
   **Fixed 2026-08-28 (was: "Generate hangs when you pick a model by name"):** `datasetgen.Generator`
   and `testcasegen.Generator` (dataset-variation + benchmark/evaluation test-case generators) now take a
   `modelResolver` (satisfied by `*registry.Registry`) and call `ResolveModelRef` on the picked model
@@ -1456,6 +1582,22 @@ choice:
   `TestVariationsResolvesModelName`, `TestVariationsRejectsUnresolvableBareName` in both packages.
   Verified live: name-picked generation responds in ~1s (a remaining `invalid JSON array` there is the
   0.5–1B model's known weak output, a separate limitation).
+
+  **Fixed 2026-08-28 (was: `parse generated variations: invalid JSON array: invalid character ']'
+  looking for beginning of value`, hit with Llama 3.2 1B):** `datasetgen.parseExamples` was
+  `strings.IndexByte('[')` + `strings.LastIndexByte(']')` + `json.Unmarshal` — a trailing comma before
+  the closing bracket (`[ {…}, {…}, ]`, a mistake small models make constantly) is invalid JSON, and
+  `LastIndexByte(']')` grabs a garbled span when trailing prose also contains a `]`. Rewritten to
+  reuse `assertions.ExtractJSONValue` for a balanced, string-literal-aware `[...]` scan
+  (`firstJSONArray`), then a `stripTrailingCommas` pass (drops a comma followed only by whitespace and
+  `}`/`]`, leaving commas *inside* strings untouched via a small state machine), then — if the array
+  still doesn't parse — a per-object salvage loop (`allJSONObjects` + unmarshal each, keep the usable
+  ones). Also stitches bare / newline-separated objects into an array when there's no `[...]` wrapper.
+  `internal/datasetgen` now imports `internal/assertions` (no cycle; same reuse `internal/agents`
+  already does). Guards: `TestVariationsToleratesTrailingComma`,
+  `...IgnoresBracketsInSurroundingProse`, `...KeepsCommasInsideStrings`, `...StitchesBareObjects`,
+  `...SkipsMalformedObjectsInArray`. **`testcasegen.parsePrompts` still has the identical fragile
+  pattern** — left for a follow-up (spawn_task chip filed) since the report was dataset-specific.
 
 Once the user decides one of these, record it here (a short "Decided:" note under the relevant bullet)
 so it doesn't get re-litigated by a later session.

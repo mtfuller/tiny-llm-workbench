@@ -1698,3 +1698,174 @@ func TestRunNestedLoops(t *testing.T) {
 		t.Errorf("llm.calls = %d, want 5 (inner work 2x2 + Fin)", len(llm.calls))
 	}
 }
+
+func TestPreviewNodePrompt(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"a summary"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+
+	node := registry.Node{
+		Type: "prompt",
+		Data: registry.NodeData{
+			Model:          "mlx-community/thing",
+			SystemPrompt:   "You summarize.",
+			PromptTemplate: "Summarize this: {{Research}}",
+		},
+	}
+	res, err := engine.PreviewNode(context.Background(), node, "the long input text")
+	if err != nil {
+		t.Fatalf("PreviewNode() error = %v", err)
+	}
+	if res.Output != "a summary" {
+		t.Errorf("PreviewNode().Output = %q, want %q", res.Output, "a summary")
+	}
+	if res.SchemaChecked {
+		t.Errorf("SchemaChecked = true, want false when no OutputSchema is set")
+	}
+	// The {{Research}} placeholder is filled with the sample input.
+	if !strings.Contains(llm.calls[0], "Summarize this: the long input text") {
+		t.Errorf("prompt = %q, want the placeholder replaced with the input", llm.calls[0])
+	}
+	if !strings.Contains(llm.calls[0], "You summarize.") {
+		t.Errorf("prompt = %q, want the system prompt included", llm.calls[0])
+	}
+}
+
+func TestPreviewNodePromptWithSchema(t *testing.T) {
+	engine := NewEngine(&fakeLLM{responses: []string{`{"city": "Paris"}`}}, &fakeTools{}, &fakeKnowledgeReader{})
+	node := registry.Node{Type: "prompt", Data: registry.NodeData{
+		Model:        "m",
+		OutputSchema: `{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`,
+	}}
+
+	res, err := engine.PreviewNode(context.Background(), node, "where is the eiffel tower")
+	if err != nil {
+		t.Fatalf("PreviewNode() error = %v", err)
+	}
+	if !res.SchemaChecked || !res.SchemaOK || res.SchemaError != "" {
+		t.Errorf("PreviewNode() = %+v, want schema checked and OK", res)
+	}
+
+	engine2 := NewEngine(&fakeLLM{responses: []string{"not json at all"}}, &fakeTools{}, &fakeKnowledgeReader{})
+	res2, err := engine2.PreviewNode(context.Background(), node, "x")
+	if err != nil {
+		t.Fatalf("PreviewNode() error = %v", err)
+	}
+	if !res2.SchemaChecked || res2.SchemaOK || res2.SchemaError == "" {
+		t.Errorf("PreviewNode() = %+v, want schema checked, not OK, with an error", res2)
+	}
+}
+
+func TestPreviewNodeAgentTakesFinal(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"Thinking...\nFINAL: 42"}}
+	engine := NewEngine(llm, &fakeTools{}, &fakeKnowledgeReader{})
+	node := registry.Node{Type: "agent", Data: registry.NodeData{
+		AgentModel:        "m",
+		AgentInstructions: "Answer {{Input}} concisely.",
+	}}
+
+	res, err := engine.PreviewNode(context.Background(), node, "the meaning of life")
+	if err != nil {
+		t.Fatalf("PreviewNode() error = %v", err)
+	}
+	if res.Output != "42" {
+		t.Errorf("PreviewNode().Output = %q, want the FINAL answer %q", res.Output, "42")
+	}
+	if len(llm.calls) != 1 {
+		t.Errorf("llm.calls = %d, want exactly 1 (no tool loop in preview)", len(llm.calls))
+	}
+	if !strings.Contains(llm.calls[0], "Answer the meaning of life concisely.") {
+		t.Errorf("prompt = %q, want the instructions placeholder filled", llm.calls[0])
+	}
+}
+
+func TestPreviewNodeErrors(t *testing.T) {
+	engine := NewEngine(&fakeLLM{responses: []string{"x"}}, &fakeTools{}, &fakeKnowledgeReader{})
+
+	if _, err := engine.PreviewNode(context.Background(), registry.Node{Type: "condition"}, "x"); err == nil {
+		t.Error("PreviewNode(condition) error = nil, want an unsupported-type error")
+	}
+	if _, err := engine.PreviewNode(context.Background(), registry.Node{Type: "prompt", Data: registry.NodeData{}}, "x"); err == nil {
+		t.Error("PreviewNode(prompt with no model) error = nil, want an error")
+	}
+}
+
+func TestBuildAgentPromptDefaultTemplate(t *testing.T) {
+	tools := []registry.Tool{{Name: "web_search", Description: "Search the web", Parameters: []registry.ToolParameter{{Name: "query", Type: "string"}}}}
+	kbs := []registry.KnowledgeBase{{Name: "faq"}}
+	got := buildAgentPrompt("the user msg", "do the task", tools, kbs, []ChatMessage{{Role: "user", Content: "hi"}}, "", "", "")
+
+	for _, want := range []string{
+		"do the task",
+		"Conversation so far:\nUSER: hi",
+		"You can use these tools:",
+		"- web_search(query: string) — Search the web",
+		"- knowledge_search(query: string) — search the knowledge base(s): faq",
+		"To use a tool, reply exactly:\nACTION: <tool name>",
+		`ARGS: {"query": "value"}`,
+		"FINAL: <your answer>",
+		"What is your next step?\nASSISTANT:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q\n---\n%s", want, got)
+		}
+	}
+	if !(strings.Index(got, "do the task") < strings.Index(got, "Conversation so far:") &&
+		strings.Index(got, "Conversation so far:") < strings.Index(got, "You can use these tools:")) {
+		t.Errorf("default section order wrong:\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptDefaultTemplateOmitsEmptySections(t *testing.T) {
+	// input -> agent with no history, no tools, no kbs.
+	got := buildAgentPrompt("in", "instr", nil, nil, nil, "", "", "")
+	for _, unwanted := range []string{"Conversation so far:", "You can use these tools:", "To use a tool"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("empty section %q should be dropped:\n%s", unwanted, got)
+		}
+	}
+	if !strings.Contains(got, "instr\n\nWhen you have the answer") {
+		t.Errorf("instructions should flow straight into the FINAL reminder:\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptCustomTemplate(t *testing.T) {
+	tools := []registry.Tool{{Name: "t1"}, {Name: "t2"}}
+	tmpl := "GOAL: {{instructions}}\nUSER SAID: {{input}}\nTOOLS: {{tool_names}}\n{{#tools}}<tools>\n{{tools}}\n</tools>{{/tools}}\n{{transcript}}Reply now:"
+	got := buildAgentPrompt("hello world", "be helpful", tools, nil,
+		[]ChatMessage{{Role: "user", Content: "ignored"}}, "ACTION: t1\nOBSERVATION: ok\n\n", tmpl, "")
+
+	for _, want := range []string{
+		"GOAL: be helpful",
+		"USER SAID: hello world",
+		"TOOLS: t1, t2",
+		"<tools>\n- t1\n- t2\n</tools>",
+		"ACTION: t1\nOBSERVATION: ok",
+		"Reply now:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("custom template output missing %q\n---\n%s", want, got)
+		}
+	}
+	// {{history}} wasn't in the template -> the turns don't appear.
+	if strings.Contains(got, "ignored") {
+		t.Errorf("history should be absent (no {{history}} in the template):\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptToolFormats(t *testing.T) {
+	tools := []registry.Tool{{Name: "read_file", Description: "reads a file", Parameters: []registry.ToolParameter{{Name: "path", Type: "string"}}}}
+	kbs := []registry.KnowledgeBase{{Name: "docs"}}
+
+	jsonOut := buildAgentPrompt("in", "i", tools, kbs, nil, "", "", "json")
+	if !strings.Contains(jsonOut, `"name": "read_file"`) || !strings.Contains(jsonOut, `"name": "knowledge_search"`) {
+		t.Errorf("json tool format missing entries:\n%s", jsonOut)
+	}
+	if strings.Contains(jsonOut, "- read_file(") {
+		t.Errorf("json format should not fall back to the bulleted list:\n%s", jsonOut)
+	}
+
+	mdOut := buildAgentPrompt("in", "i", tools, kbs, nil, "", "", "markdown")
+	if !strings.Contains(mdOut, "### read_file") || !strings.Contains(mdOut, "- `path` (string)") || !strings.Contains(mdOut, "### knowledge_search") {
+		t.Errorf("markdown tool format wrong:\n%s", mdOut)
+	}
+}

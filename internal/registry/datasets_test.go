@@ -139,6 +139,93 @@ func TestUpdateExampleOutOfRange(t *testing.T) {
 	}
 }
 
+func TestApproveExample(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+	if err := reg.AppendExamples("greetings", []Example{
+		{Input: "hi", Output: "hello!", Source: "ai"},
+		{Input: "hey", Output: "hey there!", Source: "ai"},
+	}); err != nil {
+		t.Fatalf("AppendExamples() error = %v", err)
+	}
+
+	if err := reg.ApproveExample("greetings", 1); err != nil {
+		t.Fatalf("ApproveExample() error = %v", err)
+	}
+
+	got, err := reg.ListExamples("greetings")
+	if err != nil {
+		t.Fatalf("ListExamples() error = %v", err)
+	}
+	if got[0].Approved {
+		t.Errorf("ListExamples()[0].Approved = true, want the untouched example to stay unapproved")
+	}
+	if !got[1].Approved || got[1].Source != "ai" {
+		t.Errorf("ListExamples()[1] = %+v, want Approved=true with Source preserved", got[1])
+	}
+}
+
+func TestApproveExampleOutOfRange(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+
+	if err := reg.ApproveExample("greetings", 0); err == nil {
+		t.Error("ApproveExample() error = nil, want an error for an out-of-range index")
+	}
+}
+
+func TestFlagExampleForReview(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+	if err := reg.AppendExamples("greetings", []Example{
+		{Input: "hi", Output: "hello!", Source: "ai", Approved: true},
+	}); err != nil {
+		t.Fatalf("AppendExamples() error = %v", err)
+	}
+
+	if err := reg.FlagExampleForReview("greetings", 0); err != nil {
+		t.Fatalf("FlagExampleForReview() error = %v", err)
+	}
+
+	got, err := reg.ListExamples("greetings")
+	if err != nil {
+		t.Fatalf("ListExamples() error = %v", err)
+	}
+	if !got[0].NeedsReview || got[0].Approved {
+		t.Errorf("ListExamples()[0] = %+v, want NeedsReview=true and Approved cleared", got[0])
+	}
+
+	// Approving again should clear the manual flag.
+	if err := reg.ApproveExample("greetings", 0); err != nil {
+		t.Fatalf("ApproveExample() error = %v", err)
+	}
+	got, _ = reg.ListExamples("greetings")
+	if got[0].NeedsReview || !got[0].Approved {
+		t.Errorf("ListExamples()[0] = %+v, want NeedsReview cleared and Approved=true after re-approval", got[0])
+	}
+}
+
+func TestFlagExampleForReviewOutOfRange(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if _, err := reg.CreateDataset("greetings", "", ""); err != nil {
+		t.Fatalf("CreateDataset() error = %v", err)
+	}
+
+	if err := reg.FlagExampleForReview("greetings", 0); err == nil {
+		t.Error("FlagExampleForReview() error = nil, want an error for an out-of-range index")
+	}
+}
+
 func TestDeleteExample(t *testing.T) {
 	reg := New(t.TempDir())
 

@@ -37,6 +37,16 @@ type Example struct {
 	Output      string   `json:"output"`
 	Description string   `json:"description,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
+	// Source records how the example came to exist. "ai" means a local
+	// model generated it (via datasetgen); empty means a human authored or
+	// imported it. Approved is set once a human has reviewed an "ai"
+	// example — an unapproved AI example is flagged in the UI so generated
+	// data isn't trained on unchecked. NeedsReview lets a human explicitly
+	// flag any example (AI or hand-written) for another look; it's
+	// independent of the AI/Approved pair.
+	Source      string `json:"source,omitempty"`
+	Approved    bool   `json:"approved,omitempty"`
+	NeedsReview bool   `json:"needsReview,omitempty"`
 }
 
 // CreateDataset creates a new, empty dataset named name. title and
@@ -169,6 +179,41 @@ func (r *Registry) UpdateExample(name string, index int, example Example) error 
 	}
 
 	examples[index] = example
+	return r.writeExamples(name, examples)
+}
+
+// ApproveExample marks the example at index as human-reviewed: it sets
+// Approved and clears any NeedsReview flag, so it no longer shows up in the
+// UI's "needs review" filter. It's an error if index is out of range.
+func (r *Registry) ApproveExample(name string, index int) error {
+	examples, err := r.ListExamples(name)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(examples) {
+		return fmt.Errorf("example index %d out of range (dataset has %d examples)", index, len(examples))
+	}
+
+	examples[index].Approved = true
+	examples[index].NeedsReview = false
+	return r.writeExamples(name, examples)
+}
+
+// FlagExampleForReview marks the example at index as needing another human
+// look. It also clears Approved, so a previously-approved example that's
+// re-flagged stops reading as reviewed. It's an error if index is out of
+// range.
+func (r *Registry) FlagExampleForReview(name string, index int) error {
+	examples, err := r.ListExamples(name)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(examples) {
+		return fmt.Errorf("example index %d out of range (dataset has %d examples)", index, len(examples))
+	}
+
+	examples[index].NeedsReview = true
+	examples[index].Approved = false
 	return r.writeExamples(name, examples)
 }
 

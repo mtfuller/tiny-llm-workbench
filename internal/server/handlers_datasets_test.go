@@ -421,6 +421,86 @@ func TestUpdateExampleOutOfRange(t *testing.T) {
 	}
 }
 
+func TestApproveExample(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/examples/2/approve", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST .../examples/2/approve status = %d, want %d, body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if len(store.approvedExamples) != 1 || store.approvedExamples[0] != 2 {
+		t.Errorf("store.approvedExamples = %v, want [2]", store.approvedExamples)
+	}
+}
+
+func TestApproveExampleOutOfRange(t *testing.T) {
+	deps := testDeps()
+	deps.Datasets = &fakeDatasetStore{approveExampleErr: errors.New("example index 5 out of range")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/examples/5/approve", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../examples/5/approve (out of range) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestFlagExample(t *testing.T) {
+	deps := testDeps()
+	store := newFakeDatasetStore()
+	deps.Datasets = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/examples/3/flag", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST .../examples/3/flag status = %d, want %d, body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if len(store.flaggedExamples) != 1 || store.flaggedExamples[0] != 3 {
+		t.Errorf("store.flaggedExamples = %v, want [3]", store.flaggedExamples)
+	}
+}
+
+func TestFlagExampleOutOfRange(t *testing.T) {
+	deps := testDeps()
+	deps.Datasets = &fakeDatasetStore{flagExampleErr: errors.New("example index 9 out of range")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/datasets/greetings/examples/9/flag", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../examples/9/flag (out of range) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestDeleteExample(t *testing.T) {
 	deps := testDeps()
 	store := newFakeDatasetStore()

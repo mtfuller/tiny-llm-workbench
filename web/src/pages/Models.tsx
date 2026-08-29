@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { deleteModel, listModels, type Model } from '../api'
 import HuggingFaceSearchModal from '../HuggingFaceSearchModal'
 import IconButton from '../IconButton'
+import { modelSourceLabel } from '../lib/models'
 import ListPanel from '../ListPanel'
 import ModelChatModal from '../ModelChatModal'
 import { useResourceList } from '../useResourceList'
@@ -67,7 +68,7 @@ function Models() {
                 <td>
                   <Link to={`/models/${encodeURIComponent(model.name)}`}>{model.name}</Link>
                 </td>
-                <td>{model.source === 'huggingface' ? 'Hugging Face' : model.baseModel ? 'Trained' : model.source}</td>
+                <td>{modelSourceLabel(model)}</td>
                 <td>{model.baseModel || '—'}</td>
                 <td className="row-actions">
                   <IconButton icon={<Play size={15} />} label="Run / prompt model" onClick={() => setChatModel(model.name)} />

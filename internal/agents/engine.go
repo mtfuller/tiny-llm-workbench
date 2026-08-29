@@ -315,6 +315,80 @@ func (e *Engine) Run(ctx context.Context, graph registry.Graph, history []ChatMe
 	}
 }
 
+// PreviewResult is what PreviewNode returns: the model's output plus, when
+// the node declares an output schema, whether that output validated.
+type PreviewResult struct {
+	Output        string `json:"output"`
+	SchemaChecked bool   `json:"schemaChecked"`
+	SchemaOK      bool   `json:"schemaOk"`
+	SchemaError   string `json:"schemaError,omitempty"`
+}
+
+// previewPlaceholderRe matches a {{...}} template block for PreviewNode's
+// standalone substitution (no run context to resolve names against).
+var previewPlaceholderRe = regexp.MustCompile(`\{\{[^{}]*\}\}`)
+
+// PreviewNode runs a single node's model call against one piece of input —
+// no graph walk, no workspace, no tools/knowledge, no conversation history.
+// It's the editor's "what would this node say?" check. Only prompt and agent
+// nodes are supported (no other node type calls a model). Every {{...}}
+// placeholder in the node's prompt template / instructions is filled with
+// input, since there's no upstream node to resolve a name against here.
+func (e *Engine) PreviewNode(ctx context.Context, node registry.Node, input string) (PreviewResult, error) {
+	switch node.Type {
+	case "prompt":
+		if node.Data.Model == "" {
+			return PreviewResult{}, errors.New("this prompt node has no model set")
+		}
+		userTurn := input
+		if node.Data.PromptTemplate != "" {
+			userTurn = previewPlaceholderRe.ReplaceAllString(node.Data.PromptTemplate, input)
+		}
+		reply, err := e.llm.Generate(ctx, node.Data.Model, buildPrompt(node.Data.SystemPrompt, nil, userTurn))
+		if err != nil {
+			return PreviewResult{}, err
+		}
+		return previewSchemaResult(reply, node.Data.OutputSchema), nil
+
+	case "agent":
+		if node.Data.AgentModel == "" {
+			return PreviewResult{}, errors.New("this agent node has no model set")
+		}
+		instructions := input
+		if node.Data.AgentInstructions != "" {
+			instructions = previewPlaceholderRe.ReplaceAllString(node.Data.AgentInstructions, input)
+		}
+		// Model-only preview: one call, no tool loop. Take a FINAL: answer if
+		// the model gives one, else the whole reply.
+		reply, err := e.llm.Generate(ctx, node.Data.AgentModel, buildAgentPrompt(input, instructions, nil, nil, nil, "", node.Data.AgentPromptTemplate, node.Data.AgentToolFormat))
+		if err != nil {
+			return PreviewResult{}, err
+		}
+		out := strings.TrimSpace(reply)
+		if final, ok := parseFinal(reply); ok {
+			out = final
+		}
+		return previewSchemaResult(out, node.Data.AgentOutputSchema), nil
+
+	default:
+		return PreviewResult{}, fmt.Errorf("preview is only available for prompt and agent nodes, not %q", node.Type)
+	}
+}
+
+func previewSchemaResult(output, schema string) PreviewResult {
+	res := PreviewResult{Output: output}
+	if schema == "" {
+		return res
+	}
+	res.SchemaChecked = true
+	if _, err := assertions.ValidateJSONSchema(schema, output); err != nil {
+		res.SchemaError = err.Error()
+	} else {
+		res.SchemaOK = true
+	}
+	return res
+}
+
 // runNode executes exactly one node given the value flowing into it
 // (input), returning what the node itself produces and which outgoing
 // handle to follow next: "" for most node types, "pass"/"fail" for a
@@ -707,7 +781,7 @@ func (e *Engine) runAgentNode(ctx context.Context, node registry.Node, input, in
 	var transcript strings.Builder
 	lastReply := ""
 	for i := 0; i < maxIter; i++ {
-		reply, err := e.llm.Generate(ctx, node.Data.AgentModel, buildAgentPrompt(instructions, usable, kbs, history, transcript.String()))
+		reply, err := e.llm.Generate(ctx, node.Data.AgentModel, buildAgentPrompt(input, instructions, usable, kbs, history, transcript.String(), node.Data.AgentPromptTemplate, node.Data.AgentToolFormat))
 		if err != nil {
 			return "", fmt.Errorf("agent node %q: %w", node.ID, err)
 		}
@@ -825,62 +899,235 @@ func emitNodeStart(hooks *RunHooks, nodeID, nodeType, model string) {
 	hooks.emitStep(StepEvent{NodeID: nodeID, NodeType: nodeType, Output: msg, Phase: "start"})
 }
 
-// buildAgentPrompt assembles one iteration's completion prompt for an agent
-// node — the instructions, the prior conversation turns (so a chat agent
-// isn't amnesiac mid-conversation, matching a prompt node), the available
-// tools (plus the built-in knowledge_search when kbs is non-empty), and the
-// running ACTION/OBSERVATION transcript.
-func buildAgentPrompt(instructions string, tools []registry.Tool, kbs []registry.KnowledgeBase, history []ChatMessage, transcript string) string {
-	var b strings.Builder
-	b.WriteString(instructions)
-	b.WriteString("\n\n")
+// DefaultAgentPromptTemplate is what an agent node uses when
+// NodeData.AgentPromptTemplate is empty — it reproduces the pre-template
+// behavior exactly. Placeholders: {{instructions}} {{tools}} {{knowledge}}
+// {{history}} {{transcript}} {{input}} {{tool_names}} {{args_example}}, plus
+// {{#name}}...{{/name}} conditional blocks (name in instructions / tools /
+// knowledge / history / transcript / actions — "actions" = tools OR
+// knowledge) whose body is kept only when that value is non-empty.
+const DefaultAgentPromptTemplate = `{{instructions}}
 
+{{#history}}Conversation so far:
+{{history}}
+
+{{/history}}{{#tools}}You can use these tools:
+{{tools}}
+{{/tools}}{{#knowledge}}{{knowledge}}
+{{/knowledge}}{{#actions}}
+To use a tool, reply exactly:
+ACTION: <tool name>
+ARGS: {{args_example}}
+
+{{/actions}}When you have the answer, reply:
+FINAL: <your answer>
+
+{{transcript}}What is your next step?
+ASSISTANT:`
+
+// agentCondNames are the {{#name}}...{{/name}} conditional blocks the agent
+// template supports ("actions" = tools OR knowledge). Go's RE2 has no
+// backreferences, so each name gets its own compiled pattern. Same-name
+// nesting is not supported.
+var agentCondNames = []string{"instructions", "tools", "knowledge", "history", "transcript", "actions"}
+
+var agentCondRes = func() map[string]*regexp.Regexp {
+	m := make(map[string]*regexp.Regexp, len(agentCondNames))
+	for _, n := range agentCondNames {
+		m[n] = regexp.MustCompile(`(?s)\{\{#` + n + `\}\}(.*?)\{\{/` + n + `\}\}`)
+	}
+	return m
+}()
+
+var (
+	agentScalarRe  = regexp.MustCompile(`\{\{(instructions|tools|knowledge|history|transcript|input|tool_names|args_example)\}\}`)
+	agentTrailWSRe = regexp.MustCompile(`[ \t]+\n`)
+)
+
+// buildAgentPrompt renders one iteration's completion prompt for an agent
+// node from template (or DefaultAgentPromptTemplate when blank), filling
+// {{...}} placeholders and {{#name}}...{{/name}} conditional blocks. Nothing
+// is auto-appended: the template owns the whole prompt, including the
+// ACTION/ARGS/FINAL protocol text and where {{transcript}} goes. toolFormat
+// controls how {{tools}} / {{knowledge}} render (list / json / markdown).
+func buildAgentPrompt(input, instructions string, tools []registry.Tool, kbs []registry.KnowledgeBase, history []ChatMessage, transcript, template, toolFormat string) string {
+	if strings.TrimSpace(template) == "" {
+		template = DefaultAgentPromptTemplate
+	}
+
+	toolsStr := ""
+	if len(tools) > 0 {
+		toolsStr = formatAgentTools(tools, nil, toolFormat)
+	}
+	knowledgeStr := ""
+	if len(kbs) > 0 {
+		knowledgeStr = formatAgentTools(nil, kbs, toolFormat)
+	}
+
+	historyStr := ""
 	if len(history) > 0 {
-		b.WriteString("Conversation so far:\n")
-		for _, m := range history {
-			b.WriteString(strings.ToUpper(m.Role))
-			b.WriteString(": ")
-			b.WriteString(m.Content)
+		var s strings.Builder
+		for i, m := range history {
+			if i > 0 {
+				s.WriteString("\n")
+			}
+			s.WriteString(strings.ToUpper(m.Role))
+			s.WriteString(": ")
+			s.WriteString(m.Content)
+		}
+		historyStr = s.String()
+	}
+
+	names := toolNames(tools)
+	if len(kbs) > 0 {
+		names = append(names, knowledgeSearchTool)
+	}
+
+	values := map[string]string{
+		"instructions": strings.TrimSpace(instructions),
+		"tools":        toolsStr,
+		"knowledge":    knowledgeStr,
+		"history":      historyStr,
+		"transcript":   transcript,
+		"input":        input,
+		"tool_names":   strings.Join(names, ", "),
+		"args_example": agentArgsExample(tools, kbs),
+	}
+	nonEmpty := func(name string) bool {
+		if name == "actions" {
+			return toolsStr != "" || knowledgeStr != ""
+		}
+		return strings.TrimSpace(values[name]) != ""
+	}
+
+	// 1. Conditional blocks: keep the body iff non-empty, else drop it whole.
+	out := template
+	for _, name := range agentCondNames {
+		re := agentCondRes[name]
+		keep := nonEmpty(name)
+		out = re.ReplaceAllStringFunc(out, func(m string) string {
+			if keep {
+				return re.FindStringSubmatch(m)[1]
+			}
+			return ""
+		})
+	}
+	// 2. Scalar placeholders.
+	out = agentScalarRe.ReplaceAllStringFunc(out, func(m string) string {
+		return values[strings.Trim(m, "{}")]
+	})
+	// 3. Light tidy for hand-edited templates: strip trailing whitespace per
+	//    line, trim the ends. (The default template needs neither.)
+	out = agentTrailWSRe.ReplaceAllString(out, "\n")
+	return strings.TrimSpace(out)
+}
+
+// formatAgentTools renders the tool list (plus the built-in knowledge_search
+// entry when kbs is non-empty) in the style cfg picked.
+func formatAgentTools(tools []registry.Tool, kbs []registry.KnowledgeBase, format string) string {
+	switch format {
+	case "json":
+		return formatAgentToolsJSON(tools, kbs)
+	case "markdown":
+		return formatAgentToolsMarkdown(tools, kbs)
+	default: // "" / "list"
+		return formatAgentToolsList(tools, kbs)
+	}
+}
+
+func kbNames(kbs []registry.KnowledgeBase) []string {
+	names := make([]string, len(kbs))
+	for i, kb := range kbs {
+		names[i] = kb.Name
+	}
+	return names
+}
+
+func formatAgentToolsList(tools []registry.Tool, kbs []registry.KnowledgeBase) string {
+	var b strings.Builder
+	for _, t := range tools {
+		b.WriteString("- ")
+		b.WriteString(t.Name)
+		if len(t.Parameters) > 0 {
+			params := make([]string, len(t.Parameters))
+			for i, p := range t.Parameters {
+				params[i] = fmt.Sprintf("%s: %s", p.Name, p.Type)
+			}
+			b.WriteString("(" + strings.Join(params, ", ") + ")")
+		}
+		if t.Description != "" {
+			b.WriteString(" — " + t.Description)
+		}
+		b.WriteString("\n")
+	}
+	if len(kbs) > 0 {
+		b.WriteString(fmt.Sprintf("- %s(query: string) — search the knowledge base(s): %s\n", knowledgeSearchTool, strings.Join(kbNames(kbs), ", ")))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatAgentToolsJSON(tools []registry.Tool, kbs []registry.KnowledgeBase) string {
+	type paramJSON struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	type toolJSON struct {
+		Name        string      `json:"name"`
+		Description string      `json:"description,omitempty"`
+		Parameters  []paramJSON `json:"parameters,omitempty"`
+	}
+
+	list := make([]toolJSON, 0, len(tools)+1)
+	for _, t := range tools {
+		tj := toolJSON{Name: t.Name, Description: t.Description}
+		for _, p := range t.Parameters {
+			tj.Parameters = append(tj.Parameters, paramJSON{Name: p.Name, Type: string(p.Type)})
+		}
+		list = append(list, tj)
+	}
+	if len(kbs) > 0 {
+		list = append(list, toolJSON{
+			Name:        knowledgeSearchTool,
+			Description: "search the knowledge base(s): " + strings.Join(kbNames(kbs), ", "),
+			Parameters:  []paramJSON{{Name: "query", Type: "string"}},
+		})
+	}
+
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return formatAgentToolsList(tools, kbs) // unreachable in practice; degrade gracefully
+	}
+	return string(data)
+}
+
+func formatAgentToolsMarkdown(tools []registry.Tool, kbs []registry.KnowledgeBase) string {
+	var b strings.Builder
+	writeOne := func(name, desc string, params []registry.ToolParameter) {
+		b.WriteString("### ")
+		b.WriteString(name)
+		b.WriteString("\n")
+		if desc != "" {
+			b.WriteString(desc)
+			b.WriteString("\n")
+		}
+		for _, p := range params {
+			fmt.Fprintf(&b, "- `%s` (%s)", p.Name, string(p.Type))
+			if p.Description != "" {
+				b.WriteString(" — " + p.Description)
+			}
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}
-
-	if len(tools) > 0 || len(kbs) > 0 {
-		b.WriteString("You can use these tools:\n")
-		for _, t := range tools {
-			b.WriteString("- ")
-			b.WriteString(t.Name)
-			if len(t.Parameters) > 0 {
-				params := make([]string, len(t.Parameters))
-				for i, p := range t.Parameters {
-					params[i] = fmt.Sprintf("%s: %s", p.Name, p.Type)
-				}
-				b.WriteString("(" + strings.Join(params, ", ") + ")")
-			}
-			if t.Description != "" {
-				b.WriteString(" — " + t.Description)
-			}
-			b.WriteString("\n")
-		}
-		if len(kbs) > 0 {
-			names := make([]string, len(kbs))
-			for i, kb := range kbs {
-				names[i] = kb.Name
-			}
-			b.WriteString(fmt.Sprintf("- %s(query: string) — search the knowledge base(s): %s\n", knowledgeSearchTool, strings.Join(names, ", ")))
-		}
-		b.WriteString("\nTo use a tool, reply exactly:\nACTION: <tool name>\nARGS: ")
-		b.WriteString(agentArgsExample(tools, kbs))
-		b.WriteString("\n\n")
+	for _, t := range tools {
+		writeOne(t.Name, t.Description, t.Parameters)
 	}
-	b.WriteString("When you have the answer, reply:\nFINAL: <your answer>\n\n")
-
-	if transcript != "" {
-		b.WriteString(transcript)
+	if len(kbs) > 0 {
+		writeOne(knowledgeSearchTool,
+			"search the knowledge base(s): "+strings.Join(kbNames(kbs), ", "),
+			[]registry.ToolParameter{{Name: "query", Type: "string"}})
 	}
-	b.WriteString("What is your next step?\nASSISTANT:")
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // parseAction pulls the tool name and raw JSON args out of a model reply.

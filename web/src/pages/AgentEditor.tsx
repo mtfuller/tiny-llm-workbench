@@ -49,11 +49,13 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type DragEvent, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
+  agentPromptDefault,
   getAgent,
   listKnowledgeBases,
   listModels,
   listTools,
   listWorkspaces,
+  previewNode,
   retryAgentDebugRun,
   saveAgent,
   sendAgentMessage,
@@ -71,6 +73,7 @@ import {
   type DebugState,
   type KnowledgeBase,
   type Model,
+  type NodePreviewResult,
   type NodeType,
   type Tool,
   type Workspace,
@@ -85,7 +88,7 @@ import MultiPickList from '../MultiPickList'
 import SchemaBuilder from '../SchemaBuilder'
 import Modal from '../Modal'
 import ModelCombobox from '../ModelCombobox'
-import { insertAtCursor, upstreamVariableOptions, VariableMenuButton } from '../TemplateField'
+import { insertAtCursor, upstreamVariableOptions, VariableMenuButton, type VariableOption } from '../TemplateField'
 import { useResizableSidebar } from '../useResizableSidebar'
 
 type FlowNode = Node<AgentNodeData>
@@ -249,6 +252,30 @@ function AgentEditorWorkspace() {
   const agentInstructionsRef = useRef<HTMLTextAreaElement>(null)
   const toolArgRefs = useRef<Map<string, HTMLInputElement>>(new Map())
 
+  // Models / workspaces / tools / knowledge bases are edited on their own
+  // pages while this editor stays open. Refetch them on mount and whenever
+  // the window regains focus so a model (or tool, etc.) created elsewhere
+  // shows up in the node inspectors' pickers without a full reload.
+  useEffect(() => {
+    const refreshLibraries = () => {
+      listModels()
+        .then(setModels)
+        .catch(() => {})
+      listWorkspaces()
+        .then(setWorkspaces)
+        .catch(() => {})
+      listTools()
+        .then(setToolCatalog)
+        .catch(() => {})
+      listKnowledgeBases()
+        .then(setKnowledgeBases)
+        .catch(() => {})
+    }
+    refreshLibraries()
+    window.addEventListener('focus', refreshLibraries)
+    return () => window.removeEventListener('focus', refreshLibraries)
+  }, [])
+
   useEffect(() => {
     getAgent(name)
       .then((agent) => {
@@ -275,18 +302,6 @@ function AgentEditorWorkspace() {
         setLoaded(true)
       })
       .catch((err: Error) => setError(err.message))
-    listModels()
-      .then(setModels)
-      .catch(() => setModels([]))
-    listWorkspaces()
-      .then(setWorkspaces)
-      .catch(() => setWorkspaces([]))
-    listTools()
-      .then(setToolCatalog)
-      .catch(() => setToolCatalog([]))
-    listKnowledgeBases()
-      .then(setKnowledgeBases)
-      .catch(() => setKnowledgeBases([]))
   }, [name, setNodes, setEdges])
 
   const debugRunId = debugState?.id ?? null
@@ -444,8 +459,6 @@ function AgentEditorWorkspace() {
   }
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
-
-  const modelNames = useMemo(() => models.map((m) => m.name), [models])
 
   // availableTools resolves the agent's Tools set (names) against the global
   // catalog, dropping any name that's since been deleted rather than
@@ -1061,7 +1074,7 @@ function AgentEditorWorkspace() {
                         <ModelCombobox
                           value={selectedNode.data.model ?? ''}
                           onChange={(model) => updateSelectedNodeData({ model })}
-                          models={modelNames}
+                          models={models}
                         />
                       </label>
 
@@ -1124,6 +1137,8 @@ function AgentEditorWorkspace() {
                           {selectedNode.data.name || 'ThisNode'}.property{'}}'}.
                         </span>
                       </label>
+
+                      <NodePreview key={selectedNode.id} node={selectedNode} />
                     </>
                   )}
 
@@ -1533,7 +1548,7 @@ function AgentEditorWorkspace() {
                         <ModelCombobox
                           value={selectedNode.data.agentModel ?? ''}
                           onChange={(agentModel) => updateSelectedNodeData({ agentModel })}
-                          models={modelNames}
+                          models={models}
                         />
                       </label>
 
@@ -1638,6 +1653,10 @@ function AgentEditorWorkspace() {
                           {selectedNode.data.name || 'ThisNode'}.property{'}}'}.
                         </span>
                       </label>
+
+                      <AgentPromptTemplateFields data={selectedNode.data} onPatch={updateSelectedNodeData} />
+
+                      <NodePreview key={selectedNode.id} node={selectedNode} />
                     </>
                   )}
 
@@ -2020,6 +2039,160 @@ function AgentSettingsModal({
         </div>
       </div>
     </Modal>
+  )
+}
+
+const AGENT_TEMPLATE_VARS: VariableOption[] = [
+  { insert: 'instructions', label: 'instructions' },
+  { insert: 'tools', label: 'tools' },
+  { insert: 'knowledge', label: 'knowledge' },
+  { insert: 'history', label: 'history' },
+  { insert: 'transcript', label: 'transcript' },
+  { insert: 'input', label: 'input' },
+  { insert: 'tool_names', label: 'tool_names' },
+  { insert: 'args_example', label: 'args_example' },
+]
+
+// AgentPromptTemplateFields is the "Prompt template" block in an agent
+// node's inspector: the full editable template for the per-iteration loop
+// prompt, plus the tool/knowledge render format. Empty template = the
+// built-in default (loadable into the field to edit).
+function AgentPromptTemplateFields({
+  data,
+  onPatch,
+}: {
+  data: AgentNodeData
+  onPatch: (patch: Partial<AgentNodeData>) => void
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+  const [loadingDefault, setLoadingDefault] = useState(false)
+
+  const loadDefault = async () => {
+    setLoadingDefault(true)
+    try {
+      onPatch({ agentPromptTemplate: await agentPromptDefault() })
+    } catch {
+      /* leave the field as-is on failure */
+    } finally {
+      setLoadingDefault(false)
+    }
+  }
+
+  return (
+    <div className="agent-prompt-format">
+      <div className="inspector-section-label">Prompt template</div>
+      <p className="field-hint">
+        The full prompt this node sends the model each loop iteration. Leave blank for the built-in
+        default. The template owns everything — including the <code>ACTION</code>/<code>ARGS</code>/
+        <code>FINAL</code> protocol text and where <code>{'{{transcript}}'}</code> goes.
+      </p>
+
+      <label>
+        Tool &amp; knowledge format
+        <select
+          value={data.agentToolFormat ?? 'list'}
+          onChange={(e) => onPatch({ agentToolFormat: e.target.value as AgentNodeData['agentToolFormat'] })}
+        >
+          <option value="list">Bulleted list</option>
+          <option value="json">JSON array</option>
+          <option value="markdown">Markdown headings</option>
+        </select>
+        <span className="field-hint">
+          How <code>{'{{tools}}'}</code> and <code>{'{{knowledge}}'}</code> render.
+        </span>
+      </label>
+
+      <label>
+        Template
+        <div className="template-field-row">
+          <LineNumberedTextarea
+            ref={ref}
+            rows={10}
+            placeholder="Leave blank for the built-in default"
+            value={data.agentPromptTemplate ?? ''}
+            onChange={(next) => onPatch({ agentPromptTemplate: next })}
+          />
+          <VariableMenuButton
+            options={AGENT_TEMPLATE_VARS}
+            onInsert={(snippet) =>
+              insertAtCursor(ref.current, data.agentPromptTemplate ?? '', snippet, (next) =>
+                onPatch({ agentPromptTemplate: next }),
+              )
+            }
+          />
+        </div>
+        <span className="field-hint">
+          Placeholders: <code>{'{{instructions}}'}</code> <code>{'{{tools}}'}</code>{' '}
+          <code>{'{{knowledge}}'}</code> <code>{'{{history}}'}</code> <code>{'{{transcript}}'}</code>{' '}
+          <code>{'{{input}}'}</code> <code>{'{{tool_names}}'}</code> <code>{'{{args_example}}'}</code>. Wrap a
+          block in <code>{'{{#tools}}'}</code>…<code>{'{{/tools}}'}</code> (also <code>history</code>,{' '}
+          <code>knowledge</code>, <code>actions</code>) to keep it only when that part is non-empty.
+        </span>
+      </label>
+
+      <button type="button" className="node-preview-run" onClick={loadDefault} disabled={loadingDefault}>
+        {loadingDefault ? 'Loading…' : 'Load default template to edit'}
+      </button>
+    </div>
+  )
+}
+
+// NodePreview is the "preview model" panel in a prompt / agent node's
+// inspector: type a sample upstream input, get this one node's model output
+// back — no graph, workspace, tools, knowledge, or history involved.
+function NodePreview({ node }: { node: FlowNode }) {
+  const [input, setInput] = useState('')
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<NodePreviewResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const isAgent = node.type === 'agent'
+  const model = isAgent ? node.data.agentModel : node.data.model
+  const canRun = Boolean(model) && input.trim().length > 0 && !running
+
+  const run = async () => {
+    setRunning(true)
+    setError(null)
+    setResult(null)
+    try {
+      setResult(await previewNode((node.type ?? 'prompt') as NodeType, node.data, input))
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="node-preview">
+      <div className="inspector-section-label">Preview model</div>
+      <p className="field-hint">
+        Runs just this node's model on the input below — no tools, knowledge bases, or other nodes.
+        {isAgent && ' The tool loop is skipped.'} Any {'{{'}…{'}}'} references are filled with your input.
+      </p>
+      <textarea
+        rows={2}
+        placeholder="Sample input from the previous node…"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+      />
+      <button type="button" className="node-preview-run" disabled={!canRun} onClick={run}>
+        {running ? 'Running…' : 'Preview output'}
+      </button>
+      {!model && <span className="field-hint">Set a model above first.</span>}
+      {error && <p className="error">{error}</p>}
+      {result && (
+        <div className="node-preview-output">
+          {result.schemaChecked && (
+            <span className={`example-flag ${result.schemaOk ? 'example-flag-ai' : 'example-flag-warn'}`}>
+              {result.schemaOk ? 'schema ✓' : 'schema ✗'}
+            </span>
+          )}
+          <pre>{result.output || '(empty output)'}</pre>
+          {result.schemaError && <p className="field-hint">{result.schemaError}</p>}
+        </div>
+      )}
+    </div>
   )
 }
 

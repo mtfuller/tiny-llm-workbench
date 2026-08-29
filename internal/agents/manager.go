@@ -239,6 +239,15 @@ func (m *Manager) SendMessage(runID, message string) (ChatMessage, error) {
 	return assistantMsg, nil
 }
 
+// PreviewNode resolves the node's model reference (a registry model name →
+// its path / repo id, like resolveGraphModels does for a whole graph) and
+// runs a standalone one-shot preview of it — see Engine.PreviewNode.
+func (m *Manager) PreviewNode(ctx context.Context, node registry.Node, input string) (PreviewResult, error) {
+	node.Data.Model = m.agents.ResolveModelRef(node.Data.Model)
+	node.Data.AgentModel = m.agents.ResolveModelRef(node.Data.AgentModel)
+	return m.engine.PreviewNode(ctx, node, input)
+}
+
 // resolveGraphModels returns a copy of g with every prompt node's Model and
 // every agent node's AgentModel run through the registry — so a model
 // picked by its registry name (e.g. "Llama-3.2-1B-Instruct-4bit") becomes

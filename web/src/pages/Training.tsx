@@ -58,8 +58,6 @@ function Training() {
       .catch((err: Error) => setError(err.message))
   }, [])
 
-  const modelNames = useMemo(() => models.map((m) => m.name), [models])
-
   useEffect(() => {
     const unsubscribeStatus = subscribe('training.status', (event) => {
       const run = JSON.parse(event.data) as TrainingRun
@@ -295,7 +293,7 @@ function Training() {
       {createOpen && (
         <StartRunModal
           datasets={datasets}
-          models={modelNames}
+          models={models}
           starting={starting}
           error={createError}
           onStart={handleStart}
@@ -308,7 +306,7 @@ function Training() {
 
 interface StartRunModalProps {
   datasets: DatasetSummary[]
-  models: string[]
+  models: Model[]
   starting: boolean
   error: string | null
   onStart: (config: { baseModel: string; dataset: string; outputName: string; iterations: number; learningRate: string }) => void

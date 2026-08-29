@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mtfuller/tiny-llm-workbench/internal/assertions"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
@@ -77,6 +78,13 @@ func (g *Generator) Variations(ctx context.Context, model string, seed registry.
 		return nil, fmt.Errorf("parse generated variations: %w", err)
 	}
 
+	// Flag every generated pair as unreviewed AI output so the dataset UI
+	// can warn against training on it before a human has approved it.
+	for i := range examples {
+		examples[i].Source = "ai"
+		examples[i].Approved = false
+	}
+
 	return examples, nil
 }
 
@@ -92,19 +100,122 @@ wording and content. Respond with ONLY a JSON array of objects, each with an "in
 "output" string field. Do not include any other text.`, seed.Input, seed.Output, n)
 }
 
-// parseExamples extracts a JSON array of examples from an LLM response,
-// tolerating surrounding prose or markdown code fences.
+// parseExamples extracts a list of examples from an LLM response, tolerating
+// the ways small local models mangle "respond with only a JSON array":
+// surrounding prose or markdown fences, a trailing comma before the closing
+// bracket, a dropped array wrapper (a bare object, or objects separated by
+// newlines), and individual malformed objects mixed in with good ones.
 func parseExamples(response string) ([]registry.Example, error) {
-	start := strings.IndexByte(response, '[')
-	end := strings.LastIndexByte(response, ']')
-	if start == -1 || end == -1 || end < start {
-		return nil, fmt.Errorf("no JSON array found in response: %q", response)
+	raw, ok := firstJSONArray(response)
+	if !ok {
+		// No array at all — stitch together whatever balanced {...} objects
+		// are present (bare object, or newline-separated objects).
+		objs := allJSONObjects(response)
+		if len(objs) == 0 {
+			return nil, fmt.Errorf("no JSON array found in response: %q", response)
+		}
+		raw = "[" + strings.Join(objs, ",") + "]"
 	}
+
+	raw = stripTrailingCommas(raw)
 
 	var examples []registry.Example
-	if err := json.Unmarshal([]byte(response[start:end+1]), &examples); err != nil {
-		return nil, fmt.Errorf("invalid JSON array: %w", err)
+	err := json.Unmarshal([]byte(raw), &examples)
+	if err == nil {
+		return examples, nil
 	}
 
+	// The array wrapper was fine but something inside it didn't parse — pull
+	// the objects out one at a time and keep the usable ones.
+	examples = examples[:0]
+	for _, obj := range allJSONObjects(raw) {
+		var ex registry.Example
+		if json.Unmarshal([]byte(stripTrailingCommas(obj)), &ex) == nil && (ex.Input != "" || ex.Output != "") {
+			examples = append(examples, ex)
+		}
+	}
+	if len(examples) == 0 {
+		return nil, fmt.Errorf("invalid JSON array: %w", err)
+	}
 	return examples, nil
+}
+
+// firstJSONArray returns the first balanced [...] substring in s (ignoring
+// brackets inside string literals), or ok=false if there isn't one.
+func firstJSONArray(s string) (string, bool) {
+	for {
+		i := strings.IndexByte(s, '[')
+		if i == -1 {
+			return "", false
+		}
+		if v, ok := assertions.ExtractJSONValue(s[i:]); ok {
+			return v, true
+		}
+		s = s[i+1:]
+	}
+}
+
+// allJSONObjects returns every balanced {...} substring in s, in order.
+func allJSONObjects(s string) []string {
+	var out []string
+	for {
+		i := strings.IndexByte(s, '{')
+		if i == -1 {
+			return out
+		}
+		v, ok := assertions.ExtractJSONValue(s[i:])
+		if !ok {
+			return out
+		}
+		out = append(out, v)
+		s = s[i+len(v):]
+	}
+}
+
+// stripTrailingCommas removes a comma that's followed only by whitespace and
+// a closing } or ] — the trailing-comma mistake small models routinely make
+// in JSON arrays. Commas inside string literals are left untouched.
+func stripTrailingCommas(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+
+		if inString {
+			b.WriteByte(c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			b.WriteByte(c)
+			continue
+		}
+
+		if c == ',' {
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			if j < len(s) && (s[j] == '}' || s[j] == ']') {
+				continue // drop the trailing comma
+			}
+		}
+
+		b.WriteByte(c)
+	}
+
+	return b.String()
 }

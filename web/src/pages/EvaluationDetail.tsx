@@ -10,6 +10,7 @@ import {
   listAgents,
   listEvaluationRuns,
   listEvaluationVersions,
+  listModels,
   listWorkspaces,
   publishEvaluationVersion,
   startEvaluationRun,
@@ -20,6 +21,7 @@ import {
   type EvaluationRun,
   type EvaluationRunResult,
   type EvaluationVersion,
+  type Model,
   type TestCase,
   type TestCaseResult,
   type VerifyStep,
@@ -31,6 +33,7 @@ import FilterMenu from '../FilterMenu'
 import IconButton from '../IconButton'
 import Modal from '../Modal'
 import ModalActions from '../ModalActions'
+import ModelCombobox from '../ModelCombobox'
 import Pagination from '../Pagination'
 import SortableHeader from '../SortableHeader'
 import TabBar from '../TabBar'
@@ -88,6 +91,7 @@ function EvaluationDetail() {
   const [versions, setVersions] = useState<EvaluationVersion[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [models, setModels] = useState<Model[]>([])
   const [results, setResults] = useState<EvaluationRunResult[] | null>(null)
   const [runs, setRuns] = useState<EvaluationRun[]>([])
   const [runModalOpen, setRunModalOpen] = useState(false)
@@ -140,6 +144,9 @@ function EvaluationDetail() {
     listWorkspaces()
       .then(setWorkspaces)
       .catch(() => setWorkspaces([]))
+    listModels()
+      .then(setModels)
+      .catch(() => setModels([]))
     listEvaluationRuns()
       .then((all) => setRuns(all.filter((r) => r.evaluationName === name)))
       .catch(() => setRuns([]))
@@ -613,6 +620,7 @@ function EvaluationDetail() {
 
       {generateOpen && (
         <GenerateTestCasesModal
+          models={models}
           generating={generating}
           error={generateError}
           onGenerate={handleGenerate}
@@ -790,13 +798,14 @@ function TestCaseModal({ title, initial, allTags, testWorkspaces, saving, error,
 }
 
 interface GenerateTestCasesModalProps {
+  models: Model[]
   generating: boolean
   error: string | null
   onGenerate: (req: { model: string; seedPrompt: string; assertions: Assertion[]; tags?: string[]; count: number }) => void
   onClose: () => void
 }
 
-function GenerateTestCasesModal({ generating, error, onGenerate, onClose }: GenerateTestCasesModalProps) {
+function GenerateTestCasesModal({ models, generating, error, onGenerate, onClose }: GenerateTestCasesModalProps) {
   const [model, setModel] = useState('')
   const [seedPrompt, setSeedPrompt] = useState('')
   const [assertions, setAssertions] = useState<DraftAssertion[]>([emptyAssertion()])
@@ -825,12 +834,7 @@ function GenerateTestCasesModal({ generating, error, onGenerate, onClose }: Gene
       <form className="stacked-form" onSubmit={handleSubmit}>
         <label>
           Model
-          <input
-            type="text"
-            placeholder="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
+          <ModelCombobox value={model} onChange={setModel} models={models} />
         </label>
         <label>
           Example prompt

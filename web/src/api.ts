@@ -4,6 +4,7 @@ export interface Model {
   name: string
   baseModel?: string
   source: ModelSource
+  createdAt?: string
 }
 
 export interface ModelDetail {
@@ -60,6 +61,12 @@ export interface Example {
   output: string
   description?: string
   tags?: string[]
+  /** "ai" when a local model generated this pair; absent for human-authored/imported examples. */
+  source?: string
+  /** true once a human has reviewed an AI-generated example. */
+  approved?: boolean
+  /** true when a human has explicitly flagged this record for another look. */
+  needsReview?: boolean
 }
 
 export interface DatasetSummary {
@@ -291,6 +298,18 @@ export interface AgentNodeData extends Record<string, unknown> {
   // fails; on success {{thisNode.property}} is available downstream.
   agentOutputSchema?: string
 
+  // Prompt formatting for the agent loop's per-iteration prompt.
+  // agentPromptTemplate is the full editable template — empty = the built-in
+  // default. Placeholders: {{instructions}} {{tools}} {{knowledge}}
+  // {{history}} {{transcript}} {{input}} {{tool_names}} {{args_example}},
+  // plus {{#name}}...{{/name}} conditional blocks (instructions/tools/
+  // knowledge/history/transcript/actions) kept only when non-empty. Nothing
+  // is auto-appended — the template owns the whole prompt, ACTION/ARGS/FINAL
+  // protocol text and {{transcript}} placement included. agentToolFormat
+  // controls how {{tools}} / {{knowledge}} render.
+  agentPromptTemplate?: string
+  agentToolFormat?: 'list' | 'json' | 'markdown'
+
   // Knowledge nodes: knowledgeBaseName names a KnowledgeBase from the
   // agent's set to search; knowledgeQuery is templated query text,
   // falling back to the previous node's raw output when empty, same
@@ -428,6 +447,13 @@ export interface TestCase {
   // tags are only used by Benchmarks/Evaluations, for filtering the test
   // case list — same role as Example.tags for datasets.
   tags?: string[]
+  // Review-workflow fields (currently surfaced only by the Benchmarks UI):
+  // "ai" when a local model generated the prompt (via testcasegen);
+  // approved once a human has reviewed an AI case; needsReview when a human
+  // has flagged any case for another look before publishing.
+  source?: string
+  approved?: boolean
+  needsReview?: boolean
 }
 
 export type EvalRunStatus = 'running' | 'succeeded' | 'failed'
@@ -719,6 +745,14 @@ export function updateExample(name: string, index: number, example: Example): Pr
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(example),
   }).then(json<Example>)
+}
+
+export function approveExample(name: string, index: number): Promise<void> {
+  return fetch(`/api/datasets/${encodeURIComponent(name)}/examples/${index}/approve`, { method: 'POST' }).then(noContent)
+}
+
+export function flagExampleForReview(name: string, index: number): Promise<void> {
+  return fetch(`/api/datasets/${encodeURIComponent(name)}/examples/${index}/flag`, { method: 'POST' }).then(noContent)
 }
 
 export function deleteExample(name: string, index: number): Promise<void> {
@@ -1030,6 +1064,32 @@ export function stopAgentDebugRun(id: string): Promise<void> {
   return fetch(`/api/agents/debug/${encodeURIComponent(id)}/stop`, { method: 'POST' }).then(() => undefined)
 }
 
+export interface NodePreviewResult {
+  output: string
+  schemaChecked: boolean
+  schemaOk: boolean
+  schemaError?: string
+}
+
+// agentPromptDefault returns the built-in default agent prompt template, so
+// the editor can load it into the field as a starting point to edit.
+export function agentPromptDefault(): Promise<string> {
+  return fetch('/api/agent-prompt-default')
+    .then(json<{ template: string }>)
+    .then((r) => r.template)
+}
+
+// previewNode runs a single prompt or agent node's model against a sample
+// input — no graph, workspace, tools, or history. {{...}} placeholders in
+// the node's prompt/instructions are filled with the input.
+export function previewNode(nodeType: NodeType, data: AgentNodeData, input: string): Promise<NodePreviewResult> {
+  return fetch('/api/agents/preview-node', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodeType, data, input }),
+  }).then(json<NodePreviewResult>)
+}
+
 export function listEvaluations(): Promise<Evaluation[]> {
   return fetch('/api/evaluations').then(json<Evaluation[]>)
 }
@@ -1174,6 +1234,14 @@ export function updateTestCase(name: string, index: number, testCase: TestCase):
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(testCase),
   }).then(json<TestCase>)
+}
+
+export function approveTestCase(name: string, index: number): Promise<void> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}/test-cases/${index}/approve`, { method: 'POST' }).then(noContent)
+}
+
+export function flagTestCaseForReview(name: string, index: number): Promise<void> {
+  return fetch(`/api/benchmarks/${encodeURIComponent(name)}/test-cases/${index}/flag`, { method: 'POST' }).then(noContent)
 }
 
 export function deleteTestCase(name: string, index: number): Promise<void> {

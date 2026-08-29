@@ -278,6 +278,48 @@ func updateTestCaseHandler(store benchmarkStore) http.HandlerFunc {
 	}
 }
 
+// approveTestCaseHandler marks a single draft test case as human-reviewed,
+// addressed by its position in the benchmark.
+func approveTestCaseHandler(store benchmarkStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid test case index: %w", err))
+			return
+		}
+
+		if err := store.ApproveTestCase(name, index); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// flagTestCaseHandler marks a single draft test case as needing another
+// human review, addressed by its position in the benchmark.
+func flagTestCaseHandler(store benchmarkStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid test case index: %w", err))
+			return
+		}
+
+		if err := store.FlagTestCaseForReview(name, index); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // deleteTestCaseHandler removes a single test case, addressed by its
 // position in the benchmark (as returned by GET /api/benchmarks/{name}).
 func deleteTestCaseHandler(store benchmarkStore) http.HandlerFunc {
@@ -342,7 +384,9 @@ func generateTestCasesHandler(store benchmarkStore, generator testCaseGenerator)
 
 		newTestCases := make([]registry.TestCase, len(prompts))
 		for i, p := range prompts {
-			newTestCases[i] = registry.TestCase{Prompt: p, Assertions: req.Assertions, Tags: req.Tags}
+			// Flag every generated case as unreviewed AI so the UI warns
+			// against publishing a version before a human has checked it.
+			newTestCases[i] = registry.TestCase{Prompt: p, Assertions: req.Assertions, Tags: req.Tags, Source: "ai"}
 		}
 
 		if err := store.AddTestCases(name, newTestCases); err != nil {

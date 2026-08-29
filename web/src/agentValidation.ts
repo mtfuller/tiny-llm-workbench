@@ -256,6 +256,39 @@ export function validateGraph({
             `Agent node ${label(n)} has no tools or knowledge bases selected — it will only reply, never act.`,
             n.id,
           )
+
+        const tmpl = d.agentPromptTemplate?.trim()
+        if (tmpl) {
+          if (!tmpl.includes('{{transcript}}'))
+            add(
+              'warning',
+              `Agent node ${label(n)}: the prompt template has no {{transcript}} — the model won't see its own past tool calls and may loop until it hits the max iterations.`,
+              n.id,
+            )
+          if ((picked.length > 0 || pickedKbs.length > 0) && !/\bACTION\b/.test(tmpl) && !/\bFINAL\b/.test(tmpl))
+            add(
+              'warning',
+              `Agent node ${label(n)}: the prompt template has no ACTION/FINAL protocol text — the model won't know how to call the tools or answer.`,
+              n.id,
+            )
+          const scalars = new Set([
+            'instructions',
+            'tools',
+            'knowledge',
+            'history',
+            'transcript',
+            'input',
+            'tool_names',
+            'args_example',
+          ])
+          const conditionals = new Set(['instructions', 'tools', 'knowledge', 'history', 'transcript', 'actions'])
+          for (const m of tmpl.matchAll(/\{\{([#/]?)\s*(\w+)\s*\}\}/g)) {
+            const [, marker, name] = m
+            const ok = marker ? conditionals.has(name) : scalars.has(name)
+            if (!ok)
+              add('warning', `Agent node ${label(n)}: unknown template placeholder {{${marker}${name}}} — it will render literally.`, n.id)
+          }
+        }
         break
       }
 

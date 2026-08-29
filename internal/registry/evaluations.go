@@ -56,6 +56,15 @@ type TestCase struct {
 	Assertions     []Assertion  `json:"assertions"`
 	VerifyCommands []VerifyStep `json:"verifyCommands,omitempty"`
 	Tags           []string     `json:"tags,omitempty"`
+	// Source is "ai" for a test case whose prompt a local model generated
+	// (via testcasegen), empty for a hand-written one. Approved is set once
+	// a human has reviewed an "ai" case. NeedsReview lets a human flag any
+	// case (generated or hand-written) for another look before the draft is
+	// published — same review model as a dataset's Example. Currently only
+	// the Benchmarks UI surfaces these.
+	Source      string `json:"source,omitempty"`
+	Approved    bool   `json:"approved,omitempty"`
+	NeedsReview bool   `json:"needsReview,omitempty"`
 }
 
 // Evaluation is a registry-tracked test suite run against a set of agents.

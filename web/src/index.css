@@ -1653,6 +1653,64 @@ textarea {
   margin-top: 0.2rem;
 }
 
+/* "Prompt formatting" block in an agent node inspector */
+.agent-prompt-format {
+  margin-top: 0.4rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+/* "Preview model" panel in a prompt / agent node inspector */
+.node-preview {
+  margin-top: 0.4rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.node-preview textarea {
+  width: 100%;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.82rem;
+  resize: vertical;
+}
+
+.node-preview-run {
+  align-self: flex-start;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.82rem;
+}
+
+.node-preview-output {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  background: color-mix(in srgb, var(--text) 3%, var(--surface));
+}
+
+.node-preview-output pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.node-preview-output .example-flag {
+  align-self: flex-start;
+}
+
 .inspector-footer {
   padding: 0.85rem 1rem;
   border-top: 1px solid var(--border);
@@ -1849,6 +1907,83 @@ textarea {
   height: 85vh;
 }
 
+.modal-xl {
+  max-width: 960px;
+}
+
+/* Dataset example editor — put input/output side by side, each a tall
+   fixed-height editor that scrolls internally rather than stretching the
+   modal. */
+.example-editor-fields {
+  display: flex;
+  gap: 1rem;
+}
+
+.example-editor-fields > label {
+  flex: 1;
+  min-width: 0;
+}
+
+.example-editor-fields .line-editor {
+  height: 300px;
+}
+
+.example-editor-fields .line-editor-textarea {
+  height: 100%;
+}
+
+/* AI-provenance markers on dataset example rows */
+.example-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.example-flag-ai {
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.example-flag-warn {
+  color: color-mix(in srgb, var(--warn) 85%, var(--text));
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+}
+
+.dataset-warning-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: color-mix(in srgb, var(--warn) 85%, var(--text));
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+}
+
+.dataset-warning-banner-action {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0.2rem 0.55rem;
+  font: inherit;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--warn) 90%, var(--text));
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dataset-warning-banner-action:hover {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+}
+
 /* Hugging Face model search modal */
 .hf-search-input {
   width: 100%;
@@ -1921,6 +2056,92 @@ textarea {
   font-size: 0.8rem;
   color: color-mix(in srgb, var(--ok) 85%, var(--text));
   flex-shrink: 0;
+}
+
+/* Model picker: free-text field + "Browse" button, and its browse modal */
+.model-combobox {
+  display: flex;
+  gap: 0.4rem;
+  align-items: stretch;
+}
+
+.model-combobox > input {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-combobox > .icon-button {
+  flex-shrink: 0;
+}
+
+.model-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.model-picker-group {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--text) 50%, transparent);
+  margin: 0.5rem 0 0.15rem;
+}
+
+.model-picker-group:first-child {
+  margin-top: 0;
+}
+
+.model-picker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-picker-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+.model-picker-row.is-current {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.model-picker-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.model-picker-row-name {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+  font-size: 0.88rem;
+  word-break: break-all;
+}
+
+.model-picker-row-sub {
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  word-break: break-all;
 }
 
 .modal-header {

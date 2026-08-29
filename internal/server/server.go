@@ -54,6 +54,8 @@ type datasetStore interface {
 	ListExamples(name string) ([]registry.Example, error)
 	AppendExamples(name string, examples []registry.Example) error
 	UpdateExample(name string, index int, example registry.Example) error
+	ApproveExample(name string, index int) error
+	FlagExampleForReview(name string, index int) error
 	DeleteExample(name string, index int) error
 }
 
@@ -145,6 +147,8 @@ type agentManager interface {
 	SendMessage(runID, message string) (agents.ChatMessage, error)
 	GetRun(id string) (*agents.Run, bool)
 
+	PreviewNode(ctx context.Context, node registry.Node, input string) (agents.PreviewResult, error)
+
 	StartDebugRun(agentName string, graph registry.Graph, workspace string, tools []string) (*agents.DebugState, error)
 	SendDebugMessage(id, message string) (*agents.DebugState, error)
 	StepDebugRun(id string) (*agents.DebugState, error)
@@ -184,6 +188,8 @@ type benchmarkStore interface {
 	DeleteBenchmark(name string) error
 	AddTestCases(benchmarkName string, tcs []registry.TestCase) error
 	UpdateTestCase(benchmarkName string, index int, tc registry.TestCase) error
+	ApproveTestCase(benchmarkName string, index int) error
+	FlagTestCaseForReview(benchmarkName string, index int) error
 	DeleteTestCase(benchmarkName string, index int) error
 	PublishVersion(benchmarkName string) (registry.BenchmarkVersion, error)
 	ListVersions(benchmarkName string) ([]registry.BenchmarkVersion, error)
@@ -260,6 +266,8 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/datasets/{name}/variations", generateVariationsHandler(deps.Datasets, deps.Generator))
 	mux.HandleFunc("POST /api/datasets/{name}/examples", addExamplesHandler(deps.Datasets))
 	mux.HandleFunc("PUT /api/datasets/{name}/examples/{index}", updateExampleHandler(deps.Datasets))
+	mux.HandleFunc("POST /api/datasets/{name}/examples/{index}/approve", approveExampleHandler(deps.Datasets))
+	mux.HandleFunc("POST /api/datasets/{name}/examples/{index}/flag", flagExampleHandler(deps.Datasets))
 	mux.HandleFunc("DELETE /api/datasets/{name}/examples/{index}", deleteExampleHandler(deps.Datasets))
 	mux.HandleFunc("GET /api/datasets/{name}/export", exportDatasetHandler(deps.Datasets))
 	mux.HandleFunc("POST /api/datasets/{name}/import", importDatasetHandler(deps.Datasets))
@@ -298,6 +306,8 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/agents/runs/{id}/messages", sendAgentMessageHandler(deps.AgentRuns))
 	mux.HandleFunc("GET /api/agents/runs/{id}", getAgentRunHandler(deps.AgentRuns))
 	mux.HandleFunc("POST /api/agents/runs/{id}/stop", stopAgentRunHandler(deps.AgentRuns))
+	mux.HandleFunc("GET /api/agent-prompt-default", agentPromptDefaultHandler())
+	mux.HandleFunc("POST /api/agents/preview-node", previewNodeHandler(deps.AgentRuns))
 	mux.HandleFunc("POST /api/agents/{name}/debug", startDebugRunHandler(deps.AgentRuns))
 	mux.HandleFunc("POST /api/agents/debug/{id}/messages", sendDebugMessageHandler(deps.AgentRuns))
 	mux.HandleFunc("POST /api/agents/debug/{id}/step", stepDebugRunHandler(deps.AgentRuns))
@@ -331,6 +341,8 @@ func New(deps Deps) (http.Handler, error) {
 	mux.HandleFunc("DELETE /api/benchmarks/{name}", deleteBenchmarkHandler(deps.Benchmarks))
 	mux.HandleFunc("POST /api/benchmarks/{name}/test-cases", addTestCasesHandler(deps.Benchmarks))
 	mux.HandleFunc("PUT /api/benchmarks/{name}/test-cases/{index}", updateTestCaseHandler(deps.Benchmarks))
+	mux.HandleFunc("POST /api/benchmarks/{name}/test-cases/{index}/approve", approveTestCaseHandler(deps.Benchmarks))
+	mux.HandleFunc("POST /api/benchmarks/{name}/test-cases/{index}/flag", flagTestCaseHandler(deps.Benchmarks))
 	mux.HandleFunc("DELETE /api/benchmarks/{name}/test-cases/{index}", deleteTestCaseHandler(deps.Benchmarks))
 	mux.HandleFunc("POST /api/benchmarks/{name}/test-cases/generate", generateTestCasesHandler(deps.Benchmarks, deps.TestCaseGen))
 	mux.HandleFunc("POST /api/benchmarks/{name}/versions", publishBenchmarkVersionHandler(deps.Benchmarks))

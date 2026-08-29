@@ -559,6 +559,68 @@ func TestDeleteTestCase(t *testing.T) {
 	}
 }
 
+func TestApproveTestCase(t *testing.T) {
+	deps := testDeps()
+	store := &fakeBenchmarkStore{}
+	deps.Benchmarks = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmarks/greeting-benchmark/test-cases/2/approve", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST .../test-cases/2/approve status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.approvedIndexes) != 1 || store.approvedIndexes[0] != 2 {
+		t.Errorf("store.approvedIndexes = %v, want [2]", store.approvedIndexes)
+	}
+}
+
+func TestFlagTestCase(t *testing.T) {
+	deps := testDeps()
+	store := &fakeBenchmarkStore{}
+	deps.Benchmarks = store
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmarks/greeting-benchmark/test-cases/1/flag", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST .../test-cases/1/flag status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.flaggedIndexes) != 1 || store.flaggedIndexes[0] != 1 {
+		t.Errorf("store.flaggedIndexes = %v, want [1]", store.flaggedIndexes)
+	}
+}
+
+func TestApproveTestCaseError(t *testing.T) {
+	deps := testDeps()
+	deps.Benchmarks = &fakeBenchmarkStore{approveTestCaseErr: errors.New("index out of range")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmarks/greeting-benchmark/test-cases/9/approve", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST .../test-cases/9/approve (error) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestDeleteTestCaseError(t *testing.T) {
 	deps := testDeps()
 	deps.Benchmarks = &fakeBenchmarkStore{deleteTestCaseErr: errors.New("index out of range")}
@@ -617,6 +679,11 @@ func TestGenerateTestCases(t *testing.T) {
 	}
 	if store.addedTestCases[0][0].Prompt != "say good morning" || len(store.addedTestCases[0][0].Assertions) != 1 {
 		t.Errorf("addedTestCases[0][0] = %+v, want prompt 'say good morning' with the seed's assertion", store.addedTestCases[0][0])
+	}
+	for i, tc := range store.addedTestCases[0] {
+		if tc.Source != "ai" {
+			t.Errorf("addedTestCases[0][%d].Source = %q, want \"ai\"", i, tc.Source)
+		}
 	}
 
 	var got []registry.TestCase

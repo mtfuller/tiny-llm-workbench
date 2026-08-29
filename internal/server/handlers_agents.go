@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/mtfuller/tiny-llm-workbench/internal/agents"
 	"github.com/mtfuller/tiny-llm-workbench/internal/registry"
 )
 
@@ -192,6 +193,46 @@ func stopAgentRunHandler(mgr agentManager) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// agentPromptDefaultHandler returns the built-in default agent prompt
+// template, so the editor can load it into the field as an editable start.
+func agentPromptDefaultHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"template": agents.DefaultAgentPromptTemplate})
+	}
+}
+
+// previewNodeRequest is the POST /api/agents/preview-node request body: one
+// prompt- or agent-node's data (from the live canvas) plus a sample input.
+type previewNodeRequest struct {
+	NodeType string            `json:"nodeType"`
+	Data     registry.NodeData `json:"data"`
+	Input    string            `json:"input"`
+}
+
+// previewNodeHandler runs a standalone one-shot preview of a single prompt
+// or agent node against a sample input — no graph, workspace, tools, or
+// history. See agents.Engine.PreviewNode.
+func previewNodeHandler(mgr agentManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req previewNodeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+			return
+		}
+		if req.NodeType != "prompt" && req.NodeType != "agent" {
+			writeError(w, http.StatusBadRequest, errors.New("preview is only available for prompt and agent nodes"))
+			return
+		}
+
+		res, err := mgr.PreviewNode(r.Context(), registry.Node{Type: req.NodeType, Data: req.Data}, req.Input)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
 	}
 }
 

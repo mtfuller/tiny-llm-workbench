@@ -247,6 +247,40 @@ func (r *Registry) UpdateTestCase(benchmarkName string, index int, tc TestCase) 
 	return r.SaveBenchmark(b)
 }
 
+// ApproveTestCase marks the draft test case at index as human-reviewed: it
+// sets Approved and clears any NeedsReview flag. It's an error if index is
+// out of range. This never touches any published version.
+func (r *Registry) ApproveTestCase(benchmarkName string, index int) error {
+	b, err := r.GetBenchmark(benchmarkName)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(b.TestCases) {
+		return fmt.Errorf("test case index %d out of range (benchmark has %d test cases)", index, len(b.TestCases))
+	}
+
+	b.TestCases[index].Approved = true
+	b.TestCases[index].NeedsReview = false
+	return r.SaveBenchmark(b)
+}
+
+// FlagTestCaseForReview marks the draft test case at index as needing
+// another human look, also clearing Approved. It's an error if index is out
+// of range. This never touches any published version.
+func (r *Registry) FlagTestCaseForReview(benchmarkName string, index int) error {
+	b, err := r.GetBenchmark(benchmarkName)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(b.TestCases) {
+		return fmt.Errorf("test case index %d out of range (benchmark has %d test cases)", index, len(b.TestCases))
+	}
+
+	b.TestCases[index].NeedsReview = true
+	b.TestCases[index].Approved = false
+	return r.SaveBenchmark(b)
+}
+
 // DeleteTestCase removes the draft test case at index (0-based, in the
 // order GetBenchmark returns them). It's an error if index is out of range.
 // This never touches any published version.

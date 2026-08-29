@@ -463,6 +463,105 @@ func TestStartDebugRun(t *testing.T) {
 	}
 }
 
+func TestAgentPromptDefault(t *testing.T) {
+	deps := testDeps()
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-prompt-default", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/agent-prompt-default status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["template"] != agents.DefaultAgentPromptTemplate {
+		t.Errorf("template = %q, want the exported default", got["template"])
+	}
+	if !strings.Contains(got["template"], "{{instructions}}") || !strings.Contains(got["template"], "{{transcript}}") {
+		t.Errorf("default template missing expected placeholders: %q", got["template"])
+	}
+}
+
+func TestPreviewNode(t *testing.T) {
+	deps := testDeps()
+	mgr := &fakeAgentManager{previewResult: agents.PreviewResult{Output: "hello!", SchemaChecked: true, SchemaOK: true}}
+	deps.AgentRuns = mgr
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(previewNodeRequest{
+		NodeType: "prompt",
+		Data:     registry.NodeData{Model: "m", PromptTemplate: "say hi to {{Input}}"},
+		Input:    "world",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/preview-node", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/agents/preview-node status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(mgr.previewedInputs) != 1 || mgr.previewedInputs[0] != "world" || mgr.previewedTypes[0] != "prompt" {
+		t.Errorf("mgr previewed inputs=%v types=%v, want [world] [prompt]", mgr.previewedInputs, mgr.previewedTypes)
+	}
+
+	var got agents.PreviewResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Output != "hello!" || !got.SchemaChecked || !got.SchemaOK {
+		t.Errorf("response = %+v, want the fake's PreviewResult", got)
+	}
+}
+
+func TestPreviewNodeRejectsUnsupportedType(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(previewNodeRequest{NodeType: "condition", Input: "x"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/preview-node", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST /api/agents/preview-node (condition) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestPreviewNodeModelError(t *testing.T) {
+	deps := testDeps()
+	deps.AgentRuns = &fakeAgentManager{previewErr: errors.New("model exploded")}
+
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body, _ := json.Marshal(previewNodeRequest{NodeType: "agent", Data: registry.NodeData{AgentModel: "m"}, Input: "x"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/preview-node", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("POST /api/agents/preview-node (model error) status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
 func TestStartDebugRunError(t *testing.T) {
 	deps := testDeps()
 	deps.AgentRuns = &fakeAgentManager{debugStartErr: errors.New("graph has no input node")}

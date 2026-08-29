@@ -1,9 +1,11 @@
-import { Pencil, Plus, Sparkles, Tag, Trash2 } from 'lucide-react'
+import { AlertTriangle, Bot, Check, Copy, Flag, Pencil, Plus, Sparkles, Tag, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   addTestCases,
+  approveTestCase,
   deleteTestCase,
+  flagTestCaseForReview,
   generateTestCases,
   getBenchmark,
   getBenchmarkResults,
@@ -57,6 +59,16 @@ type TestCaseModalState = { mode: 'add' } | { mode: 'edit'; index: number } | nu
 
 const emptyTestCase: TestCase = { id: '', prompt: '', assertions: [], tags: [] }
 
+// A seed for the "generate variations from this test case" flow.
+type GenerateSeed = { prompt: string; assertions: Assertion[]; tags?: string[] }
+
+// testCaseNeedsReview is true when a human should look at a test case before
+// the draft is published: an AI-generated case nobody approved, or one a
+// human explicitly flagged.
+function testCaseNeedsReview(tc: TestCase): boolean {
+  return tc.needsReview === true || (tc.source === 'ai' && !tc.approved)
+}
+
 function sortResults(results: BenchmarkRunResult[], key: SortKey, dir: SortDir): BenchmarkRunResult[] {
   const sorted = [...results].sort((a, b) => {
     switch (key) {
@@ -97,8 +109,14 @@ function BenchmarkDetail() {
   const [testCaseModalSaving, setTestCaseModalSaving] = useState(false)
   const [testCaseModalError, setTestCaseModalError] = useState<string | null>(null)
   const [deletingTestCaseIndex, setDeletingTestCaseIndex] = useState<number | null>(null)
+  const [approvingTestCaseIndex, setApprovingTestCaseIndex] = useState<number | null>(null)
+  const [flaggingTestCaseIndex, setFlaggingTestCaseIndex] = useState<number | null>(null)
+  const [duplicatingTestCaseIndex, setDuplicatingTestCaseIndex] = useState<number | null>(null)
+  const [reviewOnly, setReviewOnly] = useState(false)
 
-  const [generateOpen, setGenerateOpen] = useState(false)
+  // null = closed; an object opens the modal, optionally pre-seeded from an
+  // existing test case ("generate variations from this test case").
+  const [generateState, setGenerateState] = useState<{ seed?: GenerateSeed } | null>(null)
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
 
@@ -167,8 +185,6 @@ function BenchmarkDetail() {
     return () => clearInterval(interval)
   }, [activeRun, name, reloadResults])
 
-  const modelNames = useMemo(() => models.map((m) => m.name), [models])
-
   const testCases = benchmark?.testCases ?? []
 
   const { allTags, activeTags, toggleTag, clearTags, matchesTags } = useTagFilter(testCases, (tc) => tc.tags)
@@ -191,7 +207,9 @@ function BenchmarkDetail() {
     }
   }
 
-  const handleSaveTestCaseModal = async (tc: { prompt: string; assertions: Assertion[]; tags?: string[] }) => {
+  const handleSaveTestCaseModal = async (
+    tc: Pick<TestCase, 'prompt' | 'assertions' | 'tags' | 'source' | 'approved' | 'needsReview'>,
+  ) => {
     if (!testCaseModal) return
 
     setTestCaseModalSaving(true)
@@ -210,6 +228,52 @@ function BenchmarkDetail() {
       setTestCaseModalError((err as Error).message)
     } finally {
       setTestCaseModalSaving(false)
+    }
+  }
+
+  const handleApproveTestCase = async (index: number) => {
+    setApprovingTestCaseIndex(index)
+    setError(null)
+    try {
+      await approveTestCase(name, index)
+      showToast('Marked test case as reviewed')
+      reloadBenchmark()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setApprovingTestCaseIndex(null)
+    }
+  }
+
+  const handleFlagTestCase = async (index: number) => {
+    setFlaggingTestCaseIndex(index)
+    setError(null)
+    try {
+      await flagTestCaseForReview(name, index)
+      showToast('Flagged test case for review')
+      reloadBenchmark()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setFlaggingTestCaseIndex(null)
+    }
+  }
+
+  const handleDuplicateTestCase = async (tc: TestCase, index: number) => {
+    setDuplicatingTestCaseIndex(index)
+    setError(null)
+    try {
+      // A copy hasn't been individually reviewed — carry the content and
+      // provenance, but let it re-enter the review queue.
+      await addTestCases(name, [
+        { ...tc, id: '', approved: false, needsReview: false },
+      ])
+      showToast('Duplicated test case')
+      reloadBenchmark()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setDuplicatingTestCaseIndex(null)
     }
   }
 
@@ -234,8 +298,8 @@ function BenchmarkDetail() {
     setGenerateError(null)
     try {
       await generateTestCases(name, req)
-      showToast(`Generated ${req.count} test case${req.count === 1 ? '' : 's'}`)
-      setGenerateOpen(false)
+      showToast(`Generated ${req.count} test case${req.count === 1 ? '' : 's'} — review before publishing`)
+      setGenerateState(null)
       reloadBenchmark()
     } catch (err) {
       setGenerateError((err as Error).message)
@@ -268,16 +332,24 @@ function BenchmarkDetail() {
     }
   }
 
+  const needsReviewCount = useMemo(() => testCases.filter(testCaseNeedsReview).length, [testCases])
+
+  const clearAllFilters = () => {
+    clearTags()
+    setReviewOnly(false)
+  }
+
   const filteredTestCases = useMemo(() => {
     const q = testCaseSearch.trim().toLowerCase()
     return testCases
       .map((tc, index) => ({ tc, index }))
       .filter(({ tc }) => {
         if (!matchesTags(tc)) return false
+        if (reviewOnly && !testCaseNeedsReview(tc)) return false
         if (q && !tc.prompt.toLowerCase().includes(q)) return false
         return true
       })
-  }, [testCases, testCaseSearch, matchesTags])
+  }, [testCases, testCaseSearch, matchesTags, reviewOnly])
 
   const {
     page: testCasePage,
@@ -286,7 +358,7 @@ function BenchmarkDetail() {
     pageCount: testCasePageCount,
     pageItems: testCasePageItems,
   } = usePagination(filteredTestCases)
-  useEffect(resetTestCasePage, [testCaseSearch, activeTags, resetTestCasePage])
+  useEffect(resetTestCasePage, [testCaseSearch, activeTags, reviewOnly, resetTestCasePage])
 
   const filteredResults = useMemo(() => {
     const q = resultSearch.trim().toLowerCase()
@@ -314,6 +386,28 @@ function BenchmarkDetail() {
       </div>
 
       {error && <p className="error">{error}</p>}
+
+      {needsReviewCount > 0 && (
+        <div className="dataset-warning-banner">
+          <AlertTriangle size={16} />
+          <span>
+            {needsReviewCount} {needsReviewCount === 1 ? 'test case needs' : 'test cases need'} human review (AI-generated
+            or flagged). Check {needsReviewCount === 1 ? 'it' : 'them'} before publishing a version.
+          </span>
+          {!(tab === 'testCases' && reviewOnly) && (
+            <button
+              type="button"
+              className="dataset-warning-banner-action"
+              onClick={() => {
+                setTab('testCases')
+                setReviewOnly(true)
+              }}
+            >
+              Show only these
+            </button>
+          )}
+        </div>
+      )}
 
       {benchmark && (
         <section className="panel">
@@ -355,15 +449,22 @@ function BenchmarkDetail() {
               onChange={(e) => setTestCaseSearch(e.target.value)}
               className="list-search"
             />
-            {allTags.length > 0 && (
-              <FilterMenu
-                groups={[{ key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTag }]}
-                onClearAll={clearTags}
-              />
-            )}
+            <FilterMenu
+              groups={[
+                {
+                  key: 'review',
+                  title: 'Review',
+                  options: ['Needs review'],
+                  active: reviewOnly ? new Set(['Needs review']) : new Set(),
+                  onToggle: () => setReviewOnly((v) => !v),
+                },
+                { key: 'tags', title: 'Tags', options: allTags, active: activeTags, onToggle: toggleTag },
+              ]}
+              onClearAll={clearAllFilters}
+            />
             <div className="list-toolbar-actions">
               <IconButton icon={<Plus size={16} />} label="Add test case" onClick={() => setTestCaseModal({ mode: 'add' })} />
-              <IconButton icon={<Sparkles size={16} />} label="Generate test cases…" onClick={() => setGenerateOpen(true)} />
+              <IconButton icon={<Sparkles size={16} />} label="Generate test cases…" onClick={() => setGenerateState({})} />
               <IconButton
                 icon={<Tag size={16} />}
                 label={testCases.length === 0 ? 'Add a test case before publishing' : 'Publish version — freezes the current draft'}
@@ -375,7 +476,7 @@ function BenchmarkDetail() {
 
           {benchmark === null && (
             <div className="panel-body">
-              <TableSkeleton columns={4} />
+              <TableSkeleton columns={5} />
             </div>
           )}
 
@@ -398,11 +499,15 @@ function BenchmarkDetail() {
                   <th>Prompt</th>
                   <th>Assertions</th>
                   <th>Tags</th>
+                  <th>Source</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {testCasePageItems.map(({ tc, index }) => (
+                {testCasePageItems.map(({ tc, index }) => {
+                  const isAI = tc.source === 'ai'
+                  const needsReview = testCaseNeedsReview(tc)
+                  return (
                   <tr key={tc.id}>
                     <td className="cell-truncate">{tc.prompt}</td>
                     <td>
@@ -415,7 +520,51 @@ function BenchmarkDetail() {
                     <td>
                       <TagCell tags={tc.tags} />
                     </td>
+                    <td>
+                      {needsReview ? (
+                        <span
+                          className="example-flag example-flag-warn"
+                          title={tc.needsReview ? 'Flagged by a human for review' : 'Generated by AI — not yet human-reviewed'}
+                        >
+                          <AlertTriangle size={12} /> {tc.needsReview ? 'Needs review' : 'Unreviewed AI'}
+                        </span>
+                      ) : isAI ? (
+                        <span className="example-flag example-flag-ai" title="Generated by AI, human-reviewed">
+                          <Bot size={12} /> AI · reviewed
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                     <td className="row-actions">
+                      {needsReview ? (
+                        <IconButton
+                          icon={<Check size={15} />}
+                          label="Mark as reviewed"
+                          disabled={approvingTestCaseIndex === index}
+                          onClick={() => handleApproveTestCase(index)}
+                        />
+                      ) : (
+                        <IconButton
+                          icon={<Flag size={15} />}
+                          label="Flag for review"
+                          disabled={flaggingTestCaseIndex === index}
+                          onClick={() => handleFlagTestCase(index)}
+                        />
+                      )}
+                      <IconButton
+                        icon={<Copy size={15} />}
+                        label="Duplicate test case"
+                        disabled={duplicatingTestCaseIndex === index}
+                        onClick={() => handleDuplicateTestCase(tc, index)}
+                      />
+                      <IconButton
+                        icon={<Sparkles size={15} />}
+                        label="Generate variations from this test case"
+                        onClick={() =>
+                          setGenerateState({ seed: { prompt: tc.prompt, assertions: tc.assertions, tags: tc.tags } })
+                        }
+                      />
                       <IconButton
                         icon={<Pencil size={15} />}
                         label="Edit test case"
@@ -429,7 +578,8 @@ function BenchmarkDetail() {
                       />
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           )}
@@ -582,14 +732,15 @@ function BenchmarkDetail() {
         />
       )}
 
-      {generateOpen && (
+      {generateState && (
         <GenerateTestCasesModal
-          models={modelNames}
+          models={models}
           allTags={allTags}
+          seed={generateState.seed}
           generating={generating}
           error={generateError}
           onGenerate={handleGenerate}
-          onClose={() => setGenerateOpen(false)}
+          onClose={() => setGenerateState(null)}
         />
       )}
 
@@ -639,7 +790,7 @@ interface TestCaseModalProps {
   allTags: string[]
   saving: boolean
   error: string | null
-  onSave: (tc: { prompt: string; assertions: Assertion[]; tags?: string[] }) => void
+  onSave: (tc: Pick<TestCase, 'prompt' | 'assertions' | 'tags' | 'source' | 'approved' | 'needsReview'>) => void
   onClose: () => void
 }
 
@@ -651,15 +802,31 @@ function TestCaseModal({ title, initial, allTags, saving, error, onSave, onClose
   const [assertions, setAssertions] = useState<DraftAssertion[]>(toDraftAssertions(initial.assertions))
   const [tags, setTags] = useState<string[]>(initial.tags ?? [])
 
+  const wasNeedingReview = testCaseNeedsReview(initial)
+
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     if (!prompt.trim()) return
-    onSave({ prompt: prompt.trim(), assertions: toPayloadAssertions(assertions), tags: tags.length > 0 ? tags : undefined })
+    onSave({
+      prompt: prompt.trim(),
+      assertions: toPayloadAssertions(assertions),
+      tags: tags.length > 0 ? tags : undefined,
+      // Keep the AI-provenance marker, but a human editing and saving the
+      // case counts as a review — any "needs review" flag clears.
+      source: initial.source || undefined,
+      approved: initial.source === 'ai' ? true : initial.approved,
+      needsReview: false,
+    })
   }
 
   return (
     <Modal title={title} onClose={onClose}>
       <form className="stacked-form" onSubmit={handleSubmit}>
+        {wasNeedingReview && (
+          <p className="hint">
+            <AlertTriangle size={13} /> This test case is flagged for review. Saving it here clears that flag.
+          </p>
+        )}
         <label>
           Prompt
           <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} autoFocus />
@@ -677,19 +844,22 @@ function TestCaseModal({ title, initial, allTags, saving, error, onSave, onClose
 }
 
 interface GenerateTestCasesModalProps {
-  models: string[]
+  models: Model[]
   allTags: string[]
+  seed?: GenerateSeed
   generating: boolean
   error: string | null
   onGenerate: (req: { model: string; seedPrompt: string; assertions: Assertion[]; tags?: string[]; count: number }) => void
   onClose: () => void
 }
 
-function GenerateTestCasesModal({ models, allTags, generating, error, onGenerate, onClose }: GenerateTestCasesModalProps) {
+function GenerateTestCasesModal({ models, allTags, seed, generating, error, onGenerate, onClose }: GenerateTestCasesModalProps) {
   const [model, setModel] = useState('')
-  const [seedPrompt, setSeedPrompt] = useState('')
-  const [assertions, setAssertions] = useState<DraftAssertion[]>([emptyAssertion()])
-  const [tags, setTags] = useState<string[]>([])
+  const [seedPrompt, setSeedPrompt] = useState(seed?.prompt ?? '')
+  const [assertions, setAssertions] = useState<DraftAssertion[]>(
+    seed && seed.assertions.length > 0 ? toDraftAssertions(seed.assertions) : [emptyAssertion()],
+  )
+  const [tags, setTags] = useState<string[]>(seed?.tags ?? [])
   const [count, setCount] = useState(3)
 
   const handleSubmit = (e: FormEvent) => {
@@ -707,8 +877,12 @@ function GenerateTestCasesModal({ models, allTags, generating, error, onGenerate
   return (
     <Modal title="Generate test cases" onClose={onClose}>
       <p className="hint">
-        Give one example prompt and the assertions it should satisfy — a local model will generate differently
-        phrased prompts that test the same thing, keeping the same assertions on every one of them.
+        {seed
+          ? 'Generating from the selected test case — a local model will produce differently phrased prompts that test the same thing, keeping its assertions. Tweak the seed below if you like.'
+          : 'Give one example prompt and the assertions it should satisfy — a local model will generate differently phrased prompts that test the same thing, keeping the same assertions on every one of them.'}
+      </p>
+      <p className="hint">
+        <AlertTriangle size={13} /> Generated test cases are flagged as unreviewed AI until you approve them.
       </p>
       <form className="stacked-form" onSubmit={handleSubmit}>
         <label>

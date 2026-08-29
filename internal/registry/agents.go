@@ -117,6 +117,26 @@ type NodeData struct {
 	AgentKnowledgeBases []string `json:"agentKnowledgeBases,omitempty"`
 	AgentOutputSchema   string   `json:"agentOutputSchema,omitempty"`
 
+	// Prompt formatting for the agent node's per-iteration completion prompt
+	// (see internal/agents.buildAgentPrompt).
+	//   AgentPromptTemplate  the full editable template. Empty = the built-in
+	//                        default (which reproduces the pre-template
+	//                        behavior). Placeholders: {{instructions}},
+	//                        {{tools}}, {{knowledge}}, {{history}},
+	//                        {{transcript}}, {{input}}, {{tool_names}},
+	//                        {{args_example}}, plus {{#name}}...{{/name}}
+	//                        conditional blocks (name in instructions/tools/
+	//                        knowledge/history/transcript/actions) kept only
+	//                        when that value is non-empty. Nothing is
+	//                        auto-appended — the template owns the whole
+	//                        prompt, including the ACTION/ARGS/FINAL protocol
+	//                        text and the {{transcript}} placement.
+	//   AgentToolFormat      how {{tools}} / {{knowledge}} render: "" / "list"
+	//                        (bulleted "- name(params) — desc"), "json" (a
+	//                        JSON array), or "markdown" (### headings).
+	AgentPromptTemplate string `json:"agentPromptTemplate,omitempty"`
+	AgentToolFormat     string `json:"agentToolFormat,omitempty"`
+
 	// KnowledgeBaseName and KnowledgeQuery are knowledge nodes: which
 	// registry.KnowledgeBase to search (independent of any Environment —
 	// querying records doesn't need a container) and what templated query

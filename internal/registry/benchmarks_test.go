@@ -243,6 +243,45 @@ func TestDeleteTestCaseOutOfRange(t *testing.T) {
 	}
 }
 
+func TestApproveAndFlagTestCase(t *testing.T) {
+	reg := New(t.TempDir())
+
+	if err := reg.SaveBenchmark(Benchmark{Name: "greeting"}); err != nil {
+		t.Fatalf("SaveBenchmark() error = %v", err)
+	}
+	if err := reg.AddTestCases("greeting", []TestCase{
+		{Prompt: "say hi", Source: "ai", Assertions: []Assertion{{Type: "contains", Value: "hi"}}},
+	}); err != nil {
+		t.Fatalf("AddTestCases() error = %v", err)
+	}
+
+	if err := reg.ApproveTestCase("greeting", 0); err != nil {
+		t.Fatalf("ApproveTestCase() error = %v", err)
+	}
+	got, _ := reg.GetBenchmark("greeting")
+	if !got.TestCases[0].Approved || got.TestCases[0].NeedsReview {
+		t.Errorf("after ApproveTestCase: %+v, want Approved=true NeedsReview=false", got.TestCases[0])
+	}
+	if got.TestCases[0].Source != "ai" {
+		t.Errorf("ApproveTestCase changed Source to %q, want it left as \"ai\"", got.TestCases[0].Source)
+	}
+
+	if err := reg.FlagTestCaseForReview("greeting", 0); err != nil {
+		t.Fatalf("FlagTestCaseForReview() error = %v", err)
+	}
+	got, _ = reg.GetBenchmark("greeting")
+	if !got.TestCases[0].NeedsReview || got.TestCases[0].Approved {
+		t.Errorf("after FlagTestCaseForReview: %+v, want NeedsReview=true Approved=false", got.TestCases[0])
+	}
+
+	if err := reg.ApproveTestCase("greeting", 5); err == nil {
+		t.Error("ApproveTestCase(out of range) error = nil, want an error")
+	}
+	if err := reg.FlagTestCaseForReview("greeting", 5); err == nil {
+		t.Error("FlagTestCaseForReview(out of range) error = nil, want an error")
+	}
+}
+
 func TestPublishVersion(t *testing.T) {
 	reg := New(t.TempDir())
 

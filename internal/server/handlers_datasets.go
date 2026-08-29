@@ -166,6 +166,48 @@ func updateExampleHandler(datasets datasetStore) http.HandlerFunc {
 	}
 }
 
+// approveExampleHandler marks a single AI-generated example as
+// human-approved, addressed by its position in the dataset.
+func approveExampleHandler(datasets datasetStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid example index: %w", err))
+			return
+		}
+
+		if err := datasets.ApproveExample(name, index); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// flagExampleHandler marks a single example as needing another human
+// review, addressed by its position in the dataset.
+func flagExampleHandler(datasets datasetStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid example index: %w", err))
+			return
+		}
+
+		if err := datasets.FlagExampleForReview(name, index); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // deleteExampleHandler removes a single example, addressed by its position
 // in the dataset (as returned by GET /api/datasets/{name}).
 func deleteExampleHandler(datasets datasetStore) http.HandlerFunc {

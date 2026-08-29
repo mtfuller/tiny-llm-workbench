@@ -110,10 +110,14 @@ type fakeDatasetStore struct {
 	deleteErr    error
 	deleted      []string
 
-	updateExampleErr error
-	updatedExamples  map[int]registry.Example
-	deleteExampleErr error
-	deletedExamples  []int
+	updateExampleErr  error
+	updatedExamples   map[int]registry.Example
+	approveExampleErr error
+	approvedExamples  []int
+	flagExampleErr    error
+	flaggedExamples   []int
+	deleteExampleErr  error
+	deletedExamples   []int
 }
 
 func newFakeDatasetStore() *fakeDatasetStore {
@@ -176,6 +180,22 @@ func (f *fakeDatasetStore) UpdateExample(name string, index int, example registr
 		return f.updateExampleErr
 	}
 	f.updatedExamples[index] = example
+	return nil
+}
+
+func (f *fakeDatasetStore) ApproveExample(name string, index int) error {
+	if f.approveExampleErr != nil {
+		return f.approveExampleErr
+	}
+	f.approvedExamples = append(f.approvedExamples, index)
+	return nil
+}
+
+func (f *fakeDatasetStore) FlagExampleForReview(name string, index int) error {
+	if f.flagExampleErr != nil {
+		return f.flagExampleErr
+	}
+	f.flaggedExamples = append(f.flaggedExamples, index)
 	return nil
 }
 
@@ -572,6 +592,11 @@ type fakeAgentManager struct {
 	debugGetOK         bool
 	debugStopErr       error
 	debugStoppedRuns   []string
+
+	previewResult   agents.PreviewResult
+	previewErr      error
+	previewedInputs []string
+	previewedTypes  []string
 }
 
 func (f *fakeAgentManager) StartRun(agentName, workspaceOverride string) (*agents.Run, error) {
@@ -583,6 +608,12 @@ func (f *fakeAgentManager) StartRun(agentName, workspaceOverride string) (*agent
 func (f *fakeAgentManager) StopRun(runID string) error {
 	f.stoppedRuns = append(f.stoppedRuns, runID)
 	return f.stopErr
+}
+
+func (f *fakeAgentManager) PreviewNode(ctx context.Context, node registry.Node, input string) (agents.PreviewResult, error) {
+	f.previewedInputs = append(f.previewedInputs, input)
+	f.previewedTypes = append(f.previewedTypes, node.Type)
+	return f.previewResult, f.previewErr
 }
 
 func (f *fakeAgentManager) SendMessage(runID, message string) (agents.ChatMessage, error) {
@@ -758,6 +789,11 @@ type fakeBenchmarkStore struct {
 	updatedTestCase   registry.TestCase
 	updatedIndex      int
 
+	approveTestCaseErr error
+	approvedIndexes    []int
+	flagTestCaseErr    error
+	flaggedIndexes     []int
+
 	deleteTestCaseErr error
 	deletedIndex      int
 
@@ -807,6 +843,22 @@ func (f *fakeBenchmarkStore) UpdateTestCase(benchmarkName string, index int, tc 
 	}
 	f.updatedIndex = index
 	f.updatedTestCase = tc
+	return nil
+}
+
+func (f *fakeBenchmarkStore) ApproveTestCase(benchmarkName string, index int) error {
+	if f.approveTestCaseErr != nil {
+		return f.approveTestCaseErr
+	}
+	f.approvedIndexes = append(f.approvedIndexes, index)
+	return nil
+}
+
+func (f *fakeBenchmarkStore) FlagTestCaseForReview(benchmarkName string, index int) error {
+	if f.flagTestCaseErr != nil {
+		return f.flagTestCaseErr
+	}
+	f.flaggedIndexes = append(f.flaggedIndexes, index)
 	return nil
 }
 
