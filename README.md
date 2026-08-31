@@ -86,15 +86,26 @@ benchmarks all fail.
   Install with `pip install mlx-lm` or `brew install mlx-lm`, and make sure the resulting `mlx_lm.*`
   commands are on PATH for wherever `tlw serve` runs. `tlw serve` starts fine without it; anything that
   needs a model will just fail with a clear "not found on PATH" error until it's installed.
+  Note: `brew install mtfuller/tap/tlw` does **not** pull in `mlx-lm` — install it separately.
 
 ### Install
 
-**From a GitHub Release (recommended).** Grab the latest `tlw_<version>_darwin_arm64.tar.gz` from the
+**With Homebrew (recommended, Apple Silicon).**
+
+```bash
+brew install mtfuller/tap/tlw
+```
+
+Formula installs are not Gatekeeper-quarantined, so there's no `xattr` step. `mlx-lm` is *not* pulled
+in automatically — install it separately (see Prerequisites) for Training and model inference; `tlw
+serve` runs without it.
+
+**From a GitHub Release (manual).** Grab the latest `tlw_<version>_darwin_arm64.tar.gz` from the
 [Releases page](https://github.com/mtfuller/tiny-llm-workbench/releases), then:
 
 ```bash
 tar -xzf tlw_*_darwin_arm64.tar.gz
-xattr -d com.apple.quarantine tlw   # the binary is not notarized — clear Gatekeeper
+xattr -d com.apple.quarantine tlw   # the raw binary is not notarized — clear Gatekeeper
 ./tlw serve --open
 ```
 

@@ -1,0 +1,30 @@
+name: Update Homebrew tap
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    # Skip pre-releases — only ship stable tags to the tap.
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bump tlw formula in mtfuller/homebrew-tap
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: tlw
+          formula-path: Formula/tlw.rb
+          homebrew-tap: mtfuller/homebrew-tap
+          tag-name: ${{ github.event.release.tag_name }}
+          download-url: >-
+            https://github.com/mtfuller/tiny-llm-workbench/releases/download/${{ github.event.release.tag_name }}/tlw_${{ github.event.release.tag_name }}_darwin_arm64.tar.gz
+          commit-message: |
+            tlw {{version}}
+
+            Automated bump on release ${{ github.event.release.tag_name }}.
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
